@@ -64,7 +64,8 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 - [x] 等待态原生通知与 0/60/180 秒提醒；点击通知聚焦对应终端或 DeepSeek 浏览器会话
 - [x] macOS 按 TTY 精确定位 Terminal/iTerm 标签页
 - [x] 原生设置菜单、五项显示配置和 macOS 登录启动设置
-- [ ] Windows/Linux 登录启动和聚焦适配
+- [x] macOS LaunchAgent、Windows Startup、Linux XDG autostart 登录启动
+- [ ] Windows/Linux 对既有终端窗口的精确聚焦（当前安全降级为启动/激活终端）
 
 当前版本是可运行的第一阶段骨架，尚不能视为完整功能等价版本；上面未完成项是发布 `v1.0.0` 前的硬性范围。
 
