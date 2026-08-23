@@ -61,6 +61,30 @@ pub fn no_activity() -> &'static str {
         _ => "无活动",
     }
 }
+
+pub fn notification_message(state: &str, stage: usize) -> &'static str {
+    let reply = state == "waiting_reply";
+    match (locale().as_str(), reply, stage) {
+        ("en", false, 0) => "Your confirmation is needed.",
+        ("en", false, 1) => "Still waiting for confirmation (1 minute).",
+        ("en", false, _) => "Still waiting for confirmation (3 minutes).",
+        ("en", true, 0) => "Your reply is needed.",
+        ("en", true, 1) => "Still waiting for your reply (1 minute).",
+        ("en", true, _) => "Still waiting for your reply (3 minutes).",
+        ("zh-Hant", false, 0) => "需要你的確認。",
+        ("zh-Hant", false, 1) => "仍在等待確認（1 分鐘）。",
+        ("zh-Hant", false, _) => "仍在等待確認（3 分鐘）。",
+        ("zh-Hant", true, 0) => "需要你的回覆。",
+        ("zh-Hant", true, 1) => "仍在等待你的回覆（1 分鐘）。",
+        ("zh-Hant", true, _) => "仍在等待你的回覆（3 分鐘）。",
+        (_, false, 0) => "需要你的确认。",
+        (_, false, 1) => "仍在等待确认（1 分钟）。",
+        (_, false, _) => "仍在等待确认（3 分钟）。",
+        (_, true, 0) => "需要你的回复。",
+        (_, true, 1) => "仍在等待你的回复（1 分钟）。",
+        (_, true, _) => "仍在等待你的回复（3 分钟）。",
+    }
+}
 pub fn language_name(value: &str) -> &'static str {
     match value {
         "auto" => "跟随系统 / System",

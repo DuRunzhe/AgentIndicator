@@ -83,7 +83,7 @@ mod windows {
                 return;
             };
             let xml = format!(
-                "<toast launch=\"focus\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual><actions><action content=\"打开会话\" arguments=\"focus\" activationType=\"foreground\"/></actions></toast>",
+                "<toast launch=\"focus\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual><actions><action content=\"打开会话\" arguments=\"focus\" activationType=\"foreground\"/></actions><audio src=\"ms-winsoundevent:Notification.Default\"/></toast>",
                 escape_xml(&request.title), escape_xml(&request.body),
             );
             let document = match XmlDocument::new().and_then(|document| {
@@ -148,8 +148,8 @@ mod macos {
     use objc2_foundation::{ns_string, MainThreadMarker, NSObject, NSObjectProtocol, NSString};
     use objc2_user_notifications::{
         UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
-        UNNotificationRequest, UNNotificationResponse, UNUserNotificationCenter,
-        UNUserNotificationCenterDelegate,
+        UNNotificationRequest, UNNotificationResponse, UNNotificationSound,
+        UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
     use std::{
         collections::HashMap,
@@ -261,6 +261,7 @@ mod macos {
             let identifier_string = NSString::from_str(&identifier);
             content.setSubtitle(&subtitle);
             content.setBody(&body);
+            content.setSound(Some(&UNNotificationSound::defaultSound()));
             let notification = UNNotificationRequest::requestWithIdentifier_content_trigger(
                 &identifier_string,
                 &content,

@@ -79,11 +79,13 @@ pub struct NotificationRequest {
 
 impl NotificationRequest {
     fn from_instance(instance: &AgentInstance, stage: usize) -> Self {
-        let body = match stage {
-            0 => "需要你的操作",
-            1 => "已等待 1 分钟",
-            _ => "已等待 3 分钟",
-        };
+        let body = crate::i18n::notification_message(
+            match instance.state {
+                AgentState::WaitingReply => "waiting_reply",
+                _ => "waiting",
+            },
+            stage,
+        );
         let action = instance
             .open_url
             .as_ref()
