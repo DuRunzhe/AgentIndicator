@@ -72,7 +72,10 @@ fn main() -> Result<()> {
             }
             // Match the reference monitor's full detection cadence. Tray animation
             // remains independent and updates on the UI event loop.
-            let _ = refresh_rx.recv_timeout(Duration::from_secs(2));
+            match refresh_rx.recv_timeout(Duration::from_secs(2)) {
+                Ok(WorkerCommand::Restart) => detector = Detector::new(),
+                Ok(WorkerCommand::Refresh) | Err(_) => {}
+            }
         }
     });
     let mut app = App::new(refresh_tx, latest_snapshot, debug_ui);
@@ -81,7 +84,7 @@ fn main() -> Result<()> {
 }
 
 struct App {
-    refresh_tx: Sender<()>,
+    refresh_tx: Sender<WorkerCommand>,
     latest_snapshot: Arc<Mutex<Option<Vec<AgentInstance>>>>,
     debug_ui: bool,
     action_tx: Sender<ActionResult>,
@@ -98,6 +101,10 @@ struct App {
 
 enum UserEvent {
     Scan,
+}
+enum WorkerCommand {
+    Refresh,
+    Restart,
 }
 
 enum ActionResult {
@@ -136,7 +143,7 @@ struct MenuView {
 
 impl App {
     fn new(
-        refresh_tx: Sender<()>,
+        refresh_tx: Sender<WorkerCommand>,
         latest_snapshot: Arc<Mutex<Option<Vec<AgentInstance>>>>,
         debug_ui: bool,
     ) -> Self {
@@ -333,6 +340,12 @@ impl App {
             true,
             None,
         ));
+        let _ = menu.append(&MenuItem::with_id(
+            "restart_detector",
+            "重启检测器",
+            true,
+            None,
+        ));
         let _ = menu.append(&MenuItem::with_id("quit", i18n::menu("quit"), true, None));
         MenuView {
             menu,
@@ -486,7 +499,9 @@ impl ApplicationHandler<UserEvent> for App {
             } else if id == "open_automation_settings" {
                 thread::spawn(browser_tabs::open_automation_settings);
             } else if id == "refresh" {
-                let _ = self.refresh_tx.try_send(());
+                let _ = self.refresh_tx.try_send(WorkerCommand::Refresh);
+            } else if id == "restart_detector" {
+                let _ = self.refresh_tx.try_send(WorkerCommand::Restart);
             } else if let Some(key) = id.strip_prefix("display:") {
                 toggle_config(&mut self.config, key);
                 self.config.save();
