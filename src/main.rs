@@ -8,6 +8,7 @@ mod focus;
 mod i18n;
 mod macos_process;
 mod model;
+mod native_notifications;
 mod notification_settings;
 mod notifications;
 mod opencode;
@@ -21,7 +22,8 @@ use config::Config;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use detector::Detector;
 use model::{AgentInstance, AgentState};
-use notifications::NotificationTracker;
+use native_notifications::NotificationService;
+use notifications::{NotificationAction, NotificationTracker};
 use std::{
     fs,
     path::PathBuf,
@@ -93,6 +95,8 @@ struct App {
     tray: Option<TrayIcon>,
     current: Vec<AgentInstance>,
     notifications: NotificationTracker,
+    notification_service: NotificationService,
+    notification_action_rx: Receiver<NotificationAction>,
     config: Config,
     menu: Option<MenuView>,
     animation: Animation,
@@ -150,6 +154,7 @@ impl App {
         let config = Config::load();
         i18n::set_locale(&config.locale);
         let (action_tx, action_rx) = unbounded();
+        let (notification_action_tx, notification_action_rx) = unbounded();
         Self {
             refresh_tx,
             latest_snapshot,
@@ -160,6 +165,8 @@ impl App {
             tray: None,
             current: vec![],
             notifications: NotificationTracker::default(),
+            notification_service: NotificationService::new(notification_action_tx),
+            notification_action_rx,
             config,
             menu: None,
             animation: Animation::default(),
@@ -412,10 +419,23 @@ impl ApplicationHandler<UserEvent> for App {
         self.rebuild();
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        while let Ok(action) = self.notification_action_rx.try_recv() {
+            thread::spawn(move || match action {
+                NotificationAction::FocusPid(pid) => {
+                    let _ = focus::focus(pid);
+                }
+                NotificationAction::FocusUrl { url, reuse_tabs } => {
+                    let _ = web::focus_url(&url, reuse_tabs);
+                }
+            });
+        }
         while let Ok(result) = self.action_rx.try_recv() {
             if let ActionResult::Notifications(enabled) = result {
                 self.config.notifications_enabled = enabled;
                 self.config.save();
+                if enabled {
+                    self.notification_service.request_authorization();
+                }
             }
             if let ActionResult::BrowserTabs(enabled) = result {
                 self.config.browser_tab_reuse = enabled;
@@ -541,8 +561,13 @@ impl ApplicationHandler<UserEvent> for App {
         let Some(latest) = self.latest_snapshot.lock().expect("snapshot lock").take() else {
             return;
         };
-        self.notifications
-            .update(&latest, self.config.notifications_enabled);
+        for request in self
+            .notifications
+            .update(&latest, self.config.notifications_enabled)
+        {
+            self.notification_service
+                .send(request.with_browser_tab_reuse(self.config.browser_tab_reuse));
+        }
         self.current = latest;
         self.last_updated = Some(std::time::SystemTime::now());
         self.rebuild();

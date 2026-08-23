@@ -29,7 +29,9 @@ DeepSeek 进程 ────┘                              └─> 终端/浏�
 | `tray-icon` + `winit` | macOS/Windows/Linux 原生托盘与事件循环 | 0 |
 | `sysinfo` | 一次刷新进程树 | 0 |
 | `serde_json` | 增量解析 JSON/JSONL | 0 |
-| `notify-rust` | 系统通知（后续接入等待状态） | 0 |
+| `objc2-user-notifications` | macOS `UNUserNotificationCenter` 原生通知与点击回调 | 0 |
+| `windows` | Windows WinRT Toast 通知与前台激活回调 | 0 |
+| `notify-rust`（zbus 后端） | Linux Freedesktop D-Bus 通知与“打开会话”动作 | 0 |
 
 Linux 运行时需桌面环境提供 AppIndicator/StatusNotifier 支持；Windows 使用系统通知区域；macOS 使用 NSStatusItem。
 
@@ -59,7 +61,7 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 - [x] 原生动态菜单、汇总图标、npm/Homebrew 发布骨架
 - [x] 逐字节增量解析 Claude/Codex transcript，工具 ID 配对、模型与上下文
 - [x] OpenCode SQLite 状态、模型和上下文读取
-- [x] 等待态原生通知与 0/60/180 秒提醒
+- [x] 等待态原生通知与 0/60/180 秒提醒；点击通知聚焦对应终端或 DeepSeek 浏览器会话
 - [x] macOS 按 TTY 精确定位 Terminal/iTerm 标签页
 - [x] 原生设置菜单、五项显示配置和 macOS 登录启动设置
 - [ ] Windows/Linux 登录启动和聚焦适配
