@@ -57,7 +57,14 @@ impl MacProcessSource {
         if !missing.is_empty() {
             let fresh = read_lsof_metadata(&missing);
             for pid in missing {
-                let value = fresh.get(&pid).cloned().unwrap_or_default();
+                // A process can race lsof during resume/exit. Keep the last
+                // complete metadata instead of replacing cwd/session binding
+                // with an empty record and briefly regressing the tray state.
+                let value = fresh
+                    .get(&pid)
+                    .cloned()
+                    .or_else(|| self.metadata.get(&pid).map(|cached| cached.value.clone()))
+                    .unwrap_or_default();
                 self.metadata.insert(
                     pid,
                     CachedMetadata {
