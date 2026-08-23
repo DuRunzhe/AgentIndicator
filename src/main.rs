@@ -6,6 +6,7 @@ mod detector;
 mod dialog;
 mod focus;
 mod i18n;
+mod instance_lock;
 mod macos_process;
 mod model;
 mod native_notifications;
@@ -57,6 +58,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let debug_ui = arguments.iter().any(|argument| argument == "--debug-ui");
+    let instance_lock = match instance_lock::acquire()? {
+        Some(lock) => lock,
+        None => {
+            eprintln!("AgentStatusIndicator is already running.");
+            return Ok(());
+        }
+    };
     let (refresh_tx, refresh_rx) = bounded(1);
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -80,12 +88,13 @@ fn main() -> Result<()> {
             }
         }
     });
-    let mut app = App::new(refresh_tx, latest_snapshot, debug_ui);
+    let mut app = App::new(refresh_tx, latest_snapshot, debug_ui, instance_lock);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
 
 struct App {
+    _instance_lock: fs::File,
     refresh_tx: Sender<WorkerCommand>,
     latest_snapshot: Arc<Mutex<Option<Vec<AgentInstance>>>>,
     debug_ui: bool,
@@ -150,12 +159,14 @@ impl App {
         refresh_tx: Sender<WorkerCommand>,
         latest_snapshot: Arc<Mutex<Option<Vec<AgentInstance>>>>,
         debug_ui: bool,
+        instance_lock: fs::File,
     ) -> Self {
         let config = Config::load();
         i18n::set_locale(&config.locale);
         let (action_tx, action_rx) = unbounded();
         let (notification_action_tx, notification_action_rx) = unbounded();
         Self {
+            _instance_lock: instance_lock,
             refresh_tx,
             latest_snapshot,
             debug_ui,
