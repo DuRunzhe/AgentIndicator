@@ -258,11 +258,11 @@ impl App {
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
         let settings = Submenu::new(i18n::menu("settings"), true);
-        let startup_menu = Submenu::new(i18n::menu("startup"), cfg!(target_os = "macos"));
+        let startup_menu = Submenu::new(i18n::menu("startup"), startup::is_supported());
         let startup_item = MenuItem::with_id(
             "startup",
             startup_action_label(startup::is_enabled()),
-            cfg!(target_os = "macos"),
+            startup::is_supported(),
             None,
         );
         let _ = startup_menu.append(&startup_item);

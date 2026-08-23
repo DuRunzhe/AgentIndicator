@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf};
 const LABEL: &str = "com.agentstatusindicator.app";
 
 pub fn is_enabled() -> bool {
-    plist_path().is_some_and(|path| path.is_file())
+    startup_path().is_some_and(|path| path.is_file())
 }
 
 pub fn toggle() -> bool {
@@ -18,7 +18,7 @@ pub fn toggle() -> bool {
         if choice.as_deref() != Some("关闭") {
             return true;
         }
-        if let Some(path) = plist_path() {
+        if let Some(path) = startup_path() {
             let _ = unload(&path);
             let _ = fs::remove_file(path);
         }
@@ -36,7 +36,7 @@ pub fn toggle() -> bool {
         return false;
     }
     if install().is_ok() {
-        if let Some(path) = plist_path() {
+        if let Some(path) = startup_path() {
             let _ = load(&path);
         }
         let _ = open_settings();
@@ -63,12 +63,13 @@ pub fn open_settings() -> bool {
 }
 
 fn install() -> std::io::Result<()> {
-    let path = plist_path().ok_or_else(|| std::io::Error::other("home unavailable"))?;
+    let path = startup_path().ok_or_else(|| std::io::Error::other("startup unsupported"))?;
     let executable = std::env::current_exe()?;
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("invalid launch agent path"))?;
     fs::create_dir_all(parent)?;
+    #[cfg(target_os = "macos")]
     let content = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -81,6 +82,18 @@ fn install() -> std::io::Result<()> {
 </dict></plist>\n",
         xml_escape(&executable.to_string_lossy())
     );
+    #[cfg(target_os = "windows")]
+    let content = format!(
+        "@echo off\r\nstart \"\" \"{}\"\r\n",
+        executable.to_string_lossy().replace('"', "\"\"")
+    );
+    #[cfg(target_os = "linux")]
+    let content = format!(
+        "[Desktop Entry]\nType=Application\nName=AgentStatusIndicator\nExec={}\nX-GNOME-Autostart-enabled=true\n",
+        desktop_escape(&executable.to_string_lossy())
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let content = return Err(std::io::Error::other("startup unsupported"));
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     fs::write(&temporary, content)?;
     fs::rename(temporary, path)
@@ -118,15 +131,34 @@ fn unload(path: &std::path::Path) -> bool {
     }
 }
 
-fn plist_path() -> Option<PathBuf> {
+fn startup_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         dirs::home_dir().map(|home| home.join(format!("Library/LaunchAgents/{LABEL}.plist")))
     }
     #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         None
     }
+    #[cfg(target_os = "windows")]
+    {
+        dirs::data_dir().map(|root| {
+            root.join("Microsoft/Windows/Start Menu/Programs/Startup/AgentStatusIndicator.cmd")
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        dirs::config_dir().map(|root| root.join("autostart/agent-status-indicator.desktop"))
+    }
+}
+
+pub fn is_supported() -> bool {
+    cfg!(any(
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "linux"
+    ))
 }
 
 fn xml_escape(value: &str) -> String {
@@ -135,6 +167,11 @@ fn xml_escape(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace(' ', "\\s")
 }
 
 #[cfg(test)]
