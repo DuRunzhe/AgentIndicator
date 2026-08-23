@@ -24,6 +24,7 @@ pub struct OpenCodeAnalyzer {
 struct CacheEntry {
     signature: Signature,
     facts: Option<OpenCodeFacts>,
+    last_access: std::time::Instant,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -46,7 +47,8 @@ impl OpenCodeAnalyzer {
             models: modified(&models),
             log: modified(&log),
         };
-        if let Some(entry) = self.cache.get(cwd) {
+        if let Some(entry) = self.cache.get_mut(cwd) {
+            entry.last_access = std::time::Instant::now();
             if entry.signature == signature {
                 return entry.facts.clone();
             }
@@ -62,9 +64,26 @@ impl OpenCodeAnalyzer {
             CacheEntry {
                 signature,
                 facts: facts.clone(),
+                last_access: std::time::Instant::now(),
             },
         );
+        prune_cache(&mut self.cache);
         facts
+    }
+}
+
+fn prune_cache(cache: &mut HashMap<PathBuf, CacheEntry>) {
+    cache.retain(|_, entry| entry.last_access.elapsed() < std::time::Duration::from_secs(86_400));
+    while cache.len() > 200 {
+        let oldest = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_access)
+            .map(|(path, _)| path.clone());
+        if let Some(path) = oldest {
+            cache.remove(&path);
+        } else {
+            break;
+        }
     }
 }
 

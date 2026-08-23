@@ -24,6 +24,7 @@ struct Cached {
     size: u64,
     checked: Instant,
     facts: DeepSeekFacts,
+    last_access: Instant,
 }
 
 #[derive(Default)]
@@ -37,7 +38,8 @@ impl DeepSeekAnalyzer {
         let session = latest_session(cwd, &home)?;
         let metadata = session.metadata().ok()?;
         let modified = metadata.modified().ok()?;
-        if let Some(cached) = self.cache.get(&session) {
+        if let Some(cached) = self.cache.get_mut(&session) {
+            cached.last_access = Instant::now();
             if (cached.modified == modified && cached.size == metadata.len())
                 || cached.checked.elapsed() < Duration::from_secs(2)
             {
@@ -60,9 +62,28 @@ impl DeepSeekAnalyzer {
                 size: metadata.len(),
                 checked: Instant::now(),
                 facts: facts.clone(),
+                last_access: Instant::now(),
             },
         );
+        prune_cache(&mut self.cache);
         Some(facts)
+    }
+}
+
+fn prune_cache(cache: &mut HashMap<PathBuf, Cached>) {
+    cache.retain(|path, entry| {
+        path.is_file() && entry.last_access.elapsed() < Duration::from_secs(86_400)
+    });
+    while cache.len() > 200 {
+        let oldest = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_access)
+            .map(|(path, _)| path.clone());
+        if let Some(path) = oldest {
+            cache.remove(&path);
+        } else {
+            break;
+        }
     }
 }
 

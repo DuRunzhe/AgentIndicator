@@ -17,13 +17,26 @@ pub struct SessionFacts {
     pub requires_terminal_probe: bool,
 }
 
-#[derive(Default)]
 struct FileCursor {
     offset: u64,
     length: u64,
     facts: SessionFacts,
     tools: HashMap<String, PendingTool>,
     results: HashSet<String>,
+    last_access: Instant,
+}
+
+impl Default for FileCursor {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            length: 0,
+            facts: SessionFacts::default(),
+            tools: HashMap::new(),
+            results: HashSet::new(),
+            last_access: Instant::now(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -37,6 +50,7 @@ pub struct SessionAnalyzer {
     files: HashMap<PathBuf, FileCursor>,
     codex_rollouts: Vec<(PathBuf, PathBuf)>,
     codex_indexed_at: Option<Instant>,
+    last_cache_prune: Option<Instant>,
 }
 
 impl SessionAnalyzer {
@@ -114,8 +128,10 @@ impl SessionAnalyzer {
     }
 
     pub fn analyze_jsonl(&mut self, path: &Path, agent: &str) -> Option<SessionFacts> {
+        self.prune_files();
         let length = path.metadata().ok()?.len();
         let cursor = self.files.entry(path.to_owned()).or_default();
+        cursor.last_access = Instant::now();
         if length < cursor.length {
             *cursor = FileCursor::default();
         }
@@ -146,6 +162,31 @@ impl SessionAnalyzer {
         cursor.length = cursor.offset;
         apply_pending_priority(cursor);
         Some(cursor.facts.clone())
+    }
+
+    fn prune_files(&mut self) {
+        if self
+            .last_cache_prune
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(60))
+        {
+            return;
+        }
+        self.last_cache_prune = Some(Instant::now());
+        self.files.retain(|path, cursor| {
+            path.is_file() && cursor.last_access.elapsed() < Duration::from_secs(86_400)
+        });
+        while self.files.len() > 200 {
+            let oldest = self
+                .files
+                .iter()
+                .min_by_key(|(_, cursor)| cursor.last_access)
+                .map(|(path, _)| path.clone());
+            if let Some(path) = oldest {
+                self.files.remove(&path);
+            } else {
+                break;
+            }
+        }
     }
 }
 
