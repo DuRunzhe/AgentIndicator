@@ -21,6 +21,7 @@ pub struct Detector {
     sessions: SessionAnalyzer,
     deepseek: crate::deepseek::DeepSeekAnalyzer,
     opencode: crate::opencode::OpenCodeAnalyzer,
+    terminal: crate::terminal::TerminalProbe,
     #[cfg(target_os = "macos")]
     web_urls: crate::web::WebUrlDetector,
 }
@@ -35,6 +36,7 @@ impl Detector {
             sessions: SessionAnalyzer::default(),
             deepseek: crate::deepseek::DeepSeekAnalyzer::default(),
             opencode: crate::opencode::OpenCodeAnalyzer::default(),
+            terminal: crate::terminal::TerminalProbe::default(),
             #[cfg(target_os = "macos")]
             web_urls: crate::web::WebUrlDetector::default(),
         }
@@ -94,6 +96,7 @@ impl Detector {
                         &mut self.sessions,
                         active,
                         codex_resume_session_id(process),
+                        &mut self.terminal,
                     );
                 } else if kind == "deepseek" {
                     enrich_deepseek(&mut instance, &mut self.deepseek);
@@ -171,6 +174,7 @@ impl Detector {
                         &mut self.sessions,
                         active,
                         codex_rollout_from_metadata(&group_metadata),
+                        &mut self.terminal,
                     ),
                     "deepseek" => enrich_deepseek(&mut instance, &mut self.deepseek),
                     "opencode" => enrich_opencode(&mut instance, &mut self.opencode),
@@ -353,6 +357,7 @@ fn enrich_codex(
     analyzer: &mut SessionAnalyzer,
     has_active_child: bool,
     resumed_session_id: Option<String>,
+    terminal: &mut crate::terminal::TerminalProbe,
 ) {
     let facts = match (instance.cwd.as_deref(), resumed_session_id.as_deref()) {
         (Some(cwd), session_id) => analyzer.analyze_codex(cwd, session_id),
@@ -380,7 +385,7 @@ fn enrich_codex(
         instance.state = state;
     }
     if requires_terminal_probe {
-        match crate::terminal::probe_codex(instance.pid) {
+        match terminal.request(instance.pid) {
             Some(AgentState::Waiting) if instance.state == AgentState::Working => {
                 instance.state = AgentState::Waiting
             }
@@ -400,6 +405,7 @@ fn enrich_macos_codex(
     analyzer: &mut SessionAnalyzer,
     has_active_child: bool,
     rollout: Option<PathBuf>,
+    terminal: &mut crate::terminal::TerminalProbe,
 ) {
     let facts = rollout
         .as_deref()
@@ -426,7 +432,7 @@ fn enrich_macos_codex(
         instance.state = state;
     }
     if requires_terminal_probe {
-        match crate::terminal::probe_codex(instance.pid) {
+        match terminal.request(instance.pid) {
             Some(AgentState::Waiting) if instance.state == AgentState::Working => {
                 instance.state = AgentState::Waiting
             }

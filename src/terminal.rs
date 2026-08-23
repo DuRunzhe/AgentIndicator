@@ -1,11 +1,58 @@
 use crate::model::AgentState;
-use std::process::Command;
+use std::{
+    collections::{HashMap, HashSet},
+    process::Command,
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
+    time::{Duration, Instant},
+};
 
 const STATUS_SEPARATOR: char = '\u{1d}';
 const RECORD_SEPARATOR: char = '\u{1e}';
 const FIELD_SEPARATOR: char = '\u{1f}';
 
-pub fn probe_codex(pid: u32) -> Option<AgentState> {
+pub struct TerminalProbe {
+    results: HashMap<u32, (Instant, Option<AgentState>)>,
+    pending: HashSet<u32>,
+    tx: Sender<(u32, Option<AgentState>)>,
+    rx: Receiver<(u32, Option<AgentState>)>,
+}
+
+impl Default for TerminalProbe {
+    fn default() -> Self {
+        let (tx, rx) = mpsc::channel();
+        Self {
+            results: HashMap::new(),
+            pending: HashSet::new(),
+            tx,
+            rx,
+        }
+    }
+}
+
+impl TerminalProbe {
+    pub fn request(&mut self, pid: u32) -> Option<AgentState> {
+        while let Ok((pid, state)) = self.rx.try_recv() {
+            self.results.insert(pid, (Instant::now(), state));
+            self.pending.remove(&pid);
+        }
+        if let Some((at, state)) = self.results.get(&pid) {
+            if at.elapsed() < Duration::from_secs(5) {
+                return *state;
+            }
+        }
+        if !self.pending.contains(&pid) {
+            self.pending.insert(pid);
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                let _ = tx.send((pid, probe_codex_sync(pid)));
+            });
+        }
+        None
+    }
+}
+
+fn probe_codex_sync(pid: u32) -> Option<AgentState> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = pid;

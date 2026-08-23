@@ -1,4 +1,5 @@
 mod browser_tabs;
+mod claude_statusline;
 mod config;
 mod deepseek;
 mod detector;
@@ -40,6 +41,13 @@ use winit::{
 
 fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args().collect();
+    if arguments
+        .iter()
+        .any(|argument| argument == "--claude-statusline")
+    {
+        claude_statusline::collect_from_stdin();
+        return Ok(());
+    }
     if arguments.iter().any(|argument| argument == "--diagnose") {
         let mut detector = Detector::new();
         println!("{}", serde_json::to_string_pretty(&detector.scan())?);
@@ -93,6 +101,7 @@ enum UserEvent {
 enum ActionResult {
     Notifications(bool),
     BrowserTabs(bool),
+    ClaudeStatusLine(Result<(), String>),
     Finished,
 }
 
@@ -120,6 +129,7 @@ struct MenuView {
     startup: MenuItem,
     display: Vec<MenuItem>,
     browser_tabs: MenuItem,
+    claude_statusline: MenuItem,
 }
 
 impl App {
@@ -188,6 +198,7 @@ impl App {
                 .set_text(startup_action_label(startup::is_enabled()));
             menu.notifications.set_enabled(!self.action_busy);
             menu.browser_tabs.set_enabled(!self.action_busy);
+            menu.claude_statusline.set_enabled(!self.action_busy);
             menu.startup.set_enabled(!self.action_busy);
             for (item, (key, label)) in menu.display.iter().zip(display_settings()) {
                 item.set_text(toggle_label(config_value(&self.config, key), label));
@@ -267,6 +278,13 @@ impl App {
         ));
         let _ = browser_menu.append(&MenuItem::new("需要浏览器自动化权限", false, None));
         let _ = settings.append(&browser_menu);
+        let claude_statusline = MenuItem::with_id(
+            "install_claude_statusline",
+            "安装 Claude 上下文采集",
+            true,
+            None,
+        );
+        let _ = settings.append(&claude_statusline);
         let display_menu = Submenu::new("显示配置", true);
         let mut display_items = Vec::new();
         for (key, label) in display_settings() {
@@ -291,6 +309,7 @@ impl App {
             startup: startup_item,
             display: display_items,
             browser_tabs,
+            claude_statusline,
         }
     }
 
@@ -356,6 +375,15 @@ impl ApplicationHandler<UserEvent> for App {
                 self.config.browser_tab_reuse = enabled;
                 self.config.save();
             }
+            if let ActionResult::ClaudeStatusLine(result) = result {
+                match result {
+                    Ok(()) => dialog::notice(
+                        "Claude 上下文采集已安装。请在 Claude 中开始或继续一次会话以写入数据。",
+                        "Claude 上下文采集",
+                    ),
+                    Err(error) => dialog::notice(&error, "Claude 上下文采集未安装"),
+                }
+            }
             self.action_busy = false;
             self.rebuild();
         }
@@ -397,6 +425,26 @@ impl ApplicationHandler<UserEvent> for App {
                 thread::spawn(move || {
                     let enabled = browser_tabs::configure(current);
                     let _ = tx.send(ActionResult::BrowserTabs(enabled));
+                });
+            } else if id == "install_claude_statusline" {
+                if self.action_busy {
+                    continue;
+                }
+                let choice = dialog::choose(
+                    "将为 Claude Code 配置上下文采集，并保留、转发你当前的 statusLine 命令。",
+                    "安装 Claude 上下文采集",
+                    &["取消", "安装"],
+                    "安装",
+                    Some("取消"),
+                );
+                if choice.as_deref() != Some("安装") {
+                    continue;
+                }
+                self.action_busy = true;
+                self.rebuild();
+                let tx = self.action_tx.clone();
+                thread::spawn(move || {
+                    let _ = tx.send(ActionResult::ClaudeStatusLine(claude_statusline::install()));
                 });
             } else if id == "open_login_settings" {
                 thread::spawn(startup::open_settings);
