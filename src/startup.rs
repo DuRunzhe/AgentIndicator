@@ -19,6 +19,7 @@ pub fn toggle() -> bool {
             return true;
         }
         if let Some(path) = plist_path() {
+            let _ = unload(&path);
             let _ = fs::remove_file(path);
         }
         crate::dialog::notice("开机自启已关闭。", "开机自启");
@@ -35,6 +36,9 @@ pub fn toggle() -> bool {
         return false;
     }
     if install().is_ok() {
+        if let Some(path) = plist_path() {
+            let _ = load(&path);
+        }
         let _ = open_settings();
         crate::dialog::notice("开机自启已开启，请在系统登录项设置中确认。", "开机自启");
         true
@@ -72,6 +76,7 @@ fn install() -> std::io::Result<()> {
 <key>Label</key><string>{LABEL}</string>\n\
 <key>ProgramArguments</key><array><string>{}</string></array>\n\
 <key>RunAtLoad</key><true/>\n\
+<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n\
 <key>ProcessType</key><string>Interactive</string>\n\
 </dict></plist>\n",
         xml_escape(&executable.to_string_lossy())
@@ -79,6 +84,38 @@ fn install() -> std::io::Result<()> {
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     fs::write(&temporary, content)?;
     fs::rename(temporary, path)
+}
+
+fn load(path: &std::path::Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return std::process::Command::new("/bin/launchctl")
+            .args(["bootstrap", &format!("gui/{}", unsafe { libc::geteuid() })])
+            .arg(path)
+            .status()
+            .is_ok_and(|status| status.success());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+fn unload(path: &std::path::Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return std::process::Command::new("/bin/launchctl")
+            .args(["bootout", &format!("gui/{}", unsafe { libc::geteuid() })])
+            .arg(path)
+            .status()
+            .is_ok_and(|status| status.success());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 fn plist_path() -> Option<PathBuf> {
@@ -107,5 +144,11 @@ mod tests {
     #[test]
     fn executable_paths_are_xml_escaped() {
         assert_eq!(xml_escape("/A&B/<app>"), "/A&amp;B/&lt;app&gt;");
+    }
+
+    #[test]
+    fn launch_agent_restarts_only_after_an_unsuccessful_exit() {
+        let value = "<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>";
+        assert!(value.contains("SuccessfulExit"));
     }
 }

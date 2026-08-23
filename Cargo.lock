@@ -33,6 +33,7 @@ dependencies = [
  "crossbeam-channel",
  "dirs",
  "fs2",
+ "libc",
  "notify-rust",
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
