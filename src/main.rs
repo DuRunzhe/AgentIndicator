@@ -5,6 +5,7 @@ mod deepseek;
 mod detector;
 mod dialog;
 mod focus;
+mod i18n;
 mod macos_process;
 mod model;
 mod notification_settings;
@@ -139,6 +140,7 @@ impl App {
         debug_ui: bool,
     ) -> Self {
         let config = Config::load();
+        i18n::set_locale(&config.locale);
         let (action_tx, action_rx) = unbounded();
         Self {
             refresh_tx,
@@ -226,8 +228,8 @@ impl App {
             let _ = menu.append(&item);
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
-        let settings = Submenu::new("设置", true);
-        let startup_menu = Submenu::new("开机自启", cfg!(target_os = "macos"));
+        let settings = Submenu::new(i18n::menu("settings"), true);
+        let startup_menu = Submenu::new(i18n::menu("startup"), cfg!(target_os = "macos"));
         let startup_item = MenuItem::with_id(
             "startup",
             startup_action_label(startup::is_enabled()),
@@ -237,12 +239,12 @@ impl App {
         let _ = startup_menu.append(&startup_item);
         let _ = startup_menu.append(&MenuItem::with_id(
             "open_login_settings",
-            "打开登录项设置",
+            i18n::menu("login"),
             cfg!(target_os = "macos"),
             None,
         ));
         let _ = settings.append(&startup_menu);
-        let notification_menu = Submenu::new("通知", true);
+        let notification_menu = Submenu::new(i18n::menu("notifications"), true);
         let notification_item = MenuItem::with_id(
             "notifications",
             notification_action_label(self.config.notifications_enabled),
@@ -262,7 +264,7 @@ impl App {
             None,
         ));
         let _ = settings.append(&notification_menu);
-        let browser_menu = Submenu::new("浏览器标签页", cfg!(target_os = "macos"));
+        let browser_menu = Submenu::new(i18n::menu("browser"), cfg!(target_os = "macos"));
         let browser_tabs = MenuItem::with_id(
             "browser_tabs",
             browser_tab_action_label(self.config.browser_tab_reuse),
@@ -272,20 +274,39 @@ impl App {
         let _ = browser_menu.append(&browser_tabs);
         let _ = browser_menu.append(&MenuItem::with_id(
             "open_automation_settings",
-            "打开系统自动化设置",
+            i18n::menu("automation"),
             cfg!(target_os = "macos"),
             None,
         ));
-        let _ = browser_menu.append(&MenuItem::new("需要浏览器自动化权限", false, None));
+        let _ = browser_menu.append(&MenuItem::new(i18n::menu("permission"), false, None));
         let _ = settings.append(&browser_menu);
         let claude_statusline = MenuItem::with_id(
             "install_claude_statusline",
-            "安装 Claude 上下文采集",
+            i18n::menu("install_claude"),
             true,
             None,
         );
         let _ = settings.append(&claude_statusline);
-        let display_menu = Submenu::new("显示配置", true);
+        let language_menu = Submenu::new(i18n::menu("language"), true);
+        for value in ["auto", "zh-Hans", "zh-Hant", "en"] {
+            let label = format!(
+                "{} {}",
+                if self.config.locale == value {
+                    "✓"
+                } else {
+                    ""
+                },
+                i18n::language_name(value)
+            );
+            let _ = language_menu.append(&MenuItem::with_id(
+                format!("locale:{value}"),
+                label,
+                true,
+                None,
+            ));
+        }
+        let _ = settings.append(&language_menu);
+        let display_menu = Submenu::new(i18n::menu("display"), true);
         let mut display_items = Vec::new();
         for (key, label) in display_settings() {
             let item = MenuItem::with_id(
@@ -299,8 +320,13 @@ impl App {
         }
         let _ = settings.append(&display_menu);
         let _ = menu.append(&settings);
-        let _ = menu.append(&MenuItem::with_id("refresh", "立即刷新", true, None));
-        let _ = menu.append(&MenuItem::with_id("quit", "退出", true, None));
+        let _ = menu.append(&MenuItem::with_id(
+            "refresh",
+            i18n::menu("refresh"),
+            true,
+            None,
+        ));
+        let _ = menu.append(&MenuItem::with_id("quit", i18n::menu("quit"), true, None));
         MenuView {
             menu,
             signature,
@@ -457,6 +483,12 @@ impl ApplicationHandler<UserEvent> for App {
             } else if let Some(key) = id.strip_prefix("display:") {
                 toggle_config(&mut self.config, key);
                 self.config.save();
+                self.rebuild();
+            } else if let Some(locale) = id.strip_prefix("locale:") {
+                self.config.locale = locale.into();
+                self.config.save();
+                i18n::set_locale(locale);
+                self.menu = None;
                 self.rebuild();
             } else if let Some(pid) = id
                 .strip_prefix("focus:")
@@ -620,7 +652,7 @@ fn summary(items: &[AgentInstance]) -> String {
         .filter(|item| item.state != AgentState::Stopped)
         .collect();
     if active.is_empty() {
-        "无活动".into()
+        i18n::no_activity().into()
     } else {
         [
             AgentState::Waiting,

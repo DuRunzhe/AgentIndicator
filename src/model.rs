@@ -22,11 +22,11 @@ impl AgentState {
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::Waiting => "等待确认",
-            Self::WaitingReply => "等待回复",
-            Self::Working => "进行中",
-            Self::Ready => "就绪",
-            Self::Stopped => "已停止",
+            Self::Waiting => crate::i18n::state("waiting"),
+            Self::WaitingReply => crate::i18n::state("waiting_reply"),
+            Self::Working => crate::i18n::state("working"),
+            Self::Ready => crate::i18n::state("ready"),
+            Self::Stopped => crate::i18n::state("stopped"),
         }
     }
 }
