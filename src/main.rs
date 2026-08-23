@@ -110,6 +110,7 @@ struct App {
     menu: Option<MenuView>,
     animation: Animation,
     last_updated: Option<std::time::SystemTime>,
+    last_locale_check: Instant,
 }
 
 enum UserEvent {
@@ -182,6 +183,7 @@ impl App {
             menu: None,
             animation: Animation::default(),
             last_updated: None,
+            last_locale_check: Instant::now(),
         }
     }
     fn rebuild(&mut self) {
@@ -430,6 +432,15 @@ impl ApplicationHandler<UserEvent> for App {
         self.rebuild();
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.config.locale == "auto"
+            && self.last_locale_check.elapsed() >= Duration::from_secs(60)
+        {
+            self.last_locale_check = Instant::now();
+            if i18n::refresh_system_locale() {
+                self.menu = None;
+                self.rebuild();
+            }
+        }
         while let Ok(action) = self.notification_action_rx.try_recv() {
             thread::spawn(move || match action {
                 NotificationAction::FocusPid(pid) => {

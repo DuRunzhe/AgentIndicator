@@ -14,6 +14,20 @@ pub fn set_locale(value: &str) {
         .expect("locale lock") = value;
 }
 
+pub fn refresh_system_locale() -> bool {
+    let value = system_locale();
+    let mut locale = LOCALE
+        .get_or_init(|| RwLock::new("zh-Hans".into()))
+        .write()
+        .expect("locale lock");
+    if *locale == value {
+        false
+    } else {
+        *locale = value;
+        true
+    }
+}
+
 fn locale() -> String {
     LOCALE
         .get_or_init(|| RwLock::new("zh-Hans".into()))
@@ -22,6 +36,24 @@ fn locale() -> String {
         .clone()
 }
 fn system_locale() -> String {
+    #[cfg(target_os = "macos")]
+    if let Some(value) = std::process::Command::new("/usr/bin/defaults")
+        .args(["read", "-g", "AppleLanguages"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_lowercase())
+    {
+        if value.contains("zh-hant") || value.contains("zh_tw") || value.contains("zh_hk") {
+            return "zh-Hant".into();
+        }
+        if value.contains("zh") {
+            return "zh-Hans".into();
+        }
+        if value.contains("en") {
+            return "en".into();
+        }
+    }
     let value = std::env::var("LC_ALL")
         .or_else(|_| std::env::var("LANG"))
         .unwrap_or_default()
