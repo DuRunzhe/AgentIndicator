@@ -93,6 +93,7 @@ struct App {
     config: Config,
     menu: Option<MenuView>,
     animation: Animation,
+    last_updated: Option<std::time::SystemTime>,
 }
 
 enum UserEvent {
@@ -155,6 +156,7 @@ impl App {
             config,
             menu: None,
             animation: Animation::default(),
+            last_updated: None,
         }
     }
     fn rebuild(&mut self) {
@@ -320,6 +322,11 @@ impl App {
         }
         let _ = settings.append(&display_menu);
         let _ = menu.append(&settings);
+        let _ = menu.append(&MenuItem::new(
+            &last_updated_label(self.last_updated),
+            false,
+            None,
+        ));
         let _ = menu.append(&MenuItem::with_id(
             "refresh",
             i18n::menu("refresh"),
@@ -522,12 +529,23 @@ impl ApplicationHandler<UserEvent> for App {
         self.notifications
             .update(&latest, self.config.notifications_enabled);
         self.current = latest;
+        self.last_updated = Some(std::time::SystemTime::now());
         self.rebuild();
         if self.debug_ui {
             write_ui_diagnosis(&self.current);
         }
     }
     fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+}
+
+fn last_updated_label(value: Option<std::time::SystemTime>) -> String {
+    let seconds = value
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_secs() % 86_400);
+    match seconds {
+        Some(value) => format!("上次刷新: {:02}:{:02}", value / 3600, value % 3600 / 60),
+        None => "上次刷新: --:--".into(),
+    }
 }
 
 fn write_ui_diagnosis(instances: &[AgentInstance]) {
