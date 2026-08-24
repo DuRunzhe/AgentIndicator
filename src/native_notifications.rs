@@ -44,9 +44,13 @@ impl NotificationService {
         fallback::send(request, self.action_tx.clone());
     }
 
-    pub fn request_authorization(&self) {
+    pub fn request_authorization(&self, result_tx: Sender<bool>) {
         #[cfg(target_os = "macos")]
-        self.macos.request_authorization();
+        self.macos.request_authorization(result_tx);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = result_tx.send(true);
+        }
     }
 }
 
@@ -278,8 +282,12 @@ mod macos {
                 .addNotificationRequest_withCompletionHandler(&notification, None);
         }
 
-        pub fn request_authorization(&self) {
-            let completion = RcBlock::new(|_granted, _error| {});
+        pub fn request_authorization(&self, result_tx: Sender<bool>) {
+            let completion = RcBlock::new(
+                move |granted: objc2::runtime::Bool, _error: *mut objc2_foundation::NSError| {
+                    let _ = result_tx.send(granted.as_bool());
+                },
+            );
             self.center
                 .requestAuthorizationWithOptions_completionHandler(
                     UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,

@@ -106,6 +106,8 @@ struct App {
     notifications: NotificationTracker,
     notification_service: NotificationService,
     notification_action_rx: Receiver<NotificationAction>,
+    notification_permission_tx: Sender<bool>,
+    notification_permission_rx: Receiver<bool>,
     config: Config,
     menu: Option<MenuView>,
     animation: Animation,
@@ -122,7 +124,6 @@ enum WorkerCommand {
 }
 
 enum ActionResult {
-    Notifications(bool),
     BrowserTabs(bool),
     ClaudeStatusLine(Result<(), String>),
     Finished,
@@ -166,6 +167,7 @@ impl App {
         i18n::set_locale(&config.locale);
         let (action_tx, action_rx) = unbounded();
         let (notification_action_tx, notification_action_rx) = unbounded();
+        let (notification_permission_tx, notification_permission_rx) = unbounded();
         Self {
             _instance_lock: instance_lock,
             refresh_tx,
@@ -179,6 +181,8 @@ impl App {
             notifications: NotificationTracker::default(),
             notification_service: NotificationService::new(notification_action_tx),
             notification_action_rx,
+            notification_permission_tx,
+            notification_permission_rx,
             config,
             menu: None,
             animation: Animation::default(),
@@ -451,14 +455,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             });
         }
+        while let Ok(granted) = self.notification_permission_rx.try_recv() {
+            self.config.notifications_enabled = granted;
+            self.config.save();
+            self.action_busy = false;
+            self.rebuild();
+        }
         while let Ok(result) = self.action_rx.try_recv() {
-            if let ActionResult::Notifications(enabled) = result {
-                self.config.notifications_enabled = enabled;
-                self.config.save();
-                if enabled {
-                    self.notification_service.request_authorization();
-                }
-            }
             if let ActionResult::BrowserTabs(enabled) = result {
                 self.config.browser_tab_reuse = enabled;
                 self.config.save();
@@ -485,12 +488,15 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.action_busy = true;
                 self.rebuild();
-                let current = self.config.notifications_enabled;
-                let tx = self.action_tx.clone();
-                thread::spawn(move || {
-                    let enabled = notification_settings::configure(current);
-                    let _ = tx.send(ActionResult::Notifications(enabled));
-                });
+                if self.config.notifications_enabled {
+                    self.config.notifications_enabled = false;
+                    self.config.save();
+                    self.action_busy = false;
+                    self.rebuild();
+                } else {
+                    self.notification_service
+                        .request_authorization(self.notification_permission_tx.clone());
+                }
             } else if id == "startup" {
                 if self.action_busy {
                     continue;
