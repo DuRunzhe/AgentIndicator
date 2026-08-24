@@ -4,7 +4,7 @@
   "description": "Native tray monitor for Claude Code, Codex and OpenCode",
   "license": "MIT",
   "bin": { "agent-status-indicator": "npm/bin.js" },
-  "files": ["npm/bin.js", "bin/**", "README.md", "TESTING.md"],
+  "files": ["npm/bin.js", "bin/**", "app/**", "README.md", "TESTING.md"],
   "os": ["darwin", "linux", "win32"],
   "cpu": ["x64", "arm64"]
 }
