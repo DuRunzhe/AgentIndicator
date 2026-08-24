@@ -29,4 +29,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 
+# Bind Info.plist and its Bundle Identifier to the executable without requiring
+# an Apple Developer certificate. Release CI can replace this with Developer ID
+# signing and notarization later.
+codesign --force --sign - "$APP"
+
 echo "$APP"
