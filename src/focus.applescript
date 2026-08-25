@@ -3,12 +3,10 @@ on run argv
     try
         if application "Terminal" is running then
             tell application "Terminal"
-                repeat with windowIndex from 1 to count of windows
-                    set terminalWindow to item windowIndex of windows
-                    repeat with tabIndex from 1 to count of tabs of terminalWindow
-                        set terminalTab to item tabIndex of tabs of terminalWindow
+                repeat with terminalWindow in windows
+                    repeat with terminalTab in tabs of terminalWindow
                         if tty of terminalTab is targetTTY then
-                            set selected of terminalTab to true
+                            set selected tab of terminalWindow to terminalTab
                             set index of terminalWindow to 1
                             activate
                             return "Terminal"

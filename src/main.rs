@@ -108,6 +108,7 @@ struct App {
     notification_action_rx: Receiver<NotificationAction>,
     notification_permission_tx: Sender<bool>,
     notification_permission_rx: Receiver<bool>,
+    pending_notification_test: bool,
     config: Config,
     menu: Option<MenuView>,
     animation: Animation,
@@ -150,6 +151,7 @@ struct MenuView {
     signature: Vec<(u32, AgentState)>,
     instances: Vec<MenuItem>,
     notifications: MenuItem,
+    test_notification: MenuItem,
     startup: MenuItem,
     display: Vec<MenuItem>,
     browser_tabs: MenuItem,
@@ -183,6 +185,7 @@ impl App {
             notification_action_rx,
             notification_permission_tx,
             notification_permission_rx,
+            pending_notification_test: false,
             config,
             menu: None,
             animation: Animation::default(),
@@ -232,6 +235,8 @@ impl App {
             menu.startup
                 .set_text(startup_action_label(startup::is_enabled()));
             menu.notifications.set_enabled(!self.action_busy);
+            menu.test_notification
+                .set_enabled(self.config.notifications_enabled && !self.action_busy);
             menu.browser_tabs.set_enabled(!self.action_busy);
             menu.claude_statusline.set_enabled(!self.action_busy);
             menu.startup.set_enabled(!self.action_busy);
@@ -285,6 +290,13 @@ impl App {
             None,
         );
         let _ = notification_menu.append(&notification_item);
+        let test_notification = MenuItem::with_id(
+            "test_notification",
+            i18n::menu("test_notification"),
+            self.config.notifications_enabled,
+            None,
+        );
+        let _ = notification_menu.append(&test_notification);
         let _ = notification_menu.append(&MenuItem::with_id(
             "open_notification_settings",
             "打开系统通知设置",
@@ -376,6 +388,7 @@ impl App {
             signature,
             instances: instance_items,
             notifications: notification_item,
+            test_notification,
             startup: startup_item,
             display: display_items,
             browser_tabs,
@@ -459,6 +472,15 @@ impl ApplicationHandler<UserEvent> for App {
             self.config.notifications_enabled = granted;
             self.config.save();
             self.action_busy = false;
+            if self.pending_notification_test && granted {
+                self.send_test_notification();
+            } else if self.pending_notification_test {
+                dialog::notice(
+                    "macOS 未授予 AgentStatusIndicator 通知权限。请在系统设置的“通知”中允许此应用后重试。",
+                    "通知未开启",
+                );
+            }
+            self.pending_notification_test = false;
             self.rebuild();
         }
         while let Ok(result) = self.action_rx.try_recv() {
@@ -497,6 +519,12 @@ impl ApplicationHandler<UserEvent> for App {
                     self.notification_service
                         .request_authorization(self.notification_permission_tx.clone());
                 }
+            } else if id == "test_notification" {
+                self.action_busy = true;
+                self.pending_notification_test = true;
+                self.rebuild();
+                self.notification_service
+                    .request_authorization(self.notification_permission_tx.clone());
             } else if id == "startup" {
                 if self.action_busy {
                     continue;
@@ -604,6 +632,17 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
     fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+}
+
+impl App {
+    fn send_test_notification(&mut self) {
+        self.notification_service
+            .send(notifications::NotificationRequest {
+                title: "AgentStatusIndicator · 测试通知".into(),
+                body: "通知已启用。点击此通知可验证原生投递。".into(),
+                action: NotificationAction::FocusPid(0),
+            });
+    }
 }
 
 fn last_updated_label(value: Option<std::time::SystemTime>) -> String {

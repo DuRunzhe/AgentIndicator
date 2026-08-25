@@ -8,6 +8,26 @@
 use crate::notifications::{NotificationAction, NotificationRequest};
 use crossbeam_channel::Sender;
 
+#[cfg(target_os = "macos")]
+fn debug_event(event: &str) {
+    use std::io::Write;
+    let Some(path) =
+        dirs::data_dir().map(|root| root.join("agent-status-indicator/notification-debug.log"))
+    else {
+        return;
+    };
+    let Some(parent) = path.parent() else { return };
+    if std::fs::create_dir_all(parent).is_ok() {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(file, "{:?} {event}", std::time::SystemTime::now());
+        }
+    }
+}
+
 pub struct NotificationService {
     #[cfg(target_os = "macos")]
     macos: macos::MacNotificationService,
@@ -45,6 +65,8 @@ impl NotificationService {
     }
 
     pub fn request_authorization(&self, result_tx: Sender<bool>) {
+        #[cfg(target_os = "macos")]
+        debug_event("authorization requested");
         #[cfg(target_os = "macos")]
         self.macos.request_authorization(result_tx);
         #[cfg(not(target_os = "macos"))]
@@ -206,9 +228,14 @@ mod macos {
                     dyn Fn(objc2_user_notifications::UNNotificationPresentationOptions),
                 >,
             ) {
-                // Keep alerts visible when this menu-bar app is foregrounded.
-                completion_handler
-                    .call((objc2_user_notifications::UNNotificationPresentationOptions::Banner,));
+                debug_event("willPresent callback received");
+                // A menu-bar app is always foregrounded. Banner alone can be
+                // suppressed by macOS in that state, so request the full
+                // foreground presentation set explicitly.
+                let options = objc2_user_notifications::UNNotificationPresentationOptions::Banner
+                    | objc2_user_notifications::UNNotificationPresentationOptions::List
+                    | objc2_user_notifications::UNNotificationPresentationOptions::Sound;
+                completion_handler.call((options,));
             }
         }
     );
@@ -232,6 +259,7 @@ mod macos {
 
     impl MacNotificationService {
         pub fn new(action_tx: Sender<NotificationAction>) -> Self {
+            debug_event("notification service initialized");
             let mtm =
                 MainThreadMarker::new().expect("notification service must start on main thread");
             let actions = Arc::new(Mutex::new(HashMap::new()));
@@ -253,6 +281,7 @@ mod macos {
         }
 
         pub fn send(&mut self, request: NotificationRequest) {
+            debug_event("notification submitted");
             self.next_id = self.next_id.wrapping_add(1);
             let stamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -278,13 +307,26 @@ mod macos {
                 }
                 actions.insert(identifier, request.action);
             }
+            let completion = RcBlock::new(|error: *mut objc2_foundation::NSError| {
+                if !error.is_null() {
+                    debug_event("notification delivery completion: error");
+                    eprintln!("AgentStatusIndicator notification delivery failed");
+                } else {
+                    debug_event("notification delivery completion: accepted");
+                }
+            });
             self.center
-                .addNotificationRequest_withCompletionHandler(&notification, None);
+                .addNotificationRequest_withCompletionHandler(&notification, Some(&completion));
         }
 
         pub fn request_authorization(&self, result_tx: Sender<bool>) {
             let completion = RcBlock::new(
                 move |granted: objc2::runtime::Bool, _error: *mut objc2_foundation::NSError| {
+                    debug_event(if granted.as_bool() {
+                        "authorization callback: granted"
+                    } else {
+                        "authorization callback: denied or unavailable"
+                    });
                     let _ = result_tx.send(granted.as_bool());
                 },
             );
