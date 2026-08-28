@@ -290,11 +290,8 @@ impl App {
             let _ = menu.append(&item);
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
-        let settings = Submenu::new(format!("⚙︎ {}", i18n::menu("settings")), true);
-        let startup_menu = Submenu::new(
-            format!("⏻ {}", i18n::menu("startup")),
-            startup::is_supported(),
-        );
+        let settings = Submenu::new(i18n::menu("settings"), true);
+        let startup_menu = Submenu::new(i18n::menu("startup"), startup::is_supported());
         let startup_item = IconMenuItem::with_id(
             "startup",
             startup_action_label(startup::is_enabled()),
@@ -310,7 +307,7 @@ impl App {
             None,
         ));
         let _ = settings.append(&startup_menu);
-        let notification_menu = Submenu::new(format!("🔔 {}", i18n::menu("notifications")), true);
+        let notification_menu = Submenu::new(i18n::menu("notifications"), true);
         let notification_item = IconMenuItem::with_id(
             "notifications",
             notification_action_label(self.config.notifications_enabled),
@@ -339,10 +336,7 @@ impl App {
             None,
         ));
         let _ = settings.append(&notification_menu);
-        let browser_menu = Submenu::new(
-            format!("▣ {}", i18n::menu("browser")),
-            cfg!(target_os = "macos"),
-        );
+        let browser_menu = Submenu::new(i18n::menu("browser"), cfg!(target_os = "macos"));
         let browser_tabs = IconMenuItem::with_id(
             "browser_tabs",
             browser_tab_action_label(self.config.browser_tab_reuse),
@@ -367,7 +361,7 @@ impl App {
             None,
         );
         let _ = settings.append(&claude_statusline);
-        let language_menu = Submenu::new(format!("◎ {}", i18n::menu("language")), true);
+        let language_menu = Submenu::new(i18n::menu("language"), true);
         for value in ["auto", "zh-Hans", "zh-Hant", "en"] {
             let label = format!(
                 "{} {}",
@@ -386,7 +380,7 @@ impl App {
             ));
         }
         let _ = settings.append(&language_menu);
-        let display_menu = Submenu::new(format!("☷ {}", i18n::menu("display")), true);
+        let display_menu = Submenu::new(i18n::menu("display"), true);
         let mut display_items = Vec::new();
         for (key, label) in display_settings() {
             let item = IconMenuItem::with_id(
@@ -839,9 +833,66 @@ fn animation_frame(state: AgentState, elapsed: Duration) -> usize {
 }
 
 fn status_icon(state: AgentState, frame: usize) -> Icon {
-    Icon::from_rgba(status_icon_rgba(state, frame), 16, 16).expect("valid icon")
+    // tray-icon displays a status item at 18pt.  Supplying a high-resolution,
+    // antialiased source lets AppKit downsample it cleanly instead of enlarging
+    // the original 16px diagnostic raster.
+    const STATUS_ICON_PIXELS: usize = 128;
+    Icon::from_rgba(
+        status_icon_rgba_at_size(state, frame, STATUS_ICON_PIXELS),
+        STATUS_ICON_PIXELS as u32,
+        STATUS_ICON_PIXELS as u32,
+    )
+    .expect("valid icon")
 }
 
+fn status_icon_rgba_at_size(state: AgentState, frame: usize, size: usize) -> Vec<u8> {
+    let (rgb, outer_radius) = match (state, frame) {
+        (AgentState::Waiting | AgentState::WaitingReply, 0) => ([255, 176, 0], 6.0_f32),
+        (AgentState::Waiting | AgentState::WaitingReply, _) => ([255, 214, 10], 7.0_f32),
+        (AgentState::Working, 0) => ([0, 122, 255], 6.0_f32),
+        (AgentState::Working, _) => ([100, 210, 255], 7.0_f32),
+        (AgentState::Ready, _) => ([52, 199, 89], 6.0_f32),
+        (AgentState::Stopped, _) => ([142, 142, 147], 6.0_f32),
+    };
+    let scale = size as f32 / 16.0;
+    let center = size as f32 / 2.0;
+    let outer_radius = outer_radius * scale;
+    let mut rgba = vec![0; size * size * 4];
+    for y in 0..size {
+        for x in 0..size {
+            let distance =
+                ((x as f32 + 0.5 - center).powi(2) + (y as f32 + 0.5 - center).powi(2)).sqrt();
+            let alpha = match state {
+                AgentState::Waiting | AgentState::WaitingReply | AgentState::Working => {
+                    let ring = edge_alpha(outer_radius - distance)
+                        .min(edge_alpha(distance - (outer_radius - 2.0 * scale)));
+                    let center_dot = edge_alpha(
+                        (if outer_radius >= 7.0 * scale {
+                            2.0
+                        } else {
+                            1.0
+                        }) * scale
+                            - distance,
+                    );
+                    ring.max(center_dot)
+                }
+                AgentState::Ready | AgentState::Stopped => edge_alpha(outer_radius - distance),
+            };
+            if alpha > 0 {
+                let pixel = (y * size + x) * 4;
+                rgba[pixel..pixel + 3].copy_from_slice(&rgb);
+                rgba[pixel + 3] = alpha;
+            }
+        }
+    }
+    rgba
+}
+
+fn edge_alpha(inside_distance: f32) -> u8 {
+    ((inside_distance + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+#[cfg(test)]
 fn status_icon_rgba(state: AgentState, frame: usize) -> Vec<u8> {
     let (rgb, outer_radius) = match (state, frame) {
         (AgentState::Waiting | AgentState::WaitingReply, 0) => ([255, 176, 0], 6_i32),

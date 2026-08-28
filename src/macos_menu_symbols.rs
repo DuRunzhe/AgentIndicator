@@ -122,20 +122,12 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
         symbols.insert(title, SymbolKey { name, color });
     };
 
-    add(format!("⚙︎ {}", i18n::menu("settings")), "gearshape", None);
-    add(format!("⏻ {}", i18n::menu("startup")), "power", None);
-    add(format!("🔔 {}", i18n::menu("notifications")), "bell", None);
-    add(
-        format!("▣ {}", i18n::menu("browser")),
-        "rectangle.on.rectangle",
-        None,
-    );
-    add(format!("◎ {}", i18n::menu("language")), "globe", None);
-    add(
-        format!("☷ {}", i18n::menu("display")),
-        "slider.horizontal.3",
-        None,
-    );
+    add(i18n::menu("settings").into(), "gearshape", None);
+    add(i18n::menu("startup").into(), "power", None);
+    add(i18n::menu("notifications").into(), "bell", None);
+    add(i18n::menu("browser").into(), "rectangle.on.rectangle", None);
+    add(i18n::menu("language").into(), "globe", None);
+    add(i18n::menu("display").into(), "slider.horizontal.3", None);
 
     let toggle_symbol = |enabled| {
         if enabled {
