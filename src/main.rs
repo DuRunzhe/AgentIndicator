@@ -7,6 +7,8 @@ mod dialog;
 mod focus;
 mod i18n;
 mod instance_lock;
+#[cfg(target_os = "macos")]
+mod macos_menu_symbols;
 mod macos_process;
 mod model;
 mod native_notifications;
@@ -33,7 +35,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{
+        Icon as MenuIcon, IconMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
+    },
     Icon, TrayIcon, TrayIconBuilder,
 };
 use winit::{
@@ -111,6 +115,8 @@ struct App {
     pending_notification_test: bool,
     config: Config,
     menu: Option<MenuView>,
+    #[cfg(target_os = "macos")]
+    macos_menu_symbols: macos_menu_symbols::SymbolCache,
     animation: Animation,
     last_updated: Option<std::time::SystemTime>,
     last_locale_check: Instant,
@@ -150,12 +156,12 @@ struct MenuView {
     menu: Menu,
     signature: Vec<(u32, AgentState)>,
     instances: Vec<MenuItem>,
-    notifications: MenuItem,
-    test_notification: MenuItem,
-    startup: MenuItem,
-    display: Vec<MenuItem>,
-    browser_tabs: MenuItem,
-    claude_statusline: MenuItem,
+    notifications: IconMenuItem,
+    test_notification: IconMenuItem,
+    startup: IconMenuItem,
+    display: Vec<IconMenuItem>,
+    browser_tabs: IconMenuItem,
+    claude_statusline: IconMenuItem,
 }
 
 impl App {
@@ -188,6 +194,8 @@ impl App {
             pending_notification_test: false,
             config,
             menu: None,
+            #[cfg(target_os = "macos")]
+            macos_menu_symbols: macos_menu_symbols::SymbolCache::default(),
             animation: Animation::default(),
             last_updated: None,
             last_locale_check: Instant::now(),
@@ -205,6 +213,8 @@ impl App {
             .is_none_or(|menu| menu.signature != signature);
         if needs_native_menu {
             let menu = self.create_menu(signature);
+            #[cfg(target_os = "macos")]
+            self.macos_menu_symbols.apply(&menu.menu, &self.config);
             if let Some(tray) = &self.tray {
                 // A new root NSMenu avoids AppKit retaining titles from the prior
                 // status-item menu after a resumed session changes state.
@@ -230,10 +240,19 @@ impl App {
             }
             menu.notifications
                 .set_text(notification_action_label(self.config.notifications_enabled));
+            #[cfg(not(target_os = "macos"))]
+            menu.notifications
+                .set_icon(Some(toggle_menu_icon(self.config.notifications_enabled)));
             menu.browser_tabs
                 .set_text(browser_tab_action_label(self.config.browser_tab_reuse));
+            #[cfg(not(target_os = "macos"))]
+            menu.browser_tabs
+                .set_icon(Some(toggle_menu_icon(self.config.browser_tab_reuse)));
             menu.startup
                 .set_text(startup_action_label(startup::is_enabled()));
+            #[cfg(not(target_os = "macos"))]
+            menu.startup
+                .set_icon(Some(toggle_menu_icon(startup::is_enabled())));
             menu.notifications.set_enabled(!self.action_busy);
             menu.test_notification
                 .set_enabled(self.config.notifications_enabled && !self.action_busy);
@@ -242,7 +261,12 @@ impl App {
             menu.startup.set_enabled(!self.action_busy);
             for (item, (key, label)) in menu.display.iter().zip(display_settings()) {
                 item.set_text(toggle_label(config_value(&self.config, key), label));
+                #[cfg(not(target_os = "macos"))]
+                item.set_icon(Some(toggle_menu_icon(config_value(&self.config, key))));
             }
+            #[cfg(target_os = "macos")]
+            self.macos_menu_symbols
+                .apply_if_settings_changed(&menu.menu, &self.config);
             self.update_tray_status(false);
         }
     }
@@ -266,12 +290,16 @@ impl App {
             let _ = menu.append(&item);
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
-        let settings = Submenu::new(i18n::menu("settings"), true);
-        let startup_menu = Submenu::new(i18n::menu("startup"), startup::is_supported());
-        let startup_item = MenuItem::with_id(
+        let settings = Submenu::new(format!("⚙︎ {}", i18n::menu("settings")), true);
+        let startup_menu = Submenu::new(
+            format!("⏻ {}", i18n::menu("startup")),
+            startup::is_supported(),
+        );
+        let startup_item = IconMenuItem::with_id(
             "startup",
             startup_action_label(startup::is_enabled()),
             startup::is_supported(),
+            menu_toggle_icon(startup::is_enabled()),
             None,
         );
         let _ = startup_menu.append(&startup_item);
@@ -282,18 +310,20 @@ impl App {
             None,
         ));
         let _ = settings.append(&startup_menu);
-        let notification_menu = Submenu::new(i18n::menu("notifications"), true);
-        let notification_item = MenuItem::with_id(
+        let notification_menu = Submenu::new(format!("🔔 {}", i18n::menu("notifications")), true);
+        let notification_item = IconMenuItem::with_id(
             "notifications",
             notification_action_label(self.config.notifications_enabled),
             true,
+            menu_toggle_icon(self.config.notifications_enabled),
             None,
         );
         let _ = notification_menu.append(&notification_item);
-        let test_notification = MenuItem::with_id(
+        let test_notification = IconMenuItem::with_id(
             "test_notification",
             i18n::menu("test_notification"),
             self.config.notifications_enabled,
+            menu_symbol_menu_icon([0, 122, 255]),
             None,
         );
         let _ = notification_menu.append(&test_notification);
@@ -309,11 +339,15 @@ impl App {
             None,
         ));
         let _ = settings.append(&notification_menu);
-        let browser_menu = Submenu::new(i18n::menu("browser"), cfg!(target_os = "macos"));
-        let browser_tabs = MenuItem::with_id(
+        let browser_menu = Submenu::new(
+            format!("▣ {}", i18n::menu("browser")),
+            cfg!(target_os = "macos"),
+        );
+        let browser_tabs = IconMenuItem::with_id(
             "browser_tabs",
             browser_tab_action_label(self.config.browser_tab_reuse),
             cfg!(target_os = "macos"),
+            menu_toggle_icon(self.config.browser_tab_reuse),
             None,
         );
         let _ = browser_menu.append(&browser_tabs);
@@ -325,14 +359,15 @@ impl App {
         ));
         let _ = browser_menu.append(&MenuItem::new(i18n::menu("permission"), false, None));
         let _ = settings.append(&browser_menu);
-        let claude_statusline = MenuItem::with_id(
+        let claude_statusline = IconMenuItem::with_id(
             "install_claude_statusline",
             i18n::menu("install_claude"),
             true,
+            menu_symbol_menu_icon([142, 142, 147]),
             None,
         );
         let _ = settings.append(&claude_statusline);
-        let language_menu = Submenu::new(i18n::menu("language"), true);
+        let language_menu = Submenu::new(format!("◎ {}", i18n::menu("language")), true);
         for value in ["auto", "zh-Hans", "zh-Hant", "en"] {
             let label = format!(
                 "{} {}",
@@ -351,13 +386,14 @@ impl App {
             ));
         }
         let _ = settings.append(&language_menu);
-        let display_menu = Submenu::new(i18n::menu("display"), true);
+        let display_menu = Submenu::new(format!("☷ {}", i18n::menu("display")), true);
         let mut display_items = Vec::new();
         for (key, label) in display_settings() {
-            let item = MenuItem::with_id(
+            let item = IconMenuItem::with_id(
                 format!("display:{key}"),
                 toggle_label(config_value(&self.config, key), label),
                 true,
+                menu_toggle_icon(config_value(&self.config, key)),
                 None,
             );
             let _ = display_menu.append(&item);
@@ -839,6 +875,171 @@ fn status_icon_rgba(state: AgentState, frame: usize) -> Vec<u8> {
         }
     }
     rgba
+}
+
+/// Raster menu symbols keep the native menu self-contained on every supported
+/// platform.  The reference implementation uses SF Symbols; `muda` does not
+/// expose SF Symbols as cross-platform menu images, so these are deliberately
+/// small equivalents rather than loading a macOS-only asset at runtime.
+#[cfg(not(target_os = "macos"))]
+fn toggle_menu_icon(enabled: bool) -> MenuIcon {
+    let mut rgba = empty_menu_icon();
+    let color = if enabled {
+        [52, 199, 89]
+    } else {
+        [142, 142, 147]
+    };
+    let center = MENU_ICON_PIXELS as i32 / 2;
+    let outer_radius = 7 * MENU_ICON_SCALE;
+    for y in 0..MENU_ICON_PIXELS {
+        for x in 0..MENU_ICON_PIXELS {
+            let distance = ((x as f32 + 0.5 - center as f32).powi(2)
+                + (y as f32 + 0.5 - center as f32).powi(2))
+            .sqrt();
+            let coverage = if enabled {
+                edge_coverage(outer_radius as f32 - distance)
+            } else {
+                edge_coverage(outer_radius as f32 - distance).min(edge_coverage(
+                    distance - (outer_radius - 2 * MENU_ICON_SCALE) as f32,
+                ))
+            };
+            if coverage > 0 {
+                set_menu_pixel_with_alpha(&mut rgba, x, y, color, coverage);
+            }
+        }
+    }
+    if enabled {
+        // `checkmark.circle.fill`, matching the checked SF Symbol used by the
+        // SwiftBar menu. It is rendered at 4× and downsampled by AppKit.
+        draw_menu_line(&mut rgba, (4.0, 8.0), (7.0, 11.0), 1.15, [255, 255, 255]);
+        draw_menu_line(&mut rgba, (7.0, 11.0), (12.0, 6.0), 1.15, [255, 255, 255]);
+    }
+    MenuIcon::from_rgba(rgba, MENU_ICON_PIXELS as u32, MENU_ICON_PIXELS as u32)
+        .expect("valid menu toggle icon")
+}
+
+/// A compact colored information badge for one-off menu commands (test
+/// notification and Claude context collection).  It is intentionally an icon
+/// rather than a Unicode glyph so its color and alignment match toggle icons.
+#[cfg(not(target_os = "macos"))]
+fn menu_symbol_icon(rgb: [u8; 3]) -> MenuIcon {
+    let mut rgba = empty_menu_icon();
+    let center = MENU_ICON_PIXELS as i32 / 2;
+    let radius = 7 * MENU_ICON_SCALE;
+    for y in 0..MENU_ICON_PIXELS {
+        for x in 0..MENU_ICON_PIXELS {
+            let distance = ((x as f32 + 0.5 - center as f32).powi(2)
+                + (y as f32 + 0.5 - center as f32).powi(2))
+            .sqrt();
+            let coverage = edge_coverage(radius as f32 - distance);
+            if coverage > 0 {
+                set_menu_pixel_with_alpha(&mut rgba, x, y, rgb, coverage);
+            }
+        }
+    }
+    // A white `i` makes the blue test-notification command discoverable while
+    // still reading as a neutral app badge for the Claude installer.
+    draw_menu_line(&mut rgba, (8.5, 6.0), (8.5, 11.5), 0.8, [255, 255, 255]);
+    for y in 3 * MENU_ICON_SCALE..5 * MENU_ICON_SCALE {
+        for x in 8 * MENU_ICON_SCALE..10 * MENU_ICON_SCALE {
+            set_menu_pixel(&mut rgba, x as usize, y as usize, [255, 255, 255]);
+        }
+    }
+    MenuIcon::from_rgba(rgba, MENU_ICON_PIXELS as u32, MENU_ICON_PIXELS as u32)
+        .expect("valid menu symbol icon")
+}
+
+#[cfg(target_os = "macos")]
+fn menu_toggle_icon(_: bool) -> Option<MenuIcon> {
+    // macos_menu_symbols attaches the vector image after muda constructs the
+    // NSMenu. Avoid allocating an intermediate bitmap on every refresh.
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn menu_toggle_icon(enabled: bool) -> Option<MenuIcon> {
+    Some(toggle_menu_icon(enabled))
+}
+
+#[cfg(target_os = "macos")]
+fn menu_symbol_menu_icon(_: [u8; 3]) -> Option<MenuIcon> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn menu_symbol_menu_icon(rgb: [u8; 3]) -> Option<MenuIcon> {
+    Some(menu_symbol_icon(rgb))
+}
+
+// The native macOS menu renders images at 18pt.  Keep a 128px backing image
+// (far beyond a 2× Retina representation) so AppKit can downsample smooth
+// curves instead of magnifying a low-resolution bitmap.
+#[cfg(not(target_os = "macos"))]
+const MENU_ICON_PIXELS: usize = 128;
+#[cfg(not(target_os = "macos"))]
+const MENU_ICON_SCALE: i32 = 8;
+
+#[cfg(not(target_os = "macos"))]
+fn empty_menu_icon() -> Vec<u8> {
+    vec![0; MENU_ICON_PIXELS * MENU_ICON_PIXELS * 4]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_menu_pixel(rgba: &mut [u8], x: usize, y: usize, rgb: [u8; 3]) {
+    set_menu_pixel_with_alpha(rgba, x, y, rgb, 255);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_menu_pixel_with_alpha(rgba: &mut [u8], x: usize, y: usize, rgb: [u8; 3], alpha: u8) {
+    if x >= MENU_ICON_PIXELS || y >= MENU_ICON_PIXELS {
+        return;
+    }
+    let pixel = (y * MENU_ICON_PIXELS + x) * 4;
+    let source_alpha = alpha as f32 / 255.0;
+    let destination_alpha = rgba[pixel + 3] as f32 / 255.0;
+    let output_alpha = source_alpha + destination_alpha * (1.0 - source_alpha);
+    if output_alpha == 0.0 {
+        return;
+    }
+    for channel in 0..3 {
+        let source = rgb[channel] as f32;
+        let destination = rgba[pixel + channel] as f32;
+        rgba[pixel + channel] = ((source * source_alpha
+            + destination * destination_alpha * (1.0 - source_alpha))
+            / output_alpha)
+            .round() as u8;
+    }
+    rgba[pixel + 3] = (output_alpha * 255.0).round() as u8;
+}
+
+#[cfg(not(target_os = "macos"))]
+fn edge_coverage(inside_distance: f32) -> u8 {
+    ((inside_distance + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+#[cfg(not(target_os = "macos"))]
+fn draw_menu_line(rgba: &mut [u8], start: (f32, f32), end: (f32, f32), radius: f32, rgb: [u8; 3]) {
+    let scale = MENU_ICON_SCALE as f32;
+    let (x1, y1) = (start.0 * scale, start.1 * scale);
+    let (x2, y2) = (end.0 * scale, end.1 * scale);
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let length_squared = dx * dx + dy * dy;
+    let radius_squared = (radius * scale).powi(2);
+    for y in 0..MENU_ICON_PIXELS {
+        for x in 0..MENU_ICON_PIXELS {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let projection = (((px - x1) * dx + (py - y1) * dy) / length_squared).clamp(0.0, 1.0);
+            let nearest_x = x1 + projection * dx;
+            let nearest_y = y1 + projection * dy;
+            let distance = ((px - nearest_x).powi(2) + (py - nearest_y).powi(2)).sqrt();
+            let coverage = edge_coverage(radius_squared.sqrt() - distance);
+            if coverage > 0 {
+                set_menu_pixel_with_alpha(rgba, x, y, rgb, coverage);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
