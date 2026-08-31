@@ -1,4 +1,4 @@
-use crate::dialog;
+use crate::{dialog, i18n};
 use std::process::Command;
 
 pub fn configure(currently_enabled: bool) -> bool {
@@ -6,26 +6,29 @@ pub fn configure(currently_enabled: bool) -> bool {
         return false;
     }
     let choice = dialog::choose(
-        "AgentStatusIndicator 可复用已有的 DeepSeek Harness 浏览器标签页。Chrome、Edge、Brave 或 Safari 需要允许自动化访问。",
-        "复用浏览器标签页", &["取消", "继续"], "继续", Some("取消"),
+        i18n::text("browser_prompt"),
+        i18n::menu("browser"),
+        &[i18n::text("cancel"), i18n::text("continue")],
+        i18n::text("continue"),
+        Some(i18n::text("cancel")),
     );
-    if choice.as_deref() != Some("继续") {
+    if choice.as_deref() != Some(i18n::text("continue")) {
         return false;
     }
     if !probe_automation() {
         let _ = open_automation_settings();
         let verified = dialog::choose(
-            "如果 macOS 弹出了自动化权限请求，请允许访问浏览器。你是否已完成授权？",
-            "验证自动化权限",
-            &["还没有", "已授权"],
-            "已授权",
-            Some("还没有"),
+            i18n::text("browser_verify"),
+            i18n::text("browser_verify_title"),
+            &[i18n::text("not_yet"), i18n::text("authorized")],
+            i18n::text("authorized"),
+            Some(i18n::text("not_yet")),
         );
-        if verified.as_deref() != Some("已授权") {
+        if verified.as_deref() != Some(i18n::text("authorized")) {
             return false;
         }
     }
-    dialog::notice("浏览器标签页复用已开启。", "复用浏览器标签页");
+    dialog::notice(i18n::text("browser_enabled"), i18n::menu("browser"));
     true
 }
 

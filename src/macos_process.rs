@@ -27,6 +27,7 @@ pub struct MacProcessSource {
 struct CachedMetadata {
     value: ProcessMetadata,
     checked_at: Instant,
+    retry_soon: bool,
 }
 
 impl MacProcessSource {
@@ -48,10 +49,15 @@ impl MacProcessSource {
         let missing: Vec<_> = pids
             .iter()
             .copied()
-            .filter(|pid| {
-                self.metadata
-                    .get(pid)
-                    .is_none_or(|cached| cached.checked_at.elapsed() >= Duration::from_secs(30))
+            .filter(|pid| match self.metadata.get(pid) {
+                // A newly created/resumed process often races its first lsof
+                // read. Retry incomplete bindings at the monitor cadence rather
+                // than leaving a Codex rollout/cwd unavailable for 30 seconds.
+                None => true,
+                Some(cached) if cached.retry_soon => {
+                    cached.checked_at.elapsed() >= Duration::from_secs(2)
+                }
+                Some(cached) => cached.checked_at.elapsed() >= Duration::from_secs(30),
             })
             .collect();
         if !missing.is_empty() {
@@ -65,11 +71,13 @@ impl MacProcessSource {
                     .cloned()
                     .or_else(|| self.metadata.get(&pid).map(|cached| cached.value.clone()))
                     .unwrap_or_default();
+                let retry_soon = value.cwd.is_none();
                 self.metadata.insert(
                     pid,
                     CachedMetadata {
                         value,
                         checked_at: now,
+                        retry_soon,
                     },
                 );
             }

@@ -5,7 +5,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader, Seek, SeekFrom},
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 #[derive(Clone, Debug, Default)]
@@ -15,6 +15,9 @@ pub struct SessionFacts {
     pub context: Option<ContextUsage>,
     pub cwd: Option<PathBuf>,
     pub requires_terminal_probe: bool,
+    /// Rollout version carried into asynchronous terminal probing. A result for
+    /// an older version is ignored after a resume or newly appended event.
+    pub activity: Option<SystemTime>,
 }
 
 struct FileCursor {
@@ -129,9 +132,12 @@ impl SessionAnalyzer {
 
     pub fn analyze_jsonl(&mut self, path: &Path, agent: &str) -> Option<SessionFacts> {
         self.prune_files();
-        let length = path.metadata().ok()?.len();
+        let metadata = path.metadata().ok()?;
+        let length = metadata.len();
+        let activity = metadata.modified().ok();
         let cursor = self.files.entry(path.to_owned()).or_default();
         cursor.last_access = Instant::now();
+        cursor.facts.activity = activity;
         if length < cursor.length {
             *cursor = FileCursor::default();
         }

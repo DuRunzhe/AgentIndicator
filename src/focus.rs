@@ -7,20 +7,39 @@ pub fn focus(pid: u32) -> bool {
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = pid;
+        if activate_windows_process_window(pid) {
+            return true;
+        }
         return Command::new("cmd")
             .args(["/C", "start", "wt"])
             .status()
-            .is_ok();
+            .is_ok_and(|status| status.success());
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = pid;
+        // xdotool can activate an existing terminal window on X11. Wayland and
+        // minimal desktops safely fall back to the configured terminal.
+        let script = "if command -v xdotool >/dev/null 2>&1; then w=$(xdotool search --pid \"$1\" 2>/dev/null | head -n1); [ -n \"$w\" ] && xdotool windowactivate \"$w\" && exit 0; fi; if command -v x-terminal-emulator >/dev/null 2>&1; then x-terminal-emulator; elif command -v gnome-terminal >/dev/null 2>&1; then gnome-terminal; else xdg-open terminal://; fi";
         return Command::new("sh")
-            .args(["-c", "xdg-open terminal://"])
+            .args(["-c", script, "agent-status-indicator", &pid.to_string()])
             .status()
-            .is_ok();
+            .is_ok_and(|status| status.success());
     }
+}
+
+#[cfg(target_os = "windows")]
+fn activate_windows_process_window(pid: u32) -> bool {
+    // Codex itself is normally a console child with no window handle. Walk its
+    // parent chain and ask the Windows shell to foreground the first GUI host.
+    // This works for Windows Terminal and classic conhost without adding an
+    // unsafe Win32 dependency to the portable detector core.
+    let script = format!(
+        "$id={pid}; for($n=0;$n -lt 16 -and $id -gt 0;$n++){{ $p=Get-Process -Id $id -ErrorAction SilentlyContinue; if($p -and $p.MainWindowHandle -ne 0){{ $null=(New-Object -ComObject WScript.Shell).AppActivate($p.Id); exit 0 }}; $id=(Get-CimInstance Win32_Process -Filter \"ProcessId=$id\" -ErrorAction SilentlyContinue).ParentProcessId }}; exit 1"
+    );
+    Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[cfg(target_os = "macos")]

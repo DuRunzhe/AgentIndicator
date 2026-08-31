@@ -1,3 +1,4 @@
+use crate::i18n;
 use std::{fs, path::PathBuf};
 
 const LABEL: &str = "com.agentstatusindicator.app";
@@ -9,30 +10,30 @@ pub fn is_enabled() -> bool {
 pub fn toggle() -> bool {
     if is_enabled() {
         let choice = crate::dialog::choose(
-            "确定关闭 AgentStatusIndicator 的开机自启吗？",
-            "开机自启",
-            &["取消", "关闭"],
-            "关闭",
-            Some("取消"),
+            i18n::text("startup_disable_prompt"),
+            i18n::menu("startup"),
+            &[i18n::text("cancel"), i18n::text("disable")],
+            i18n::text("disable"),
+            Some(i18n::text("cancel")),
         );
-        if choice.as_deref() != Some("关闭") {
+        if choice.as_deref() != Some(i18n::text("disable")) {
             return true;
         }
         if let Some(path) = startup_path() {
             let _ = unload(&path);
             let _ = fs::remove_file(path);
         }
-        crate::dialog::notice("开机自启已关闭。", "开机自启");
+        crate::dialog::notice(i18n::text("startup_disabled"), i18n::menu("startup"));
         return false;
     }
     let choice = crate::dialog::choose(
-        "AgentStatusIndicator 将安装用户级启动项，在你登录 Mac 后自动显示菜单栏状态。",
-        "开机自启",
-        &["取消", "开启"],
-        "开启",
-        Some("取消"),
+        i18n::text("startup_enable_prompt"),
+        i18n::menu("startup"),
+        &[i18n::text("cancel"), i18n::text("enable")],
+        i18n::text("enable"),
+        Some(i18n::text("cancel")),
     );
-    if choice.as_deref() != Some("开启") {
+    if choice.as_deref() != Some(i18n::text("enable")) {
         return false;
     }
     if install().is_ok() {
@@ -40,10 +41,10 @@ pub fn toggle() -> bool {
             let _ = load(&path);
         }
         let _ = open_settings();
-        crate::dialog::notice("开机自启已开启，请在系统登录项设置中确认。", "开机自启");
+        crate::dialog::notice(i18n::text("startup_enabled"), i18n::menu("startup"));
         true
     } else {
-        crate::dialog::notice("无法修改开机自启设置，请检查安装路径后重试。", "开机自启");
+        crate::dialog::notice(i18n::text("startup_failed"), i18n::menu("startup"));
         false
     }
 }

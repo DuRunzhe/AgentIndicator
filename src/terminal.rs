@@ -1,10 +1,10 @@
 use crate::model::AgentState;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     process::Command,
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 const STATUS_SEPARATOR: char = '\u{1d}';
@@ -12,10 +12,10 @@ const RECORD_SEPARATOR: char = '\u{1e}';
 const FIELD_SEPARATOR: char = '\u{1f}';
 
 pub struct TerminalProbe {
-    results: HashMap<u32, (Instant, Option<AgentState>)>,
-    pending: HashSet<u32>,
-    tx: Sender<(u32, Option<AgentState>)>,
-    rx: Receiver<(u32, Option<AgentState>)>,
+    results: HashMap<u32, (Instant, Option<SystemTime>, Option<AgentState>)>,
+    pending: HashMap<u32, Option<SystemTime>>,
+    tx: Sender<(u32, Option<SystemTime>, Option<AgentState>)>,
+    rx: Receiver<(u32, Option<SystemTime>, Option<AgentState>)>,
 }
 
 impl Default for TerminalProbe {
@@ -23,7 +23,7 @@ impl Default for TerminalProbe {
         let (tx, rx) = mpsc::channel();
         Self {
             results: HashMap::new(),
-            pending: HashSet::new(),
+            pending: HashMap::new(),
             tx,
             rx,
         }
@@ -31,21 +31,26 @@ impl Default for TerminalProbe {
 }
 
 impl TerminalProbe {
-    pub fn request(&mut self, pid: u32) -> Option<AgentState> {
-        while let Ok((pid, state)) = self.rx.try_recv() {
-            self.results.insert(pid, (Instant::now(), state));
-            self.pending.remove(&pid);
+    pub fn request(&mut self, pid: u32, activity: Option<SystemTime>) -> Option<AgentState> {
+        while let Ok((pid, requested_activity, state)) = self.rx.try_recv() {
+            // Do not let an AppleScript result captured for an older rollout
+            // overwrite the state after Codex resumes or starts working again.
+            if self.pending.get(&pid) == Some(&requested_activity) {
+                self.results
+                    .insert(pid, (Instant::now(), requested_activity, state));
+                self.pending.remove(&pid);
+            }
         }
-        if let Some((at, state)) = self.results.get(&pid) {
-            if at.elapsed() < Duration::from_secs(5) {
+        if let Some((at, result_activity, state)) = self.results.get(&pid) {
+            if *result_activity == activity && at.elapsed() < Duration::from_secs(5) {
                 return *state;
             }
         }
-        if !self.pending.contains(&pid) {
-            self.pending.insert(pid);
+        if self.pending.get(&pid) != Some(&activity) {
+            self.pending.insert(pid, activity);
             let tx = self.tx.clone();
             thread::spawn(move || {
-                let _ = tx.send((pid, probe_codex_sync(pid)));
+                let _ = tx.send((pid, activity, probe_codex_sync(pid)));
             });
         }
         None

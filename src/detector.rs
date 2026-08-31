@@ -379,13 +379,14 @@ fn enrich_codex(
         }
     }
     let requires_terminal_probe = facts.requires_terminal_probe;
+    let activity = facts.activity;
     instance.model = facts.model;
     instance.context = facts.context;
     if let Some(state) = facts.state {
         instance.state = state;
     }
     if requires_terminal_probe {
-        match terminal.request(instance.pid) {
+        match terminal.request(instance.pid, activity) {
             Some(AgentState::Waiting) if instance.state == AgentState::Working => {
                 instance.state = AgentState::Waiting
             }
@@ -426,13 +427,14 @@ fn enrich_macos_codex(
         }
     }
     let requires_terminal_probe = facts.requires_terminal_probe;
+    let activity = facts.activity;
     instance.model = facts.model;
     instance.context = facts.context;
     if let Some(state) = facts.state {
         instance.state = state;
     }
     if requires_terminal_probe {
-        match terminal.request(instance.pid) {
+        match terminal.request(instance.pid, activity) {
             Some(AgentState::Waiting) if instance.state == AgentState::Working => {
                 instance.state = AgentState::Waiting
             }

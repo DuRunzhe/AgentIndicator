@@ -326,15 +326,12 @@ impl App {
         let _ = notification_menu.append(&test_notification);
         let _ = notification_menu.append(&MenuItem::with_id(
             "open_notification_settings",
-            "打开系统通知设置",
+            i18n::text("open_notifications"),
             cfg!(target_os = "macos"),
             None,
         ));
-        let _ = notification_menu.append(&MenuItem::new(
-            "系统通知应用：AgentStatusIndicator",
-            false,
-            None,
-        ));
+        let _ =
+            notification_menu.append(&MenuItem::new(i18n::text("notification_app"), false, None));
         let _ = settings.append(&notification_menu);
         let browser_menu = Submenu::new(i18n::menu("browser"), cfg!(target_os = "macos"));
         let browser_tabs = IconMenuItem::with_id(
@@ -408,7 +405,7 @@ impl App {
         ));
         let _ = menu.append(&MenuItem::with_id(
             "restart_detector",
-            "重启检测器",
+            i18n::text("restart_detector"),
             true,
             None,
         ));
@@ -452,25 +449,25 @@ impl App {
 
 fn notification_action_label(enabled: bool) -> &'static str {
     if enabled {
-        "✓ 点击关闭通知"
+        i18n::text("disable_notifications")
     } else {
-        "点击开启通知"
+        i18n::text("enable_notifications")
     }
 }
 
 fn startup_action_label(enabled: bool) -> &'static str {
     if enabled {
-        "✓ 点击关闭开机自启"
+        i18n::text("disable_startup")
     } else {
-        "点击开启开机自启"
+        i18n::text("enable_startup")
     }
 }
 
 fn browser_tab_action_label(enabled: bool) -> &'static str {
     if enabled {
-        "✓ 点击关闭浏览器标签页复用"
+        i18n::text("disable_browser_tabs")
     } else {
-        "点击开启浏览器标签页复用"
+        i18n::text("enable_browser_tabs")
     }
 }
 
@@ -506,8 +503,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.send_test_notification();
             } else if self.pending_notification_test {
                 dialog::notice(
-                    "macOS 未授予 AgentStatusIndicator 通知权限。请在系统设置的“通知”中允许此应用后重试。",
-                    "通知未开启",
+                    i18n::text("notification_denied"),
+                    i18n::text("notifications_disabled"),
                 );
             }
             self.pending_notification_test = false;
@@ -520,11 +517,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             if let ActionResult::ClaudeStatusLine(result) = result {
                 match result {
-                    Ok(()) => dialog::notice(
-                        "Claude 上下文采集已安装。请在 Claude 中开始或继续一次会话以写入数据。",
-                        "Claude 上下文采集",
-                    ),
-                    Err(error) => dialog::notice(&error, "Claude 上下文采集未安装"),
+                    Ok(()) => {
+                        dialog::notice(i18n::text("claude_installed"), i18n::menu("install_claude"))
+                    }
+                    Err(error) => dialog::notice(&error, i18n::text("claude_install_failed")),
                 }
             }
             self.action_busy = false;
@@ -583,13 +579,13 @@ impl ApplicationHandler<UserEvent> for App {
                     continue;
                 }
                 let choice = dialog::choose(
-                    "将为 Claude Code 配置上下文采集，并保留、转发你当前的 statusLine 命令。",
-                    "安装 Claude 上下文采集",
-                    &["取消", "安装"],
-                    "安装",
-                    Some("取消"),
+                    i18n::text("claude_install_prompt"),
+                    i18n::menu("install_claude"),
+                    &[i18n::text("cancel"), i18n::text("install")],
+                    i18n::text("install"),
+                    Some(i18n::text("cancel")),
                 );
-                if choice.as_deref() != Some("安装") {
+                if choice.as_deref() != Some(i18n::text("install")) {
                     continue;
                 }
                 self.action_busy = true;
@@ -668,8 +664,8 @@ impl App {
     fn send_test_notification(&mut self) {
         self.notification_service
             .send(notifications::NotificationRequest {
-                title: "AgentStatusIndicator · 测试通知".into(),
-                body: "通知已启用。点击此通知可验证原生投递。".into(),
+                title: i18n::text("test_notification_title").into(),
+                body: i18n::text("test_notification_body").into(),
                 action: NotificationAction::FocusPid(0),
             });
     }
@@ -680,8 +676,13 @@ fn last_updated_label(value: Option<std::time::SystemTime>) -> String {
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|value| value.as_secs() % 86_400);
     match seconds {
-        Some(value) => format!("上次刷新: {:02}:{:02}", value / 3600, value % 3600 / 60),
-        None => "上次刷新: --:--".into(),
+        Some(value) => format!(
+            "{}: {:02}:{:02}",
+            i18n::text("last_updated"),
+            value / 3600,
+            value % 3600 / 60
+        ),
+        None => format!("{}: --:--", i18n::text("last_updated")),
     }
 }
 
@@ -714,11 +715,11 @@ fn toggle_label(enabled: bool, label: &str) -> String {
 
 fn display_settings() -> [(&'static str, &'static str); 5] {
     [
-        ("duration", "时长"),
-        ("model", "模型"),
-        ("context_percent", "上下文占比"),
-        ("context_used", "已用上下文"),
-        ("context_total", "总上下文"),
+        ("duration", i18n::text("show_duration")),
+        ("model", i18n::text("show_model")),
+        ("context_percent", i18n::text("show_context_percent")),
+        ("context_used", i18n::text("show_context_used")),
+        ("context_total", i18n::text("show_context_total")),
     ]
 }
 
