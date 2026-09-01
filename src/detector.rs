@@ -21,6 +21,7 @@ pub struct Detector {
     sessions: SessionAnalyzer,
     deepseek: crate::deepseek::DeepSeekAnalyzer,
     opencode: crate::opencode::OpenCodeAnalyzer,
+    pi: crate::pi::PiAnalyzer,
     terminal: crate::terminal::TerminalProbe,
     #[cfg(target_os = "macos")]
     web_urls: crate::web::WebUrlDetector,
@@ -36,6 +37,7 @@ impl Detector {
             sessions: SessionAnalyzer::default(),
             deepseek: crate::deepseek::DeepSeekAnalyzer::default(),
             opencode: crate::opencode::OpenCodeAnalyzer::default(),
+            pi: crate::pi::PiAnalyzer::default(),
             terminal: crate::terminal::TerminalProbe::default(),
             #[cfg(target_os = "macos")]
             web_urls: crate::web::WebUrlDetector::default(),
@@ -102,6 +104,8 @@ impl Detector {
                     enrich_deepseek(&mut instance, &mut self.deepseek);
                 } else if kind == "opencode" {
                     enrich_opencode(&mut instance, &mut self.opencode);
+                } else if kind == "pi" {
+                    enrich_pi(&mut instance, &mut self.pi);
                 }
                 instance
             })
@@ -178,6 +182,7 @@ impl Detector {
                     ),
                     "deepseek" => enrich_deepseek(&mut instance, &mut self.deepseek),
                     "opencode" => enrich_opencode(&mut instance, &mut self.opencode),
+                    "pi" => enrich_pi(&mut instance, &mut self.pi),
                     _ => {}
                 }
                 instance
@@ -210,8 +215,8 @@ fn stopped_instance(kind: &str) -> AgentInstance {
     }
 }
 
-fn supported_kinds() -> [&'static str; 4] {
-    ["claude", "codex", "opencode", "deepseek"]
+fn supported_kinds() -> [&'static str; 5] {
+    ["claude", "codex", "opencode", "deepseek", "pi"]
 }
 
 #[cfg(target_os = "macos")]
@@ -229,6 +234,7 @@ fn agent_kind_from_command(command: &str) -> Option<&'static str> {
             "claude" => Some("claude"),
             "codex" => Some("codex"),
             "opencode" => Some("opencode"),
+            "pi" => Some("pi"),
             "dsh" | "deepseek-harness" => Some("deepseek"),
             _ => None,
         })
@@ -338,6 +344,20 @@ fn enrich_opencode(instance: &mut AgentInstance, analyzer: &mut crate::opencode:
 }
 
 fn enrich_deepseek(instance: &mut AgentInstance, analyzer: &mut crate::deepseek::DeepSeekAnalyzer) {
+    let Some(cwd) = instance.cwd.as_deref() else {
+        return;
+    };
+    let Some(facts) = analyzer.analyze(cwd) else {
+        return;
+    };
+    instance.model = facts.model;
+    instance.context = facts.context;
+    if let Some(state) = facts.state {
+        instance.state = state;
+    }
+}
+
+fn enrich_pi(instance: &mut AgentInstance, analyzer: &mut crate::pi::PiAnalyzer) {
     let Some(cwd) = instance.cwd.as_deref() else {
         return;
     };
@@ -577,6 +597,7 @@ fn agent_kind(process: &Process) -> Option<&'static str> {
         "claude" => Some("claude"),
         "codex" => Some("codex"),
         "opencode" => Some("opencode"),
+        "pi" => Some("pi"),
         "dsh" | "deepseek-harness" => Some("deepseek"),
         _ => None,
     }
@@ -587,6 +608,7 @@ fn display_name(kind: &str) -> &str {
         "claude" => "Claude",
         "codex" => "Codex",
         "opencode" => "OpenCode",
+        "pi" => "Pi",
         _ => "DeepSeek Harness",
     }
 }

@@ -15,6 +15,7 @@ mod native_notifications;
 mod notification_settings;
 mod notifications;
 mod opencode;
+mod pi;
 mod session;
 mod startup;
 mod terminal;
