@@ -155,12 +155,8 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
         "bell.badge",
         Some([0, 122, 255]),
     );
-    add("打开系统通知设置".into(), "gearshape", None);
-    add(
-        "系统通知应用：AgentStatusIndicator".into(),
-        "app.badge",
-        None,
-    );
+    add(i18n::text("open_notifications").into(), "gearshape", None);
+    add(i18n::text("notification_app").into(), "app.badge", None);
 
     let (name, color) = toggle_symbol(config.browser_tab_reuse);
     add(

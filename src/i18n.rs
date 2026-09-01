@@ -94,6 +94,14 @@ pub fn no_activity() -> &'static str {
     }
 }
 
+pub fn state_count(count: usize, state: &str) -> String {
+    match locale().as_str() {
+        "en" => format!("{count} {state}"),
+        "zh-Hant" => format!("{count}個{state}"),
+        _ => format!("{count}个{state}"),
+    }
+}
+
 pub fn notification_message(state: &str, stage: usize) -> &'static str {
     let reply = state == "waiting_reply";
     match (locale().as_str(), reply, stage) {
@@ -211,6 +219,9 @@ pub fn text(key: &str) -> &'static str {
         ("en", "claude_installed") => "Claude context collection is installed. Start or resume a Claude session to write data.",
         ("en", "claude_install_failed") => "Claude context collection was not installed",
         ("en", "install") => "Install",
+        ("en", "no_agents") => "⚪ No running agents found",
+        ("en", "context_used") => "Used",
+        ("en", "context_total") => "Total",
         ("zh-Hant", "disable_notifications") => "✓ 點擊關閉通知",
         ("zh-Hant", "enable_notifications") => "點擊開啟通知",
         ("zh-Hant", "disable_startup") => "✓ 點擊關閉登入時啟動",
@@ -249,6 +260,9 @@ pub fn text(key: &str) -> &'static str {
         ("zh-Hant", "claude_installed") => "Claude 上下文收集已安裝。請在 Claude 中開始或繼續一次會話以寫入資料。",
         ("zh-Hant", "claude_install_failed") => "Claude 上下文收集未安裝",
         ("zh-Hant", "install") => "安裝",
+        ("zh-Hant", "no_agents") => "⚪ 未發現執行中的 Agent",
+        ("zh-Hant", "context_used") => "已用",
+        ("zh-Hant", "context_total") => "總計",
         (_, "disable_notifications") => "✓ 点击关闭通知",
         (_, "enable_notifications") => "点击开启通知",
         (_, "disable_startup") => "✓ 点击关闭开机自启",
@@ -286,6 +300,9 @@ pub fn text(key: &str) -> &'static str {
         (_, "claude_installed") => "Claude 上下文采集已安装。请在 Claude 中开始或继续一次会话以写入数据。",
         (_, "claude_install_failed") => "Claude 上下文采集未安装",
         (_, "install") => "安装",
+        (_, "no_agents") => "⚪ 未发现运行中的 Agent",
+        (_, "context_used") => "已用",
+        (_, "context_total") => "总计",
         _ => "通知未开启",
     }
 }

@@ -286,7 +286,7 @@ impl App {
             instance_items.push(item);
         }
         if self.current.is_empty() {
-            let item = MenuItem::new("⚪ 未发现运行中的 Agent", false, None);
+            let item = MenuItem::new(i18n::text("no_agents"), false, None);
             let _ = menu.append(&item);
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
@@ -776,8 +776,16 @@ fn format_instance(instance: &AgentInstance, config: &Config) -> String {
                 short_tokens(ctx.used_tokens),
                 short_tokens(ctx.window_tokens)
             )),
-            (true, false) => text.push_str(&format!(" · 已用 {}", short_tokens(ctx.used_tokens))),
-            (false, true) => text.push_str(&format!(" · 总计 {}", short_tokens(ctx.window_tokens))),
+            (true, false) => text.push_str(&format!(
+                " · {} {}",
+                i18n::text("context_used"),
+                short_tokens(ctx.used_tokens)
+            )),
+            (false, true) => text.push_str(&format!(
+                " · {} {}",
+                i18n::text("context_total"),
+                short_tokens(ctx.window_tokens)
+            )),
             _ => {}
         }
     }
@@ -819,7 +827,7 @@ fn summary(items: &[AgentInstance]) -> String {
         .into_iter()
         .filter_map(|state| {
             let count = active.iter().filter(|item| item.state == state).count();
-            (count > 0).then(|| format!("{count}个{}", state.label()))
+            (count > 0).then(|| i18n::state_count(count, state.label()))
         })
         .collect::<Vec<_>>()
         .join(" · ")
