@@ -89,6 +89,7 @@ impl Detector {
                     model: None,
                     context: None,
                     open_url: None,
+                    automatic_confirmation_mode: false,
                 };
                 if kind == "claude" {
                     enrich_claude(&mut instance, &mut self.sessions);
@@ -170,6 +171,7 @@ impl Detector {
                     } else {
                         None
                     },
+                    automatic_confirmation_mode: false,
                 };
                 match kind {
                     "claude" => enrich_claude(&mut instance, &mut self.sessions),
@@ -212,6 +214,7 @@ fn stopped_instance(kind: &str) -> AgentInstance {
         model: None,
         context: None,
         open_url: None,
+        automatic_confirmation_mode: false,
     }
 }
 
@@ -402,6 +405,7 @@ fn enrich_codex(
     let activity = facts.activity;
     instance.model = facts.model;
     instance.context = facts.context;
+    instance.automatic_confirmation_mode = facts.automatic_confirmation_mode;
     if let Some(state) = facts.state {
         instance.state = state;
     }
@@ -450,6 +454,7 @@ fn enrich_macos_codex(
     let activity = facts.activity;
     instance.model = facts.model;
     instance.context = facts.context;
+    instance.automatic_confirmation_mode = facts.automatic_confirmation_mode;
     if let Some(state) = facts.state {
         instance.state = state;
     }

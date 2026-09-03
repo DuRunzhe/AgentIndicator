@@ -317,6 +317,15 @@ impl App {
             None,
         );
         let _ = notification_menu.append(&notification_item);
+        for (key, label, enabled) in notification_preferences(&self.config) {
+            let _ = notification_menu.append(&IconMenuItem::with_id(
+                format!("notification_preference:{key}"),
+                toggle_label(enabled, label),
+                true,
+                menu_toggle_icon(enabled),
+                None,
+            ));
+        }
         let test_notification = IconMenuItem::with_id(
             "test_notification",
             i18n::menu("test_notification"),
@@ -552,6 +561,11 @@ impl ApplicationHandler<UserEvent> for App {
                 self.rebuild();
                 self.notification_service
                     .request_authorization(self.notification_permission_tx.clone());
+            } else if let Some(key) = id.strip_prefix("notification_preference:") {
+                toggle_notification_preference(&mut self.config, key);
+                self.config.save();
+                self.menu = None;
+                self.rebuild();
             } else if id == "startup" {
                 if self.action_busy {
                     continue;
@@ -608,6 +622,7 @@ impl ApplicationHandler<UserEvent> for App {
             } else if let Some(key) = id.strip_prefix("display:") {
                 toggle_config(&mut self.config, key);
                 self.config.save();
+                self.menu = None;
                 self.rebuild();
             } else if let Some(locale) = id.strip_prefix("locale:") {
                 self.config.locale = locale.into();
@@ -644,10 +659,7 @@ impl ApplicationHandler<UserEvent> for App {
         let Some(latest) = self.latest_snapshot.lock().expect("snapshot lock").take() else {
             return;
         };
-        for request in self
-            .notifications
-            .update(&latest, self.config.notifications_enabled)
-        {
+        for request in self.notifications.update(&latest, &self.config) {
             self.notification_service
                 .send(request.with_browser_tab_reuse(self.config.browser_tab_reuse));
         }
@@ -722,6 +734,40 @@ fn display_settings() -> [(&'static str, &'static str); 5] {
         ("context_used", i18n::text("show_context_used")),
         ("context_total", i18n::text("show_context_total")),
     ]
+}
+
+fn notification_preferences(config: &Config) -> [(&'static str, &'static str, bool); 3] {
+    [
+        (
+            "waiting_confirmation",
+            i18n::text("notify_waiting_confirmation"),
+            config.notify_waiting_confirmation,
+        ),
+        (
+            "waiting_reply",
+            i18n::text("notify_waiting_reply"),
+            config.notify_waiting_reply,
+        ),
+        (
+            "auto_confirm",
+            i18n::text("notify_auto_confirm"),
+            config.show_waiting_notifications_in_auto_confirm_mode,
+        ),
+    ]
+}
+
+fn toggle_notification_preference(config: &mut Config, key: &str) {
+    match key {
+        "waiting_confirmation" => {
+            config.notify_waiting_confirmation = !config.notify_waiting_confirmation
+        }
+        "waiting_reply" => config.notify_waiting_reply = !config.notify_waiting_reply,
+        "auto_confirm" => {
+            config.show_waiting_notifications_in_auto_confirm_mode =
+                !config.show_waiting_notifications_in_auto_confirm_mode
+        }
+        _ => {}
+    }
 }
 
 fn config_value(config: &Config, key: &str) -> bool {
@@ -1185,6 +1231,7 @@ mod summary_tests {
             model: None,
             context: None,
             open_url: None,
+            automatic_confirmation_mode: false,
         }
     }
 

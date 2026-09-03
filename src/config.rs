@@ -5,6 +5,9 @@ use std::{fs, path::PathBuf};
 #[serde(default)]
 pub struct Config {
     pub notifications_enabled: bool,
+    pub notify_waiting_confirmation: bool,
+    pub notify_waiting_reply: bool,
+    pub show_waiting_notifications_in_auto_confirm_mode: bool,
     pub show_duration: bool,
     pub show_model: bool,
     pub show_context_percent: bool,
@@ -18,6 +21,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             notifications_enabled: false,
+            notify_waiting_confirmation: true,
+            notify_waiting_reply: true,
+            show_waiting_notifications_in_auto_confirm_mode: true,
             show_duration: true,
             show_model: true,
             show_context_percent: true,
@@ -65,6 +71,9 @@ mod tests {
     fn missing_display_fields_default_to_visible() {
         let config: Config = serde_json::from_str(r#"{"notifications_enabled":true}"#).unwrap();
         assert!(config.notifications_enabled);
+        assert!(config.notify_waiting_confirmation);
+        assert!(config.notify_waiting_reply);
+        assert!(config.show_waiting_notifications_in_auto_confirm_mode);
         assert!(config.show_duration);
         assert!(config.show_model);
         assert!(config.show_context_percent);

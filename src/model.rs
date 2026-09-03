@@ -48,6 +48,8 @@ pub struct AgentInstance {
     pub model: Option<String>,
     pub context: Option<ContextUsage>,
     pub open_url: Option<String>,
+    #[serde(default)]
+    pub automatic_confirmation_mode: bool,
 }
 
 impl fmt::Display for AgentInstance {

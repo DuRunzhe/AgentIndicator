@@ -18,6 +18,9 @@ pub struct SessionFacts {
     /// Rollout version carried into asynchronous terminal probing. A result for
     /// an older version is ignored after a resume or newly appended event.
     pub activity: Option<SystemTime>,
+    pub automatic_confirmation_mode: bool,
+    approval_policy: Option<String>,
+    approvals_reviewer: Option<String>,
 }
 
 struct FileCursor {
@@ -308,6 +311,15 @@ fn apply_event(event: &Value, agent: &str, cursor: &mut FileCursor) {
         }
         if event_type == Some("turn_context") {
             set_model(&mut cursor.facts, event["payload"]["model"].as_str());
+            if let Some(policy) = event["payload"]["approval_policy"].as_str() {
+                cursor.facts.approval_policy = Some(policy.into());
+            }
+            if let Some(reviewer) = event["payload"]["approvals_reviewer"].as_str() {
+                cursor.facts.approvals_reviewer = Some(reviewer.into());
+            }
+            cursor.facts.automatic_confirmation_mode = cursor.facts.approval_policy.as_deref()
+                == Some("never")
+                || cursor.facts.approvals_reviewer.as_deref() == Some("auto_review");
         }
         if payload_type == Some("thread_settings_applied") {
             set_model(
@@ -532,6 +544,28 @@ mod tests {
         let context = cursor.facts.context.expect("context usage");
         assert_eq!(context.used_tokens, 194_475);
         assert_eq!(context.window_tokens, 258_400);
+    }
+
+    #[test]
+    fn codex_auto_confirm_metadata_persists_until_explicitly_changed() {
+        let mut cursor = FileCursor::default();
+        apply_event(
+            &serde_json::json!({"type":"turn_context","payload":{"approval_policy":"never"}}),
+            "codex",
+            &mut cursor,
+        );
+        apply_event(
+            &serde_json::json!({"type":"turn_context","payload":{"model":"gpt-5"}}),
+            "codex",
+            &mut cursor,
+        );
+        assert!(cursor.facts.automatic_confirmation_mode);
+        apply_event(
+            &serde_json::json!({"type":"turn_context","payload":{"approval_policy":"on-request"}}),
+            "codex",
+            &mut cursor,
+        );
+        assert!(!cursor.facts.automatic_confirmation_mode);
     }
 
     #[cfg(not(target_os = "macos"))]

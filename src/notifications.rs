@@ -26,9 +26,9 @@ impl NotificationTracker {
     pub fn update(
         &mut self,
         instances: &[AgentInstance],
-        enabled: bool,
+        config: &crate::config::Config,
     ) -> Vec<NotificationRequest> {
-        if !enabled {
+        if !config.notifications_enabled {
             self.instances.clear();
             return vec![];
         }
@@ -37,7 +37,7 @@ impl NotificationTracker {
         let live: std::collections::HashSet<_> = instances.iter().map(|i| i.pid).collect();
         self.instances.retain(|pid, _| live.contains(pid));
         for instance in instances {
-            if !is_attention(instance.state) {
+            if !should_notify(instance, config) {
                 self.instances.remove(&instance.pid);
                 continue;
             }
@@ -61,6 +61,18 @@ impl NotificationTracker {
             }
         }
         due_notifications
+    }
+}
+
+fn should_notify(instance: &AgentInstance, config: &crate::config::Config) -> bool {
+    match instance.state {
+        AgentState::WaitingReply => config.notify_waiting_reply,
+        AgentState::Waiting => {
+            config.notify_waiting_confirmation
+                && (config.show_waiting_notifications_in_auto_confirm_mode
+                    || !instance.automatic_confirmation_mode)
+        }
+        _ => false,
     }
 }
 
@@ -114,10 +126,6 @@ impl NotificationRequest {
     }
 }
 
-fn is_attention(state: AgentState) -> bool {
-    matches!(state, AgentState::Waiting | AgentState::WaitingReply)
-}
-
 fn reminder_stage(elapsed: Duration) -> usize {
     REMINDERS
         .iter()
@@ -129,10 +137,23 @@ fn reminder_stage(elapsed: Duration) -> usize {
 mod tests {
     use super::*;
     #[test]
-    fn only_attention_states_are_tracked() {
-        assert!(is_attention(AgentState::Waiting));
-        assert!(is_attention(AgentState::WaitingReply));
-        assert!(!is_attention(AgentState::Working));
+    fn only_attention_states_are_eligible_for_notifications() {
+        let config = crate::config::Config::default();
+        let instance = |state| AgentInstance {
+            kind: "Test".into(),
+            label: "Test".into(),
+            pid: 1,
+            cwd: None,
+            state,
+            uptime: Duration::ZERO,
+            model: None,
+            context: None,
+            open_url: None,
+            automatic_confirmation_mode: false,
+        };
+        assert!(should_notify(&instance(AgentState::Waiting), &config));
+        assert!(should_notify(&instance(AgentState::WaitingReply), &config));
+        assert!(!should_notify(&instance(AgentState::Working), &config));
     }
 
     #[test]
@@ -158,6 +179,7 @@ mod tests {
                 model: None,
                 context: None,
                 open_url: Some("http://127.0.0.1:3000".into()),
+                automatic_confirmation_mode: false,
             },
             0,
         )
@@ -184,10 +206,39 @@ mod tests {
             model: None,
             context: None,
             open_url: None,
+            automatic_confirmation_mode: false,
         };
-        let requests = tracker.update(&[instance], true);
+        let mut config = crate::config::Config::default();
+        config.notifications_enabled = true;
+        let requests = tracker.update(&[instance], &config);
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].action, NotificationAction::FocusPid(42));
-        assert!(tracker.update(&[], false).is_empty());
+        config.notifications_enabled = false;
+        assert!(tracker.update(&[], &config).is_empty());
+    }
+
+    #[test]
+    fn auto_confirm_waiting_can_be_silenced_without_silencing_replies() {
+        let mut config = crate::config::Config::default();
+        config.notifications_enabled = true;
+        config.show_waiting_notifications_in_auto_confirm_mode = false;
+        let waiting = AgentInstance {
+            kind: "Codex".into(),
+            label: "Codex".into(),
+            pid: 7,
+            cwd: None,
+            state: AgentState::Waiting,
+            uptime: Duration::ZERO,
+            model: None,
+            context: None,
+            open_url: None,
+            automatic_confirmation_mode: true,
+        };
+        assert!(!should_notify(&waiting, &config));
+        let reply = AgentInstance {
+            state: AgentState::WaitingReply,
+            ..waiting
+        };
+        assert!(should_notify(&reply, &config));
     }
 }
