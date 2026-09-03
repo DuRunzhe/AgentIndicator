@@ -158,6 +158,7 @@ struct MenuView {
     signature: Vec<(u32, AgentState)>,
     instances: Vec<MenuItem>,
     notifications: IconMenuItem,
+    notification_preferences: Vec<IconMenuItem>,
     test_notification: IconMenuItem,
     startup: IconMenuItem,
     display: Vec<IconMenuItem>,
@@ -244,6 +245,16 @@ impl App {
             #[cfg(not(target_os = "macos"))]
             menu.notifications
                 .set_icon(Some(toggle_menu_icon(self.config.notifications_enabled)));
+            for (item, (_, label, enabled)) in menu
+                .notification_preferences
+                .iter()
+                .zip(notification_preferences(&self.config))
+            {
+                item.set_enabled(self.config.notifications_enabled);
+                item.set_text(toggle_label(enabled, label));
+                #[cfg(not(target_os = "macos"))]
+                item.set_icon(Some(toggle_menu_icon(enabled)));
+            }
             menu.browser_tabs
                 .set_text(browser_tab_action_label(self.config.browser_tab_reuse));
             #[cfg(not(target_os = "macos"))]
@@ -317,14 +328,19 @@ impl App {
             None,
         );
         let _ = notification_menu.append(&notification_item);
+        let mut notification_preference_items = Vec::new();
         for (key, label, enabled) in notification_preferences(&self.config) {
-            let _ = notification_menu.append(&IconMenuItem::with_id(
+            // The reference menu only exposes notification options after the
+            // master switch is on; mirror that by graying the type rows out.
+            let item = IconMenuItem::with_id(
                 format!("notification_preference:{key}"),
                 toggle_label(enabled, label),
-                true,
+                self.config.notifications_enabled,
                 menu_toggle_icon(enabled),
                 None,
-            ));
+            );
+            let _ = notification_menu.append(&item);
+            notification_preference_items.push(item);
         }
         let test_notification = IconMenuItem::with_id(
             "test_notification",
@@ -425,6 +441,7 @@ impl App {
             signature,
             instances: instance_items,
             notifications: notification_item,
+            notification_preferences: notification_preference_items,
             test_notification,
             startup: startup_item,
             display: display_items,

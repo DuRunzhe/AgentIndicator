@@ -7,7 +7,7 @@
 
 use crate::{
     browser_tab_action_label, config::Config, display_settings, i18n, notification_action_label,
-    startup, startup_action_label, toggle_label,
+    notification_preferences, startup, startup_action_label, toggle_label,
 };
 use objc2::{rc::Retained, AnyThread};
 use objc2_app_kit::{NSColor, NSImage, NSImageSymbolConfiguration, NSMenu};
@@ -181,6 +181,10 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
             "context_total" => config.show_context_total,
             _ => false,
         };
+        let (name, color) = toggle_symbol(enabled);
+        add(toggle_label(enabled, label), name, color);
+    }
+    for (_, label, enabled) in notification_preferences(config) {
         let (name, color) = toggle_symbol(enabled);
         add(toggle_label(enabled, label), name, color);
     }

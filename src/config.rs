@@ -68,7 +68,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_display_fields_default_to_visible() {
+    fn missing_config_fields_default_to_visible() {
         let config: Config = serde_json::from_str(r#"{"notifications_enabled":true}"#).unwrap();
         assert!(config.notifications_enabled);
         assert!(config.notify_waiting_confirmation);
