@@ -386,19 +386,12 @@ impl App {
         let _ = settings.append(&claude_statusline);
         let language_menu = Submenu::new(i18n::menu("language"), true);
         for value in ["auto", "zh-Hans", "zh-Hant", "en"] {
-            let label = format!(
-                "{} {}",
-                if self.config.locale == value {
-                    "✓"
-                } else {
-                    ""
-                },
-                i18n::language_name(value)
-            );
-            let _ = language_menu.append(&MenuItem::with_id(
+            let selected = self.config.locale == value;
+            let _ = language_menu.append(&IconMenuItem::with_id(
                 format!("locale:{value}"),
-                label,
+                i18n::language_name(value),
                 true,
+                menu_toggle_icon(selected),
                 None,
             ));
         }
@@ -735,12 +728,10 @@ fn write_ui_diagnosis(instances: &[AgentInstance]) {
     }
 }
 
-fn toggle_label(enabled: bool, label: &str) -> String {
-    if enabled {
-        format!("✓ {label}")
-    } else {
-        label.into()
-    }
+fn toggle_label(_enabled: bool, label: &str) -> String {
+    // Selection state is expressed solely by the row icon (filled vs outline);
+    // keep the label itself plain so no checkmark text leaks into any language.
+    label.into()
 }
 
 fn display_settings() -> [(&'static str, &'static str); 5] {

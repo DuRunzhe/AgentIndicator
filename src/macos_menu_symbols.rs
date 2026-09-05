@@ -188,5 +188,10 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
         let (name, color) = toggle_symbol(enabled);
         add(toggle_label(enabled, label), name, color);
     }
+    for value in ["auto", "zh-Hans", "zh-Hant", "en"] {
+        let selected = config.locale == value;
+        let (name, color) = toggle_symbol(selected);
+        add(i18n::language_name(value).into(), name, color);
+    }
     symbols
 }
