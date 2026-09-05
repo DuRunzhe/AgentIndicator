@@ -1,10 +1,10 @@
 [package]
 name = "agent-status-indicator"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2021"
 description = "Native cross-platform tray monitor for AI coding agents"
 license = "Apache-2.0"
-repository = "https://github.com/DuRunzhe/AgentStatusIndicator"
+repository = "https://github.com/DuRunzhe/AgentIndicator"
 
 [dependencies]
 anyhow = "1"

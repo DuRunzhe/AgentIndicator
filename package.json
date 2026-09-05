@@ -1,6 +1,6 @@
 {
   "name": "agent-status-indicator",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "Native tray monitor for Claude Code, Codex and OpenCode",
   "license": "Apache-2.0",
   "bin": { "agent-status-indicator": "npm/bin.js" },
