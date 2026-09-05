@@ -29,9 +29,18 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 
-# Bind Info.plist and its Bundle Identifier to the executable without requiring
-# an Apple Developer certificate. Release CI can replace this with Developer ID
-# signing and notarization later.
-codesign --force --sign - "$APP"
+# Sign the bundle.  An explicit Developer ID identity enables hardened-runtime
+# signing that can be notarized; without one the app stays ad-hoc signed so
+# local development does not require a certificate.
+IDENTITY="${ASI_SIGN_IDENTITY:-}"
+if [[ -n "$IDENTITY" ]]; then
+  codesign --force --options runtime --timestamp \
+    --entitlements "$ROOT/app/AgentStatusIndicator.entitlements" \
+    --sign "$IDENTITY" "$CONTENTS/MacOS/AgentStatusIndicator"
+  codesign --force --options runtime --timestamp \
+    --sign "$IDENTITY" "$APP"
+else
+  codesign --force --sign - "$APP"
+fi
 
 echo "$APP"
