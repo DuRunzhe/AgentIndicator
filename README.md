@@ -1,13 +1,12 @@
 # AgentStatusIndicator
 
-不依赖 SwiftBar 的原生 AI Coding Agent 托盘监控器。目标是复刻
-[AgentStatusBar](https://github.com/DuRunzhe/AgentStatusBar) 的五态、多实例、上下文、通知和会话跳转能力，macOS 优先，并共用同一套 Windows/Linux 核心。
+原生 AI Coding Agent 托盘监控器（macOS 优先，支持 Windows/Linux）。监控 Claude Code、Codex CLI、OpenCode、DeepSeek Harness 与 Pi 等 Coding Agent 的运行状态：进程存活时按项目区分多个会话，在系统托盘汇总展示「等待确认、等待回复、进行中、就绪、已停止」五态，点击菜单项跳回对应终端或浏览器会话，并在需要人工介入时触发原生系统通知。
 
 源码与发布：<https://github.com/DuRunzhe/AgentIndicator>
 
 ## 指定实现方案
 
-采用 **Rust 单进程 + `tray-icon` 原生系统托盘**，不使用 Electron、SwiftBar、Python 或常驻 Node.js。`winit` 负责跨平台事件循环，`sysinfo` 负责低成本进程快照，Claude/Codex/OpenCode 的会话文件由 Rust 增量解析。Node 仅作为 npm 安装后的平台二进制启动包装，不参与常驻运行。
+采用 **Rust 单进程 + `tray-icon` 原生系统托盘**，不使用 Electron、Python 或常驻 Node.js。`winit` 负责跨平台事件循环，`sysinfo` 负责低成本进程快照，Claude/Codex/OpenCode 的会话文件由 Rust 增量解析。Node 仅作为 npm 安装后的平台二进制启动包装，不参与常驻运行。
 
 选择这套方案的原因：托盘本来就是轻量原生控件，使用 WebView 会额外引入渲染进程和几十到上百 MB 内存；纯 Swift 又无法共享 Windows/Linux 实现。Rust 可同时满足原生菜单、单二进制发布和低常驻资源占用。
 
@@ -21,7 +20,7 @@ OpenCode SQLite ──┤                              ├─> 原生系统通�
 DeepSeek 进程 ────┘                              └─> 终端/浏览器聚焦
 ```
 
-状态优先级与参考项目一致：等待确认 → 等待回复 → 进行中 → 就绪 → 已停止。工具调用必须按 ID 配对，只有未完成的 `request_user_input` / `AskUserQuestion` 判为等待回复，显式提权或完整终端确认提示判为等待确认。
+状态优先级：等待确认 → 等待回复 → 进行中 → 就绪 → 已停止。工具调用必须按 ID 配对，只有未完成的 `request_user_input` / `AskUserQuestion` 判为等待回复，显式提权或完整终端确认提示判为等待确认。
 
 ### 依赖
 
@@ -41,9 +40,9 @@ Linux 运行时需桌面环境提供 AppIndicator/StatusNotifier 支持；Window
 
 指标以 release 构建、10 个活跃 Agent、累计 1 GB 会话日志为压力场景：
 
-| 指标 | 目标 | 参考实现约束 |
+| 指标 | 目标 | 说明 |
 |---|---:|---|
-| 稳态 RSS（macOS） | ≤ 35 MB | 不高于 Node + SwiftBar/Python 组合 |
+| 稳态 RSS（macOS） | ≤ 35 MB | 单二进制、无常驻解释器与渲染进程的开销下限 |
 | 空闲平均 CPU | ≤ 0.5% | 2 秒采集，无每秒进程拉起 |
 | P95 状态发现延迟 | ≤ 2.5 秒 | 当前约 2 秒轮询 |
 | 托盘菜单打开 P95 | ≤ 50 ms | UI 不等待采集与磁盘读取 |
@@ -55,7 +54,7 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 
 ## 当前实现进度
 
-- [x] 单进程原生托盘，无 SwiftBar
+- [x] 单进程原生系统托盘
 - [x] Claude/Codex/OpenCode/DeepSeek 多实例进程发现
 - [x] 进程树任务活跃判定、2 秒异步刷新、五态数据模型
 - [x] DeepSeek projection/session 状态、等待信号、模型与上下文解析
