@@ -122,7 +122,15 @@ fn parse_signals(text: &str, models: &Path) -> PiFacts {
         }
         let message = &entry["message"];
         match message["role"].as_str() {
-            Some("user") => reply_requested = false,
+            Some("user") => {
+                // A user message starts a new turn: the agent is generating or
+                // executing tools until its next assistant message arrives.
+                // Without this, the gap between the user message and the next
+                // assistant event (often tens of seconds to minutes) would keep
+                // reporting the previous turn's Ready state.
+                reply_requested = false;
+                task_state = Some(AgentState::Working);
+            }
             Some("toolResult") => {
                 if let Some(id) = message["toolCallId"].as_str() {
                     pending_tools.remove(id);
@@ -298,5 +306,34 @@ mod tests {
             Path::new("/missing"),
         );
         assert_eq!(facts.state, Some(AgentState::Ready));
+    }
+
+    #[test]
+    fn user_message_starts_a_working_turn() {
+        // After a completed turn, a user message means the agent is generating
+        // or running tools again; the old Ready state must not linger while no
+        // assistant event has been written yet.
+        let facts = parse_signals(
+            concat!(
+                r#"{"type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Done."}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"继续"}]}}"#
+            ),
+            Path::new("/missing"),
+        );
+        assert_eq!(facts.state, Some(AgentState::Working));
+    }
+
+    #[test]
+    fn user_reply_clears_waiting_reply_and_starts_working() {
+        let facts = parse_signals(
+            concat!(
+                r#"{"type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"继续吗？"}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"是"}]}}"#
+            ),
+            Path::new("/missing"),
+        );
+        assert_eq!(facts.state, Some(AgentState::Working));
     }
 }
