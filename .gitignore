@@ -2,3 +2,7 @@
 /bin
 /dist
 .DS_Store
+
+# Local Claude Code settings must never be published with the repository.
+.claude/
+
