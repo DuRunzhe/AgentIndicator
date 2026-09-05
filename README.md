@@ -3,6 +3,8 @@
 不依赖 SwiftBar 的原生 AI Coding Agent 托盘监控器。目标是复刻
 [AgentStatusBar](https://github.com/DuRunzhe/AgentStatusBar) 的五态、多实例、上下文、通知和会话跳转能力，macOS 优先，并共用同一套 Windows/Linux 核心。
 
+源码与发布：<https://github.com/DuRunzhe/AgentIndicator>
+
 ## 指定实现方案
 
 采用 **Rust 单进程 + `tray-icon` 原生系统托盘**，不使用 Electron、SwiftBar、Python 或常驻 Node.js。`winit` 负责跨平台事件循环，`sysinfo` 负责低成本进程快照，Claude/Codex/OpenCode 的会话文件由 Rust 增量解析。Node 仅作为 npm 安装后的平台二进制启动包装，不参与常驻运行。
@@ -72,17 +74,63 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 ## 开发运行
 
 ```bash
-cargo run --release
+bash scripts/build-release.sh           # release 构建（自动重映射本机路径）
 cargo test
 # 查看当前探测到的 Agent、会话匹配和状态（不启动托盘）
 cargo run --release -- --diagnose
+# macOS 分发打包 / 签名 / 公证
+bash scripts/package-macos-app.sh
+ASI_SIGN_IDENTITY="Developer ID Application: ... (TEAMID)" bash scripts/package-macos-app.sh
+ASI_SIGN_IDENTITY="..." ASI_TEAM_ID="..." ASI_NOTARY_PROFILE="AC_API_KEY" bash scripts/notarize-macos-app.sh
 ```
 
-计划安装方式：
+## 安装
+
+当前已发布 **v0.2.10**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
+
+### Homebrew（macOS）
 
 ```bash
 brew install DuRunzhe/tap/agent-status-indicator
-npm install -g agent-status-indicator
 ```
 
-npm 包在发布 CI 中携带对应平台预编译二进制，不要求用户安装 Rust 或 Node 原生编译工具链。Homebrew Formula 中的 URL 与 SHA256 会由 release workflow 自动写入，仓库模板中的占位 SHA 不可直接发布。
+### npm / Bun（跨平台，自动匹配平台二进制）
+
+```bash
+npm install -g agent-status-indicator
+bun install -g agent-status-indicator
+```
+
+npm 包内置各平台预编译二进制，不要求用户安装 Rust 或 Node 原生编译工具链；macOS 走包内已公证的 `.app`，下载后不会被 Gatekeeper 拦截。
+
+### curl（macOS / Linux）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+# 指定版本：VERSION=0.2.10 curl -fsSL ... | sh
+# 指定目录：PREFIX=/usr/local/bin curl -fsSL ... | sh
+```
+
+### PowerShell（Windows）
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.ps1 | iex"
+```
+
+### winget（Windows，合入 microsoft/winget-pkgs 后可用）
+
+```powershell
+winget install --id DuRunzhe.AgentStatusIndicator
+```
+
+### GitHub Release
+
+直接下载 https://github.com/DuRunzhe/AgentIndicator/releases 下对应平台的 `tar.gz` / `zip`，以及 npm `tgz`。安装脚本会校验随资产发布的 `.sha256`。
+
+### 升级
+
+```bash
+npm update -g agent-status-indicator     # 或 bun update -g ...
+brew upgrade DuRunzhe/tap/agent-status-indicator
+# curl/PowerShell 脚本默认取 latest，直接重跑即可
+```
