@@ -1,6 +1,6 @@
 [package]
 name = "agent-status-indicator"
-version = "0.2.10"
+version = "0.2.11"
 edition = "2021"
 description = "Native cross-platform tray monitor for AI coding agents"
 license = "Apache-2.0"
