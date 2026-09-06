@@ -135,3 +135,33 @@ npm update -g agent-status-indicator     # or bun update -g ...
 brew upgrade DuRunzhe/tap/agent-status-indicator
 # the curl/PowerShell scripts resolve "latest" by default — just re-run them
 ```
+
+## Uninstalling
+
+Each channel installs independently, so remove the ones you used:
+
+```bash
+# Homebrew (macOS)
+brew uninstall DuRunzhe/tap/agent-status-indicator
+# only if you previously ran: brew services start agent-status-indicator
+brew services stop agent-status-indicator
+
+# npm / Bun (cross-platform)
+npm uninstall -g agent-status-indicator
+bun remove -g agent-status-indicator
+
+# curl installer (macOS / Linux): delete the binary
+rm -f ~/.local/bin/agent-status-indicator   # or the PREFIX directory you used
+
+# winget (Windows, once merged into microsoft/winget-pkgs)
+winget uninstall --id DuRunzhe.AgentStatusIndicator
+```
+
+The in-app **start-at-login** option leaves a LaunchAgent behind; remove it after uninstalling:
+
+```bash
+launchctl bootout "gui/$(id -u)/com.agentstatusindicator.app" 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/com.agentstatusindicator.app.plist
+```
+
+Optional: delete leftover config at `~/.config/agent-status-indicator/config.json`. Uninstalling never touches your Claude/Codex/OpenCode/Pi session files.

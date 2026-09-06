@@ -135,3 +135,33 @@ npm update -g agent-status-indicator     # 或 bun update -g ...
 brew upgrade DuRunzhe/tap/agent-status-indicator
 # curl/PowerShell 脚本默认取 latest，直接重跑即可
 ```
+
+## 卸载
+
+各渠道独立安装，按你使用过的渠道分别卸载：
+
+```bash
+# Homebrew（macOS）
+brew uninstall DuRunzhe/tap/agent-status-indicator
+# 若曾执行过 brew services start，先停止：
+brew services stop agent-status-indicator
+
+# npm / Bun（跨平台）
+npm uninstall -g agent-status-indicator
+bun remove -g agent-status-indicator
+
+# curl 安装（macOS / Linux）：删除二进制即可
+rm -f ~/.local/bin/agent-status-indicator   # 若用了 PREFIX，改删对应目录
+
+# winget（Windows，合入 microsoft/winget-pkgs 后）
+winget uninstall --id DuRunzhe.AgentStatusIndicator
+```
+
+应用内开启的**开机自启**会留下 LaunchAgent，卸载后手动清理：
+
+```bash
+launchctl bootout "gui/$(id -u)/com.agentstatusindicator.app" 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/com.agentstatusindicator.app.plist
+```
+
+可选：删除配置残留 `~/.config/agent-status-indicator/config.json`；卸载不会影响你在 Claude/Codex/OpenCode/Pi 本身的会话文件。
