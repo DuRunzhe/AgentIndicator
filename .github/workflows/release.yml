@@ -113,6 +113,75 @@ jobs:
           npm pack --pack-destination dist
           npm publish ./dist/agent-status-indicator-*.tgz
 
+  # Developer ID signing + notarization. Secrets never reach other jobs or any
+  # pull-request trigger; they exist only in this tag-only job's environment
+  # and are consumed inside an ephemeral keychain.
+  #
+  # Required repository secrets:
+  #   ASI_CERT_P12       base64 of a Developer ID Application .p12 (with key)
+  #   ASI_CERT_PASSWORD  password protecting that .p12
+  #   ASI_NOTARY_KEY     base64 of the App Store Connect API .p8
+  #   ASI_NOTARY_KEY_ID / ASI_NOTARY_ISSUER_ID for that .p8
+  macos-notarize:
+    name: notarize macOS arm64
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-14
+    env:
+      CERT_P12: ${{ secrets.ASI_CERT_P12 }}
+      CERT_PASSWORD: ${{ secrets.ASI_CERT_PASSWORD }}
+      NOTARY_KEY: ${{ secrets.ASI_NOTARY_KEY }}
+      NOTARY_KEY_ID: ${{ secrets.ASI_NOTARY_KEY_ID }}
+      NOTARY_ISSUER_ID: ${{ secrets.ASI_NOTARY_ISSUER_ID }}
+      TEAM_ID: W796BPAJVP
+      SIGN_IDENTITY: "Developer ID Application: Runzhe Du (W796BPAJVP)"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release on the arm64 host
+        run: cargo build --release
+      - name: Import signing identity into an ephemeral keychain
+        run: |
+          echo "$CERT_P12" | base64 --decode > /tmp/asi-cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import /tmp/asi-cert.p12 -k build.keychain -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/notarytool
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
+          rm -f /tmp/asi-cert.p12
+      - name: Store notary credentials
+        run: |
+          echo "$NOTARY_KEY" | base64 --decode > /tmp/AuthKey.p8
+          xcrun notarytool store-credentials CI_NOTARY \
+            --key /tmp/AuthKey.p8 \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID"
+          rm -f /tmp/AuthKey.p8
+      - name: Stamp the bundle version from the tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i '' "s|<string>0\.2\.[0-9]*</string>|<string>${VERSION}</string>|g" \
+            scripts/package-macos-app.sh
+      - name: Sign, notarize and staple the app
+        env:
+          ASI_SIGN_IDENTITY: ${{ env.SIGN_IDENTITY }}
+          ASI_TEAM_ID: ${{ env.TEAM_ID }}
+          ASI_NOTARY_PROFILE: CI_NOTARY
+        run: bash scripts/notarize-macos-app.sh
+      - name: Sign the raw binary and overwrite the arm64 release asset
+        run: |
+          codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
+            target/release/agent-status-indicator
+          tar -czf agent-status-indicator-aarch64-apple-darwin.tar.gz \
+            -C target/release agent-status-indicator
+          shasum -a 256 agent-status-indicator-aarch64-apple-darwin.tar.gz \
+            | awk '{print $1}' > agent-status-indicator-aarch64-apple-darwin.tar.gz.sha256
+          gh release upload "$GITHUB_REF_NAME" \
+            agent-status-indicator-aarch64-apple-darwin.tar.gz \
+            agent-status-indicator-aarch64-apple-darwin.tar.gz.sha256 \
+            --clobber
+
   # Note on macOS Developer ID signing + notarization:
   # run it locally before tagging until a hardened CI job is needed:
   #   bash scripts/build-release.sh
