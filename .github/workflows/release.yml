@@ -73,7 +73,7 @@ jobs:
   # bypass-2FA; see npmjs.com -> Access Tokens).
   publish-npm:
     name: publish npm package
-    needs: build
+    needs: [build, macos-notarize]
     runs-on: ubuntu-latest
     env:
       HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -83,6 +83,11 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Download the notarized macOS app bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-app-bundle
+          path: app/darwin-arm64/
       - name: Assemble platform binaries under bin/<platform>-<arch>/
         shell: bash
         run: |
@@ -183,6 +188,11 @@ jobs:
             agent-status-indicator-aarch64-apple-darwin.tar.gz \
             agent-status-indicator-aarch64-apple-darwin.tar.gz.sha256 \
             --clobber
+      - name: Upload the notarized app bundle for the npm job
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app-bundle
+          path: app/darwin-arm64/AgentStatusIndicator.app
 
   # Note on macOS Developer ID signing + notarization:
   # run it locally before tagging until a hardened CI job is needed:
