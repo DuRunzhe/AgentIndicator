@@ -170,6 +170,8 @@ jobs:
           echo "$ASI_NOTARY_KEY" | base64 --decode > /tmp/AuthKey.p8
           ASI_NOTARY_KEY_FILE=/tmp/AuthKey.p8 bash scripts/notarize-macos-app.sh
       - name: Sign the raw binary and overwrite the arm64 release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
             target/release/agent-status-indicator
