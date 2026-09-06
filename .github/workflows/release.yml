@@ -17,7 +17,7 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             asset: agent-status-indicator-aarch64-apple-darwin.tar.gz
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             asset: agent-status-indicator-x86_64-apple-darwin.tar.gz
           - os: ubuntu-latest
@@ -70,8 +70,9 @@ jobs:
   publish-npm:
     name: publish npm package
     needs: build
-    if: ${{ secrets.NPM_TOKEN != '' }}
     runs-on: ubuntu-latest
+    env:
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -100,6 +101,7 @@ jobs:
           chmod +x bin/*/agent-status-indicator 2>/dev/null || true
           ls -R bin
       - name: Publish to npm
+        if: env.HAS_NPM_TOKEN != ''
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
