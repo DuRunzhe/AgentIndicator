@@ -151,14 +151,6 @@ jobs:
           # trusting a notarytool path (it lives inside Xcode on runners).
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
           rm -f /tmp/asi-cert.p12
-      - name: Store notary credentials
-        run: |
-          echo "$NOTARY_KEY" | base64 --decode > /tmp/AuthKey.p8
-          xcrun notarytool store-credentials CI_NOTARY \
-            --key /tmp/AuthKey.p8 \
-            --key-id "$NOTARY_KEY_ID" \
-            --issuer "$NOTARY_ISSUER_ID"
-          rm -f /tmp/AuthKey.p8
       - name: Stamp the bundle version from the tag
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -167,9 +159,14 @@ jobs:
       - name: Sign, notarize and staple the app
         env:
           ASI_SIGN_IDENTITY: ${{ env.SIGN_IDENTITY }}
-          ASI_TEAM_ID: ${{ env.TEAM_ID }}
-          ASI_NOTARY_PROFILE: CI_NOTARY
-        run: bash scripts/notarize-macos-app.sh
+          ASI_NOTARY_KEY: ${{ secrets.ASI_NOTARY_KEY }}
+          ASI_NOTARY_KEY_ID: ${{ env.NOTARY_KEY_ID }}
+          ASI_NOTARY_ISSUER_ID: ${{ env.NOTARY_ISSUER_ID }}
+        run: |
+          # Direct API-key credentials avoid keychain-profile ACL prompts on a
+          # headless runner (those made notarytool hang waiting for UI input).
+          echo "$ASI_NOTARY_KEY" | base64 --decode > /tmp/AuthKey.p8
+          ASI_NOTARY_KEY_FILE=/tmp/AuthKey.p8 bash scripts/notarize-macos-app.sh
       - name: Sign the raw binary and overwrite the arm64 release asset
         run: |
           codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \

@@ -16,8 +16,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APP="$ROOT/app/darwin-arm64/AgentStatusIndicator.app"
 IDENTITY="${ASI_SIGN_IDENTITY:?set ASI_SIGN_IDENTITY to the Developer ID identity}"
-TEAM_ID="${ASI_TEAM_ID:?set ASI_TEAM_ID to the Developer ID team id}"
-PROFILE="${ASI_NOTARY_PROFILE:-AC_API_KEY}"
+PROFILE="${ASI_NOTARY_PROFILE:-}"
 
 # 1) Repackage and sign with the Developer ID identity (hardened runtime).
 ASI_SIGN_IDENTITY="$IDENTITY" "$ROOT/scripts/package-macos-app.sh"
@@ -28,11 +27,21 @@ trap 'rm -rf "$STAGING"' EXIT
 ZIP="$STAGING/AgentStatusIndicator.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
-# 3) Submit and wait for Apple's verdict (typically 1-5 minutes).
-xcrun notarytool submit "$ZIP" \
-  --keychain-profile "$PROFILE" \
-  --team-id "$TEAM_ID" \
-  --wait
+# 3) Submit and wait for Apple's verdict (typically 1-5 minutes). Prefer
+# direct API-key credentials (no keychain prompts on headless CI); fall back
+# to a stored keychain profile for local runs.
+if [[ -n "${ASI_NOTARY_KEY_FILE:-}" ]]; then
+  xcrun notarytool submit "$ZIP" \
+    --key "$ASI_NOTARY_KEY_FILE" \
+    --key-id "${ASI_NOTARY_KEY_ID:?set ASI_NOTARY_KEY_ID}" \
+    --issuer "${ASI_NOTARY_ISSUER_ID:?set ASI_NOTARY_ISSUER_ID}" \
+    --wait
+else
+  xcrun notarytool submit "$ZIP" \
+    --keychain-profile "${PROFILE:?set ASI_NOTARY_PROFILE or ASI_NOTARY_KEY_FILE}" \
+    --team-id "${ASI_TEAM_ID:?set ASI_TEAM_ID when using a keychain profile}" \
+    --wait
+fi
 
 # 4) Staple the ticket into the bundle and validate it.
 xcrun stapler staple "$APP"
