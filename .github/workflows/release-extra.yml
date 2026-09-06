@@ -33,6 +33,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev pkg-config libssl-dev
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
       - name: Package archive + sha256 sidecar

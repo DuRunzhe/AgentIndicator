@@ -79,7 +79,9 @@ impl NotificationService {
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
-    use windows::{
+    // The module is named `windows`, so the extern crate must be addressed
+    // through the leading `::` path to avoid an ambiguous-name error.
+    use ::windows::{
         core::{IInspectable, HSTRING},
         Data::Xml::Dom::XmlDocument,
         Foundation::TypedEventHandler,
