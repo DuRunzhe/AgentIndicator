@@ -146,8 +146,9 @@ jobs:
           security create-keychain -p ci build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p ci build.keychain
-          security import /tmp/asi-cert.p12 -k build.keychain -P "$CERT_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/notarytool
+          security import /tmp/asi-cert.p12 -k build.keychain -P "$CERT_PASSWORD"
+          # Grants codesign and Apple notary tools keychain access without
+          # trusting a notarytool path (it lives inside Xcode on runners).
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
           rm -f /tmp/asi-cert.p12
       - name: Store notary credentials
