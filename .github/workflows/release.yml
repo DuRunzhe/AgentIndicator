@@ -114,6 +114,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > ~/.npmrc
           mkdir -p dist
           npm pack --pack-destination dist
           npm publish ./dist/agent-status-indicator-*.tgz
