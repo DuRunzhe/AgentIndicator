@@ -229,18 +229,23 @@ fn process_kind(process: &ProcessRecord) -> Option<&'static str> {
 
 #[cfg(target_os = "macos")]
 fn agent_kind_from_command(command: &str) -> Option<&'static str> {
-    command
-        .split_whitespace()
-        .filter_map(|value| Path::new(value).file_name().and_then(|name| name.to_str()))
-        .map(|name| name.trim_matches('"').to_ascii_lowercase())
-        .find_map(|name| match name.as_str() {
-            "claude" => Some("claude"),
-            "codex" => Some("codex"),
-            "opencode" => Some("opencode"),
-            "pi" => Some("pi"),
-            "dsh" | "deepseek-harness" => Some("deepseek"),
-            _ => None,
-        })
+    // Only the leading token is the executed program. Matching any whitespace
+    // token misclassifies unrelated shells whose command lines merely mention
+    // an agent name (e.g. a Claude Code tool running `which pi`).
+    let executable = command.split_whitespace().next()?;
+    let name = Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str())?
+        .trim_matches('"')
+        .to_ascii_lowercase();
+    match name.as_str() {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "opencode" => Some("opencode"),
+        "pi" => Some("pi"),
+        "dsh" | "deepseek-harness" => Some("deepseek"),
+        _ => None,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -670,6 +675,27 @@ fn has_task_descendant(root: Pid, kind: &str, system: &System) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_kind_matches_only_the_executed_program() {
+        assert_eq!(agent_kind_from_command("pi"), Some("pi"));
+        assert_eq!(
+            agent_kind_from_command("/Users/me/.local/bin/pi resume 01abc"),
+            Some("pi")
+        );
+        // Shells whose command line merely mentions an agent name are not agents.
+        assert_eq!(
+            agent_kind_from_command("/bin/zsh -c 'which pi; ls ~/.pi/agent'"),
+            None
+        );
+        assert_eq!(
+            agent_kind_from_command("/bin/bash -lc 'codex --help'"),
+            None
+        );
+        assert_eq!(agent_kind_from_command("claude"), Some("claude"));
+        assert_eq!(agent_kind_from_command("dsh"), Some("deepseek"));
+    }
+
     #[test]
     fn known_display_names() {
         assert_eq!(display_name("codex"), "Codex");

@@ -167,7 +167,18 @@ fn parse_signals(text: &str, models: &Path) -> PiFacts {
                         task_state = Some(AgentState::Working);
                         reply_requested = false;
                     }
-                    Some("stop" | "length" | "error" | "aborted") => {
+                    Some("error" | "aborted") => {
+                        // The turn ended before its tool calls ran (or they were
+                        // interrupted), so pi will never write toolResult entries
+                        // for these ids. Leaving them pending would pin the state
+                        // to Working forever, even after later turns finish.
+                        for id in &calls {
+                            pending_tools.remove(*id);
+                        }
+                        task_state = Some(AgentState::Ready);
+                        reply_requested = false;
+                    }
+                    Some("stop" | "length") => {
                         task_state = Some(AgentState::Ready);
                         reply_requested = message["stopReason"] == "stop"
                             && last_assistant_text(message)
@@ -291,6 +302,25 @@ mod tests {
             Path::new("/missing"),
         );
         assert_eq!(facts.state, Some(AgentState::WaitingReply));
+    }
+
+    #[test]
+    fn errored_tool_call_does_not_stick_working() {
+        // A tool call whose turn errored out before executing never receives a
+        // toolResult. Its id must not keep the state Working forever.
+        let facts = parse_signals(
+            concat!(
+                r#"{"type":"message","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"a"}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"toolResult","toolCallId":"a"}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"assistant","stopReason":"error","content":[{"type":"thinking"},{"type":"toolCall","id":"b"}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Done."}]}}"#
+            ),
+            Path::new("/missing"),
+        );
+        assert_eq!(facts.state, Some(AgentState::Ready));
     }
 
     #[test]
