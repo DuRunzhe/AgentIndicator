@@ -146,10 +146,12 @@ jobs:
           security create-keychain -p ci build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p ci build.keychain
-          security import /tmp/asi-cert.p12 -k build.keychain -P "$CERT_PASSWORD"
-          # Grants codesign and Apple notary tools keychain access without
-          # trusting a notarytool path (it lives inside Xcode on runners).
+          security import /tmp/asi-cert.p12 -k build.keychain -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
+          # Prevent auto-lock and silent keychain prompts from hanging codesign.
+          security set-keychain-settings -lut 21600 build.keychain
+          security unlock-keychain -p "" "$HOME/Library/Keychains/login.keychain-db" || true
           rm -f /tmp/asi-cert.p12
       - name: Stamp the bundle version from the tag
         run: |
