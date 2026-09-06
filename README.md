@@ -87,7 +87,7 @@ ASI_SIGN_IDENTITY="..." ASI_TEAM_ID="..." ASI_NOTARY_PROFILE="AC_API_KEY" bash s
 
 ## 安装
 
-当前已发布 **v0.2.12**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
+当前已发布 **v0.2.13**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
 
 ### Homebrew（macOS）
 
@@ -108,7 +108,7 @@ npm 包内置各平台预编译二进制，不要求用户安装 Rust 或 Node �
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
-# 指定版本：VERSION=0.2.12 curl -fsSL ... | sh
+# 指定版本：VERSION=0.2.13 curl -fsSL ... | sh
 # 指定目录：PREFIX=/usr/local/bin curl -fsSL ... | sh
 ```
 

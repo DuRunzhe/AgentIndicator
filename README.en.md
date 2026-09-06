@@ -87,7 +87,7 @@ ASI_SIGN_IDENTITY="..." ASI_TEAM_ID="..." ASI_NOTARY_PROFILE="AC_API_KEY" bash s
 
 ## Installation
 
-The current release is **v0.2.12** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
+The current release is **v0.2.13** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
 
 ### Homebrew (macOS)
 
@@ -108,7 +108,7 @@ The npm package bundles prebuilt binaries for every platform — no Rust or nati
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
-# pin a version: VERSION=0.2.12 curl -fsSL ... | sh
+# pin a version: VERSION=0.2.13 curl -fsSL ... | sh
 # pick a prefix: PREFIX=/usr/local/bin curl -fsSL ... | sh
 ```
 
