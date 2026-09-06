@@ -39,7 +39,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev pkg-config libssl-dev
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev pkg-config libssl-dev
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
       - name: Package archive + sha256 sidecar
@@ -48,8 +48,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           if [ "${{ matrix.asset }}" = "agent-status-indicator-x86_64-pc-windows-msvc.zip" ]; then
-            (cd "target/${{ matrix.target }}/release" \
-              && tar -a -cf "$GITHUB_WORKSPACE/dist/${{ matrix.asset }}" agent-status-indicator.exe)
+            powershell -NoProfile -Command "Compress-Archive -Path 'target/${{ matrix.target }}/release/agent-status-indicator.exe' -DestinationPath 'dist/${{ matrix.asset }}' -Force"
           else
             tar -czf "dist/${{ matrix.asset }}" \
               -C "target/${{ matrix.target }}/release" agent-status-indicator

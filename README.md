@@ -6,7 +6,7 @@
 
 源码与发布：<https://github.com/DuRunzhe/AgentIndicator>
 
-## 指定实现方案
+## 实现方案
 
 采用 **Rust 单进程 + `tray-icon` 原生系统托盘**，不使用 Electron、Python 或常驻 Node.js。`winit` 负责跨平台事件循环，`sysinfo` 负责低成本进程快照，Claude/Codex/OpenCode 的会话文件由 Rust 增量解析。Node 仅作为 npm 安装后的平台二进制启动包装，不参与常驻运行。
 
