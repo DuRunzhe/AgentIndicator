@@ -121,6 +121,12 @@ ASI_SIGN_IDENTITY="Developer ID Application: Runzhe Du (TEAMID)" ASI_TEAM_ID="TE
 brew install DuRunzhe/tap/agent-status-indicator
 ```
 
+更新到最新版：
+
+```bash
+brew upgrade DuRunzhe/tap/agent-status-indicator
+```
+
 ### npm（跨平台）
 
 ```bash
@@ -128,6 +134,12 @@ npm install -g agent-status-indicator
 ```
 
 装完即可用 `agent-status-indicator` 命令启动托盘。npm 包内置各平台预编译二进制，不需要 Rust 或 Node 原生工具链；macOS（Apple Silicon）包内含已公证的 `.app`，不会被 Gatekeeper 拦截。
+
+更新到最新版：
+
+```bash
+npm update -g agent-status-indicator
+```
 
 #### 添加到系统应用（可选）
 
@@ -138,6 +150,7 @@ cp -R "$(npm root -g)/agent-status-indicator/app/darwin-arm64/AgentStatusIndicat
 ```
 
 之后可用 `open -a AgentStatusIndicator` 或启动台启动。
+更新时如需替换 /Applications 里的旧副本，先删除旧 `.app` 再重新复制。
 
 **Windows**：给“开始菜单”创建快捷方式（在 PowerShell 中执行）。
 
@@ -171,6 +184,12 @@ Bun 直接读取 npm registry，全局目录默认在 `$(bun pm root -g)`，命�
 
 ```bash
 bun install -g agent-status-indicator
+```
+
+更新到最新版：
+
+```bash
+bun update -g agent-status-indicator
 ```
 
 #### 添加到系统应用（可选）
@@ -213,6 +232,12 @@ EOF
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
+更新：重新运行安装命令即可（默认取最新）。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+```
+
 指定版本：
 
 ```bash
@@ -231,10 +256,18 @@ PREFIX=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/DuRunzhe/Agen
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.ps1 | iex"
 ```
 
+更新：重新运行上面的安装命令即可（默认取最新）。
+
 ### winget（Windows，合入 microsoft/winget-pkgs 后可用）
 
 ```powershell
 winget install --id DuRunzhe.AgentStatusIndicator
+```
+
+更新到最新版：
+
+```powershell
+winget upgrade --id DuRunzhe.AgentStatusIndicator
 ```
 
 ### GitHub Release
@@ -254,32 +287,6 @@ agent-status-indicator --debug-ui
 - 单击托盘图标展开菜单：实例按“等待确认 → 等待回复 → 进行中 → 就绪”显示模型、上下文与时长；点击存活实例可跳回对应终端或浏览器会话。
 - 需要人工介入时触发系统通知；通知类型、显示内容与开机自启都在“设置”菜单中调整。
 - 已按上文加入系统应用后，也可以直接从图形启动器启动。
-
-### 升级
-
-Homebrew：
-
-```bash
-brew upgrade DuRunzhe/tap/agent-status-indicator
-```
-
-npm：
-
-```bash
-npm update -g agent-status-indicator
-```
-
-Bun：
-
-```bash
-bun update -g agent-status-indicator
-```
-
-curl / PowerShell 安装的版本默认取最新，直接重新运行对应安装命令即可。macOS 已复制到 /Applications 的旧副本，升级后先删除再重新复制：
-
-```bash
-rm -rf /Applications/AgentStatusIndicator.app
-```
 
 ## 卸载
 

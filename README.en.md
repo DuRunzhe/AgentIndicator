@@ -121,6 +121,12 @@ The current release is **v0.2.13** (macOS arm64, Developer ID signed and notariz
 brew install DuRunzhe/tap/agent-status-indicator
 ```
 
+Update to the latest version:
+
+```bash
+brew upgrade DuRunzhe/tap/agent-status-indicator
+```
+
 ### npm (cross-platform)
 
 ```bash
@@ -128,6 +134,12 @@ npm install -g agent-status-indicator
 ```
 
 After installing, launch the tray monitor with the `agent-status-indicator` command. The npm package bundles prebuilt binaries for every platform — no Rust or native Node toolchain required. On macOS (Apple Silicon) it ships the notarized `.app`, so Gatekeeper will not block it.
+
+Update to the latest version:
+
+```bash
+npm update -g agent-status-indicator
+```
 
 #### Adding it to your applications (optional)
 
@@ -138,6 +150,7 @@ cp -R "$(npm root -g)/agent-status-indicator/app/darwin-arm64/AgentStatusIndicat
 ```
 
 Launch it afterwards with `open -a AgentStatusIndicator` or from Launchpad.
+When updating, if an older copy exists in /Applications, remove the old `.app` before copying the new one.
 
 **Windows**: create a Start Menu shortcut (run in PowerShell).
 
@@ -171,6 +184,12 @@ Bun reads the npm registry directly; its global directory defaults to `$(bun pm 
 
 ```bash
 bun install -g agent-status-indicator
+```
+
+Update to the latest version:
+
+```bash
+bun update -g agent-status-indicator
 ```
 
 #### Adding it to your applications (optional)
@@ -213,6 +232,12 @@ EOF
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
+Updating: just re-run the install command (it resolves the latest version).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+```
+
 Pin a version:
 
 ```bash
@@ -231,10 +256,18 @@ PREFIX=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/DuRunzhe/Agen
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.ps1 | iex"
 ```
 
+Updating: just re-run the install command above (it resolves the latest version).
+
 ### winget (Windows, once merged into microsoft/winget-pkgs)
 
 ```powershell
 winget install --id DuRunzhe.AgentStatusIndicator
+```
+
+Update to the latest version:
+
+```powershell
+winget upgrade --id DuRunzhe.AgentStatusIndicator
 ```
 
 ### GitHub Releases
@@ -254,32 +287,6 @@ agent-status-indicator --debug-ui
 - Click the tray icon to open the menu: instances are shown with model, context and uptime in the “waiting for confirmation → waiting for reply → working → ready” order; clicking a live instance jumps to its terminal or browser session.
 - Native notifications fire when human attention is needed; notification types, display options and start-at-login are adjusted in the Settings menu.
 - If you added it to your applications as above, you can also launch it from the graphical launcher.
-
-### Upgrading
-
-Homebrew:
-
-```bash
-brew upgrade DuRunzhe/tap/agent-status-indicator
-```
-
-npm:
-
-```bash
-npm update -g agent-status-indicator
-```
-
-Bun:
-
-```bash
-bun update -g agent-status-indicator
-```
-
-curl / PowerShell installations always resolve the latest version — just re-run the corresponding install command. If you copied an older `.app` into /Applications on macOS, remove it before copying the new one:
-
-```bash
-rm -rf /Applications/AgentStatusIndicator.app
-```
 
 ## Uninstalling
 
