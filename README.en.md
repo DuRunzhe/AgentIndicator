@@ -95,14 +95,59 @@ The current release is **v0.2.13** (macOS arm64, Developer ID signed and notariz
 brew install DuRunzhe/tap/agent-status-indicator
 ```
 
-### npm / Bun (cross-platform, picks the right platform binary)
+### npm (cross-platform)
 
 ```bash
 npm install -g agent-status-indicator
+```
+
+After installing, launch the tray monitor with the `agent-status-indicator` command. The npm package bundles prebuilt binaries for every platform — no Rust or native Node toolchain required. On macOS (Apple Silicon) the package ships the notarized `.app`, so Gatekeeper will not block it.
+
+#### Adding it to your applications (optional)
+
+**macOS**: copy the bundled notarized `.app` into /Applications (Apple Silicon; on Intel machines run the binary from a Release archive instead):
+
+```bash
+APP="$(npm root -g)/agent-status-indicator/app/darwin-arm64/AgentStatusIndicator.app"
+[ -d "$APP" ] && cp -R "$APP" /Applications/
+open -a AgentStatusIndicator      # then launch from Launchpad / Spotlight
+# before reinstalling a newer version: rm -rf /Applications/AgentStatusIndicator.app
+```
+
+**Windows**: create a Start Menu shortcut (run in PowerShell):
+
+```powershell
+$exe = "$(npm root -g)\agent-status-indicator\bin\win32-x64\agent-status-indicator.exe"
+$ws = New-Object -ComObject WScript.Shell
+$lnk = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentStatusIndicator.lnk")
+$lnk.TargetPath = $exe; $lnk.Save()
+```
+
+**Linux**: add a desktop entry (the desktop environment must support AppIndicator/StatusNotifier):
+
+```bash
+BIN="$(npm root -g)/agent-status-indicator/bin/linux-x64/agent-status-indicator"
+mkdir -p ~/.local/share/applications
+cat > ~/.local/share/applications/agent-status-indicator.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=AgentStatusIndicator
+Comment=AI coding agent tray monitor
+Exec=$BIN
+Terminal=false
+Categories=Utility;
+EOF
+```
+
+### Bun (cross-platform)
+
+Bun reads the npm registry directly but keeps packages in its own global directory (default `$(bun pm root -g)`, with command entry points in `~/.bun/bin`):
+
+```bash
 bun install -g agent-status-indicator
 ```
 
-The npm package bundles prebuilt binaries for every platform — no Rust or native Node toolchain required; on macOS it runs the notarized `.app` inside the package, so Gatekeeper will not block it.
+To “add to applications” with Bun, replace `$(npm root -g)/agent-status-indicator` in the commands above with `$(bun pm root -g)/agent-status-indicator`: the macOS `.app` lives in `app/darwin-arm64/AgentStatusIndicator.app`, Windows uses `bin/win32-x64/agent-status-indicator.exe`, Linux `bin/linux-x64/agent-status-indicator`.
 
 ### curl (macOS / Linux)
 
@@ -127,6 +172,18 @@ winget install --id DuRunzhe.AgentStatusIndicator
 ### GitHub Releases
 
 Download the `tar.gz` / `zip` for your platform, or the npm `tgz`, from <https://github.com/DuRunzhe/AgentIndicator/releases>. The install scripts verify the `.sha256` sidecar published next to each asset.
+
+### Usage
+
+```bash
+agent-status-indicator             # launch the tray monitor (stays in the foreground)
+agent-status-indicator --diagnose  # print detected agents/sessions/states without the tray
+agent-status-indicator --debug-ui  # debug mode; writes state to ~/.agent-status-indicator-ui.json
+```
+
+- Click the tray icon to open the menu: instances are grouped by five states and show model, context and uptime; clicking a live instance jumps to its terminal or browser session.
+- Native notifications fire when human attention is needed (waiting for confirmation / waiting for reply); notification types, display options and start-at-login are adjusted in the Settings menu.
+- If you added it to /Applications (macOS) or the app menu (Windows/Linux) as above, you can also launch it from the graphical launcher.
 
 ### Upgrading
 

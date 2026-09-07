@@ -95,14 +95,59 @@ ASI_SIGN_IDENTITY="..." ASI_TEAM_ID="..." ASI_NOTARY_PROFILE="AC_API_KEY" bash s
 brew install DuRunzhe/tap/agent-status-indicator
 ```
 
-### npm / Bun（跨平台，自动匹配平台二进制）
+### npm（跨平台）
 
 ```bash
 npm install -g agent-status-indicator
+```
+
+安装后可用 `agent-status-indicator` 命令直接启动托盘。npm 包内置各平台预编译二进制，不需要 Rust 或 Node 原生编译工具链；macOS（Apple Silicon）包内含已公证的 `.app`，不会触发 Gatekeeper 拦截。
+
+#### 安装后添加到系统应用（可选）
+
+**macOS**：把包内公证 `.app` 放入“应用程序”文件夹（Apple Silicon；Intel 机器请用 Release 中的二进制运行）：
+
+```bash
+APP="$(npm root -g)/agent-status-indicator/app/darwin-arm64/AgentStatusIndicator.app"
+[ -d "$APP" ] && cp -R "$APP" /Applications/
+open -a AgentStatusIndicator      # 之后可从启动台/聚焦启动
+# 升级重装前先删旧的：rm -rf /Applications/AgentStatusIndicator.app
+```
+
+**Windows**：给“开始菜单”创建快捷方式（在 PowerShell 中执行）：
+
+```powershell
+$exe = "$(npm root -g)\agent-status-indicator\bin\win32-x64\agent-status-indicator.exe"
+$ws = New-Object -ComObject WScript.Shell
+$lnk = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentStatusIndicator.lnk")
+$lnk.TargetPath = $exe; $lnk.Save()
+```
+
+**Linux**：写入桌面入口（桌面环境需支持 AppIndicator/StatusNotifier）：
+
+```bash
+BIN="$(npm root -g)/agent-status-indicator/bin/linux-x64/agent-status-indicator"
+mkdir -p ~/.local/share/applications
+cat > ~/.local/share/applications/agent-status-indicator.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=AgentStatusIndicator
+Comment=AI coding agent tray monitor
+Exec=$BIN
+Terminal=false
+Categories=Utility;
+EOF
+```
+
+### Bun（跨平台）
+
+Bun 直接读取 npm registry，全局目录不同（默认在 `$(bun pm root -g)`，命令入口在 `~/.bun/bin`）：
+
+```bash
 bun install -g agent-status-indicator
 ```
 
-npm 包内置各平台预编译二进制，不要求用户安装 Rust 或 Node 原生编译工具链；macOS 走包内已公证的 `.app`，下载后不会被 Gatekeeper 拦截。
+同样想“添加到系统应用”时，把上面 npm 命令里的 `$(npm root -g)/agent-status-indicator` 换成 `$(bun pm root -g)/agent-status-indicator` 即可：macOS 的 `.app` 在 `app/darwin-arm64/AgentStatusIndicator.app`，Windows 用 `bin/win32-x64/agent-status-indicator.exe`，Linux 用 `bin/linux-x64/agent-status-indicator`。
 
 ### curl（macOS / Linux）
 
@@ -127,6 +172,18 @@ winget install --id DuRunzhe.AgentStatusIndicator
 ### GitHub Release
 
 直接下载 https://github.com/DuRunzhe/AgentIndicator/releases 下对应平台的 `tar.gz` / `zip`，以及 npm `tgz`。安装脚本会校验随资产发布的 `.sha256`。
+
+### 使用
+
+```bash
+agent-status-indicator             # 启动托盘监控（常驻前台）
+agent-status-indicator --diagnose  # 打印当前探测到的 Agent/会话/状态，不启动托盘
+agent-status-indicator --debug-ui  # 调试模式，状态写入 ~/.agent-status-indicator-ui.json
+```
+
+- 单击托盘图标展开菜单：实例行按五态排序并显示模型、上下文与时长；点击存活实例可跳回对应终端或浏览器会话。
+- 需要人工介入（等待确认/等待回复）时触发系统通知；通知类型、显示内容与开机自启都在“设置”菜单中调整。
+- 若已按上文放入 /Applications（macOS）或应用菜单（Windows/Linux），也可以直接从图形启动器启动。
 
 ### 升级
 
