@@ -74,15 +74,41 @@ The current version is a runnable first-stage skeleton, not yet a full feature-p
 
 ## Development
 
+Release build (remaps local paths automatically):
+
 ```bash
-bash scripts/build-release.sh           # release build (remaps local paths automatically)
+bash scripts/build-release.sh
+```
+
+Run the tests:
+
+```bash
 cargo test
-# Print currently detected agents, session matches and states without the tray
+```
+
+Run the tray monitor locally:
+
+```bash
+cargo run --release
+```
+
+Print detected agents, sessions and states without starting the tray:
+
+```bash
 cargo run --release -- --diagnose
-# macOS packaging / signing / notarization
+```
+
+Package the macOS `.app`. Without `ASI_SIGN_IDENTITY` it is signed ad-hoc; with it, Developer ID signing is used:
+
+```bash
 bash scripts/package-macos-app.sh
-ASI_SIGN_IDENTITY="Developer ID Application: ... (TEAMID)" bash scripts/package-macos-app.sh
-ASI_SIGN_IDENTITY="..." ASI_TEAM_ID="..." ASI_NOTARY_PROFILE="AC_API_KEY" bash scripts/notarize-macos-app.sh
+ASI_SIGN_IDENTITY="Developer ID Application: Runzhe Du (TEAMID)" bash scripts/package-macos-app.sh
+```
+
+Sign + notarize + staple (requires configured notarytool credentials):
+
+```bash
+ASI_SIGN_IDENTITY="Developer ID Application: Runzhe Du (TEAMID)" ASI_TEAM_ID="TEAMID" ASI_NOTARY_PROFILE="AC_API_KEY" bash scripts/notarize-macos-app.sh
 ```
 
 ## Installation
@@ -101,29 +127,29 @@ brew install DuRunzhe/tap/agent-status-indicator
 npm install -g agent-status-indicator
 ```
 
-After installing, launch the tray monitor with the `agent-status-indicator` command. The npm package bundles prebuilt binaries for every platform — no Rust or native Node toolchain required. On macOS (Apple Silicon) the package ships the notarized `.app`, so Gatekeeper will not block it.
+After installing, launch the tray monitor with the `agent-status-indicator` command. The npm package bundles prebuilt binaries for every platform — no Rust or native Node toolchain required. On macOS (Apple Silicon) it ships the notarized `.app`, so Gatekeeper will not block it.
 
 #### Adding it to your applications (optional)
 
-**macOS**: copy the bundled notarized `.app` into /Applications (Apple Silicon; on Intel machines run the binary from a Release archive instead):
+**macOS (Apple Silicon)**: copy the bundled notarized `.app` into /Applications.
 
 ```bash
-APP="$(npm root -g)/agent-status-indicator/app/darwin-arm64/AgentStatusIndicator.app"
-[ -d "$APP" ] && cp -R "$APP" /Applications/
-open -a AgentStatusIndicator      # then launch from Launchpad / Spotlight
-# before reinstalling a newer version: rm -rf /Applications/AgentStatusIndicator.app
+cp -R "$(npm root -g)/agent-status-indicator/app/darwin-arm64/AgentStatusIndicator.app" /Applications/
 ```
 
-**Windows**: create a Start Menu shortcut (run in PowerShell):
+Launch it afterwards with `open -a AgentStatusIndicator` or from Launchpad.
+
+**Windows**: create a Start Menu shortcut (run in PowerShell).
 
 ```powershell
 $exe = "$(npm root -g)\agent-status-indicator\bin\win32-x64\agent-status-indicator.exe"
 $ws = New-Object -ComObject WScript.Shell
 $lnk = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentStatusIndicator.lnk")
-$lnk.TargetPath = $exe; $lnk.Save()
+$lnk.TargetPath = $exe
+$lnk.Save()
 ```
 
-**Linux**: add a desktop entry (the desktop environment must support AppIndicator/StatusNotifier):
+**Linux**: add a desktop entry (the desktop environment must support AppIndicator/StatusNotifier).
 
 ```bash
 BIN="$(npm root -g)/agent-status-indicator/bin/linux-x64/agent-status-indicator"
@@ -141,20 +167,62 @@ EOF
 
 ### Bun (cross-platform)
 
-Bun reads the npm registry directly but keeps packages in its own global directory (default `$(bun pm root -g)`, with command entry points in `~/.bun/bin`):
+Bun reads the npm registry directly; its global directory defaults to `$(bun pm root -g)` with command entry points in `~/.bun/bin`:
 
 ```bash
 bun install -g agent-status-indicator
 ```
 
-To “add to applications” with Bun, replace `$(npm root -g)/agent-status-indicator` in the commands above with `$(bun pm root -g)/agent-status-indicator`: the macOS `.app` lives in `app/darwin-arm64/AgentStatusIndicator.app`, Windows uses `bin/win32-x64/agent-status-indicator.exe`, Linux `bin/linux-x64/agent-status-indicator`.
+#### Adding it to your applications (optional)
+
+**macOS (Apple Silicon)**:
+
+```bash
+cp -R "$(bun pm root -g)/agent-status-indicator/app/darwin-arm64/AgentStatusIndicator.app" /Applications/
+```
+
+**Windows** (PowerShell):
+
+```powershell
+$exe = "$(bun pm root -g)\agent-status-indicator\bin\win32-x64\agent-status-indicator.exe"
+$ws = New-Object -ComObject WScript.Shell
+$lnk = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentStatusIndicator.lnk")
+$lnk.TargetPath = $exe
+$lnk.Save()
+```
+
+**Linux**:
+
+```bash
+BIN="$(bun pm root -g)/agent-status-indicator/bin/linux-x64/agent-status-indicator"
+mkdir -p ~/.local/share/applications
+cat > ~/.local/share/applications/agent-status-indicator.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=AgentStatusIndicator
+Comment=AI coding agent tray monitor
+Exec=$BIN
+Terminal=false
+Categories=Utility;
+EOF
+```
 
 ### curl (macOS / Linux)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
-# pin a version: VERSION=0.2.13 curl -fsSL ... | sh
-# pick a prefix: PREFIX=/usr/local/bin curl -fsSL ... | sh
+```
+
+Pin a version:
+
+```bash
+VERSION=0.2.13 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+```
+
+Install elsewhere:
+
+```bash
+PREFIX=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
 ### PowerShell (Windows)
@@ -176,49 +244,88 @@ Download the `tar.gz` / `zip` for your platform, or the npm `tgz`, from <https:/
 ### Usage
 
 ```bash
-agent-status-indicator             # launch the tray monitor (stays in the foreground)
-agent-status-indicator --diagnose  # print detected agents/sessions/states without the tray
-agent-status-indicator --debug-ui  # debug mode; writes state to ~/.agent-status-indicator-ui.json
+agent-status-indicator
+agent-status-indicator --diagnose
+agent-status-indicator --debug-ui
 ```
 
-- Click the tray icon to open the menu: instances are grouped by five states and show model, context and uptime; clicking a live instance jumps to its terminal or browser session.
-- Native notifications fire when human attention is needed (waiting for confirmation / waiting for reply); notification types, display options and start-at-login are adjusted in the Settings menu.
-- If you added it to /Applications (macOS) or the app menu (Windows/Linux) as above, you can also launch it from the graphical launcher.
+- `--diagnose`: prints the detected agents, sessions and states without starting the tray.
+- `--debug-ui`: debug mode; writes the tray UI state to `~/.agent-status-indicator-ui.json`.
+- Click the tray icon to open the menu: instances are shown with model, context and uptime in the “waiting for confirmation → waiting for reply → working → ready” order; clicking a live instance jumps to its terminal or browser session.
+- Native notifications fire when human attention is needed; notification types, display options and start-at-login are adjusted in the Settings menu.
+- If you added it to your applications as above, you can also launch it from the graphical launcher.
 
 ### Upgrading
 
+Homebrew:
+
 ```bash
-npm update -g agent-status-indicator     # or bun update -g ...
 brew upgrade DuRunzhe/tap/agent-status-indicator
-# the curl/PowerShell scripts resolve "latest" by default — just re-run them
+```
+
+npm:
+
+```bash
+npm update -g agent-status-indicator
+```
+
+Bun:
+
+```bash
+bun update -g agent-status-indicator
+```
+
+curl / PowerShell installations always resolve the latest version — just re-run the corresponding install command. If you copied an older `.app` into /Applications on macOS, remove it before copying the new one:
+
+```bash
+rm -rf /Applications/AgentStatusIndicator.app
 ```
 
 ## Uninstalling
 
-Each channel installs independently, so remove the ones you used:
+Each channel installs independently, so remove only the ones you used.
+
+Homebrew:
 
 ```bash
-# Homebrew (macOS)
 brew uninstall DuRunzhe/tap/agent-status-indicator
-# only if you previously ran: brew services start agent-status-indicator
+```
+
+If you previously ran `brew services start`, stop it first:
+
+```bash
 brew services stop agent-status-indicator
+```
 
-# npm / Bun (cross-platform)
+npm:
+
+```bash
 npm uninstall -g agent-status-indicator
+```
+
+Bun:
+
+```bash
 bun remove -g agent-status-indicator
+```
 
-# curl installer (macOS / Linux): delete the binary
-rm -f ~/.local/bin/agent-status-indicator   # or the PREFIX directory you used
+curl-installed binary:
 
-# winget (Windows, once merged into microsoft/winget-pkgs)
+```bash
+rm -f ~/.local/bin/agent-status-indicator
+```
+
+If you installed with a custom `PREFIX`, delete the file from that directory instead. Once winget is merged:
+
+```powershell
 winget uninstall --id DuRunzhe.AgentStatusIndicator
 ```
 
-The in-app **start-at-login** option leaves a LaunchAgent behind; remove it after uninstalling:
+The in-app start-at-login option leaves a LaunchAgent behind; remove it after uninstalling:
 
 ```bash
 launchctl bootout "gui/$(id -u)/com.agentstatusindicator.app" 2>/dev/null || true
 rm -f ~/Library/LaunchAgents/com.agentstatusindicator.app.plist
 ```
 
-Optional: delete leftover config at `~/.config/agent-status-indicator/config.json`. Uninstalling never touches your Claude/Codex/OpenCode/Pi session files.
+Optional leftover config: `~/.config/agent-status-indicator/config.json`. Uninstalling never touches your Claude/Codex/OpenCode/Pi session files.

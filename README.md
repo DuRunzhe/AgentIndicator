@@ -74,15 +74,41 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 
 ## 开发运行
 
+release 构建（自动重映射本机路径）：
+
 ```bash
-bash scripts/build-release.sh           # release 构建（自动重映射本机路径）
+bash scripts/build-release.sh
+```
+
+运行测试：
+
+```bash
 cargo test
-# 查看当前探测到的 Agent、会话匹配和状态（不启动托盘）
+```
+
+本地启动托盘：
+
+```bash
+cargo run --release
+```
+
+不启动托盘，打印当前探测到的 Agent、会话与状态：
+
+```bash
 cargo run --release -- --diagnose
-# macOS 分发打包 / 签名 / 公证
+```
+
+macOS 打包 `.app`。不设 `ASI_SIGN_IDENTITY` 时做 ad-hoc 签名，设置后用 Developer ID 签名：
+
+```bash
 bash scripts/package-macos-app.sh
-ASI_SIGN_IDENTITY="Developer ID Application: ... (TEAMID)" bash scripts/package-macos-app.sh
-ASI_SIGN_IDENTITY="..." ASI_TEAM_ID="..." ASI_NOTARY_PROFILE="AC_API_KEY" bash scripts/notarize-macos-app.sh
+ASI_SIGN_IDENTITY="Developer ID Application: Runzhe Du (TEAMID)" bash scripts/package-macos-app.sh
+```
+
+签名 + 公证 + 装订（需要已配置 notarytool 凭据）：
+
+```bash
+ASI_SIGN_IDENTITY="Developer ID Application: Runzhe Du (TEAMID)" ASI_TEAM_ID="TEAMID" ASI_NOTARY_PROFILE="AC_API_KEY" bash scripts/notarize-macos-app.sh
 ```
 
 ## 安装
@@ -101,29 +127,29 @@ brew install DuRunzhe/tap/agent-status-indicator
 npm install -g agent-status-indicator
 ```
 
-安装后可用 `agent-status-indicator` 命令直接启动托盘。npm 包内置各平台预编译二进制，不需要 Rust 或 Node 原生编译工具链；macOS（Apple Silicon）包内含已公证的 `.app`，不会触发 Gatekeeper 拦截。
+装完即可用 `agent-status-indicator` 命令启动托盘。npm 包内置各平台预编译二进制，不需要 Rust 或 Node 原生工具链；macOS（Apple Silicon）包内含已公证的 `.app`，不会被 Gatekeeper 拦截。
 
-#### 安装后添加到系统应用（可选）
+#### 添加到系统应用（可选）
 
-**macOS**：把包内公证 `.app` 放入“应用程序”文件夹（Apple Silicon；Intel 机器请用 Release 中的二进制运行）：
+**macOS（Apple Silicon）**：把包内公证的 `.app` 复制进“应用程序”。
 
 ```bash
-APP="$(npm root -g)/agent-status-indicator/app/darwin-arm64/AgentStatusIndicator.app"
-[ -d "$APP" ] && cp -R "$APP" /Applications/
-open -a AgentStatusIndicator      # 之后可从启动台/聚焦启动
-# 升级重装前先删旧的：rm -rf /Applications/AgentStatusIndicator.app
+cp -R "$(npm root -g)/agent-status-indicator/app/darwin-arm64/AgentStatusIndicator.app" /Applications/
 ```
 
-**Windows**：给“开始菜单”创建快捷方式（在 PowerShell 中执行）：
+之后可用 `open -a AgentStatusIndicator` 或启动台启动。
+
+**Windows**：给“开始菜单”创建快捷方式（在 PowerShell 中执行）。
 
 ```powershell
 $exe = "$(npm root -g)\agent-status-indicator\bin\win32-x64\agent-status-indicator.exe"
 $ws = New-Object -ComObject WScript.Shell
 $lnk = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentStatusIndicator.lnk")
-$lnk.TargetPath = $exe; $lnk.Save()
+$lnk.TargetPath = $exe
+$lnk.Save()
 ```
 
-**Linux**：写入桌面入口（桌面环境需支持 AppIndicator/StatusNotifier）：
+**Linux**：写入桌面入口（桌面环境需支持 AppIndicator/StatusNotifier）。
 
 ```bash
 BIN="$(npm root -g)/agent-status-indicator/bin/linux-x64/agent-status-indicator"
@@ -141,20 +167,62 @@ EOF
 
 ### Bun（跨平台）
 
-Bun 直接读取 npm registry，全局目录不同（默认在 `$(bun pm root -g)`，命令入口在 `~/.bun/bin`）：
+Bun 直接读取 npm registry，全局目录默认在 `$(bun pm root -g)`，命令入口在 `~/.bun/bin`：
 
 ```bash
 bun install -g agent-status-indicator
 ```
 
-同样想“添加到系统应用”时，把上面 npm 命令里的 `$(npm root -g)/agent-status-indicator` 换成 `$(bun pm root -g)/agent-status-indicator` 即可：macOS 的 `.app` 在 `app/darwin-arm64/AgentStatusIndicator.app`，Windows 用 `bin/win32-x64/agent-status-indicator.exe`，Linux 用 `bin/linux-x64/agent-status-indicator`。
+#### 添加到系统应用（可选）
+
+**macOS（Apple Silicon）**：
+
+```bash
+cp -R "$(bun pm root -g)/agent-status-indicator/app/darwin-arm64/AgentStatusIndicator.app" /Applications/
+```
+
+**Windows**（PowerShell）：
+
+```powershell
+$exe = "$(bun pm root -g)\agent-status-indicator\bin\win32-x64\agent-status-indicator.exe"
+$ws = New-Object -ComObject WScript.Shell
+$lnk = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentStatusIndicator.lnk")
+$lnk.TargetPath = $exe
+$lnk.Save()
+```
+
+**Linux**：
+
+```bash
+BIN="$(bun pm root -g)/agent-status-indicator/bin/linux-x64/agent-status-indicator"
+mkdir -p ~/.local/share/applications
+cat > ~/.local/share/applications/agent-status-indicator.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=AgentStatusIndicator
+Comment=AI coding agent tray monitor
+Exec=$BIN
+Terminal=false
+Categories=Utility;
+EOF
+```
 
 ### curl（macOS / Linux）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
-# 指定版本：VERSION=0.2.13 curl -fsSL ... | sh
-# 指定目录：PREFIX=/usr/local/bin curl -fsSL ... | sh
+```
+
+指定版本：
+
+```bash
+VERSION=0.2.13 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+```
+
+指定安装目录：
+
+```bash
+PREFIX=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
 ### PowerShell（Windows）
@@ -176,49 +244,88 @@ winget install --id DuRunzhe.AgentStatusIndicator
 ### 使用
 
 ```bash
-agent-status-indicator             # 启动托盘监控（常驻前台）
-agent-status-indicator --diagnose  # 打印当前探测到的 Agent/会话/状态，不启动托盘
-agent-status-indicator --debug-ui  # 调试模式，状态写入 ~/.agent-status-indicator-ui.json
+agent-status-indicator
+agent-status-indicator --diagnose
+agent-status-indicator --debug-ui
 ```
 
-- 单击托盘图标展开菜单：实例行按五态排序并显示模型、上下文与时长；点击存活实例可跳回对应终端或浏览器会话。
-- 需要人工介入（等待确认/等待回复）时触发系统通知；通知类型、显示内容与开机自启都在“设置”菜单中调整。
-- 若已按上文放入 /Applications（macOS）或应用菜单（Windows/Linux），也可以直接从图形启动器启动。
+- `--diagnose`：打印当前探测到的 Agent、会话与状态，不启动托盘。
+- `--debug-ui`：调试模式，把托盘 UI 状态写入 `~/.agent-status-indicator-ui.json`。
+- 单击托盘图标展开菜单：实例按“等待确认 → 等待回复 → 进行中 → 就绪”显示模型、上下文与时长；点击存活实例可跳回对应终端或浏览器会话。
+- 需要人工介入时触发系统通知；通知类型、显示内容与开机自启都在“设置”菜单中调整。
+- 已按上文加入系统应用后，也可以直接从图形启动器启动。
 
 ### 升级
 
+Homebrew：
+
 ```bash
-npm update -g agent-status-indicator     # 或 bun update -g ...
 brew upgrade DuRunzhe/tap/agent-status-indicator
-# curl/PowerShell 脚本默认取 latest，直接重跑即可
+```
+
+npm：
+
+```bash
+npm update -g agent-status-indicator
+```
+
+Bun：
+
+```bash
+bun update -g agent-status-indicator
+```
+
+curl / PowerShell 安装的版本默认取最新，直接重新运行对应安装命令即可。macOS 已复制到 /Applications 的旧副本，升级后先删除再重新复制：
+
+```bash
+rm -rf /Applications/AgentStatusIndicator.app
 ```
 
 ## 卸载
 
-各渠道独立安装，按你使用过的渠道分别卸载：
+各渠道独立安装，请按实际使用的渠道分别卸载。
+
+Homebrew：
 
 ```bash
-# Homebrew（macOS）
 brew uninstall DuRunzhe/tap/agent-status-indicator
-# 若曾执行过 brew services start，先停止：
+```
+
+若之前运行过 `brew services start`，先停止服务：
+
+```bash
 brew services stop agent-status-indicator
+```
 
-# npm / Bun（跨平台）
+npm：
+
+```bash
 npm uninstall -g agent-status-indicator
+```
+
+Bun：
+
+```bash
 bun remove -g agent-status-indicator
+```
 
-# curl 安装（macOS / Linux）：删除二进制即可
-rm -f ~/.local/bin/agent-status-indicator   # 若用了 PREFIX，改删对应目录
+curl 安装的二进制：
 
-# winget（Windows，合入 microsoft/winget-pkgs 后）
+```bash
+rm -f ~/.local/bin/agent-status-indicator
+```
+
+若安装时用了 `PREFIX`，删除对应目录里的该文件。winget 合入后：
+
+```powershell
 winget uninstall --id DuRunzhe.AgentStatusIndicator
 ```
 
-应用内开启的**开机自启**会留下 LaunchAgent，卸载后手动清理：
+应用内开启的开机自启会留下 LaunchAgent，卸载后手动清理：
 
 ```bash
 launchctl bootout "gui/$(id -u)/com.agentstatusindicator.app" 2>/dev/null || true
 rm -f ~/Library/LaunchAgents/com.agentstatusindicator.app.plist
 ```
 
-可选：删除配置残留 `~/.config/agent-status-indicator/config.json`；卸载不会影响你在 Claude/Codex/OpenCode/Pi 本身的会话文件。
+配置残留可删除 `~/.config/agent-status-indicator/config.json`。卸载不影响 Claude/Codex/OpenCode/Pi 的会话文件。
