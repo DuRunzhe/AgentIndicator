@@ -124,12 +124,6 @@ fn detect_codex_terminal_state(contents: &str) -> Option<AgentState> {
     if footer && question && yes && no {
         return Some(AgentState::Waiting);
     }
-    // Automatic review uses this interim status before (and sometimes instead
-    // of) the full numbered prompt. It is an explicit approval wait, not
-    // active tool execution.
-    if lower.contains("reviewing approval request") {
-        return Some(AgentState::Waiting);
-    }
     let working = lower.contains("esc to interrupt")
         || lower.contains("background terminal running")
         || lower.contains("background terminals running");
@@ -186,13 +180,6 @@ mod tests {
         let value = format!("Planning (4m • esc to interrupt)\n{APPROVAL}");
         assert_eq!(
             detect_codex_terminal_state(&value),
-            Some(AgentState::Waiting)
-        );
-    }
-    #[test]
-    fn detects_automatic_approval_review_as_waiting() {
-        assert_eq!(
-            detect_codex_terminal_state("Reviewing approval request · esc to interrupt"),
             Some(AgentState::Waiting)
         );
     }

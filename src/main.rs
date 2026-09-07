@@ -42,9 +42,6 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
 };
 
-// Session events and terminal prompts are short-lived. A half-second cadence
-// keeps the tray in step with Codex while leaving the UI loop independent.
-const SCAN_INTERVAL: Duration = Duration::from_millis(500);
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -89,7 +86,9 @@ fn main() -> Result<()> {
             if event_proxy.send_event(UserEvent::Scan).is_err() {
                 break;
             }
-            match refresh_rx.recv_timeout(SCAN_INTERVAL) {
+            // Match the reference monitor's full detection cadence. Tray animation
+            // remains independent and updates on the UI event loop.
+            match refresh_rx.recv_timeout(Duration::from_secs(2)) {
                 Ok(WorkerCommand::Restart) => detector = Detector::new(),
                 Ok(WorkerCommand::Refresh) | Err(_) => {}
             }
