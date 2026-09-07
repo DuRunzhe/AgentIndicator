@@ -568,6 +568,20 @@ mod tests {
         assert!(!cursor.facts.automatic_confirmation_mode);
     }
 
+    #[test]
+    fn auto_confirm_session_still_reports_a_pending_escalated_tool_as_waiting() {
+        let mut cursor = FileCursor::default();
+        for raw in [
+            r#"{"type":"turn_context","payload":{"approval_policy":"never"}}"#,
+            r#"{"type":"custom_tool_call","call_id":"call-a","name":"exec","input":"{\"sandbox_permissions\":\"require_escalated\"}"}"#,
+        ] {
+            apply_event(&serde_json::from_str(raw).unwrap(), "codex", &mut cursor);
+        }
+        apply_pending_priority(&mut cursor);
+        assert!(cursor.facts.automatic_confirmation_mode);
+        assert_eq!(cursor.facts.state, Some(AgentState::Waiting));
+    }
+
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn resumed_codex_session_matches_its_rollout_filename() {

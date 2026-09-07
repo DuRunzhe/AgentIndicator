@@ -111,19 +111,23 @@ fn detect_codex_terminal_state(contents: &str) -> Option<AgentState> {
     let visible = contents.trim_end();
     let prompt = tail_chars(visible, 2_000);
     let lower = prompt.to_ascii_lowercase();
-    let working = lower.contains("esc to interrupt")
-        || lower.contains("background terminal running")
-        || lower.contains("background terminals running");
-    if working {
-        return Some(AgentState::Working);
-    }
     let footer = visible
         .to_ascii_lowercase()
         .ends_with("press enter to confirm or esc to cancel");
     let question = lower.contains("would you like to") || lower.contains("do you want to");
     let yes = has_numbered_choice(prompt, "yes");
     let no = has_numbered_choice(prompt, "no");
-    (footer && question && yes && no).then_some(AgentState::Waiting)
+    // An intact prompt at the bottom is a stronger, current signal than an
+    // activity marker elsewhere in the visible terminal. This also matters
+    // for auto-confirming Codex sessions: the session can still briefly
+    // render a confirmation prompt and must report that state while it does.
+    if footer && question && yes && no {
+        return Some(AgentState::Waiting);
+    }
+    let working = lower.contains("esc to interrupt")
+        || lower.contains("background terminal running")
+        || lower.contains("background terminals running");
+    working.then_some(AgentState::Working)
 }
 
 fn tail_chars(value: &str, limit: usize) -> &str {
@@ -163,12 +167,20 @@ mod tests {
         );
     }
     #[test]
-    fn active_background_work_wins_over_old_approval() {
+    fn active_background_work_wins_after_an_old_approval() {
         let value =
             format!("{APPROVAL}\nPlanning (4m • esc to interrupt) · 1 background terminal running");
         assert_eq!(
             detect_codex_terminal_state(&value),
             Some(AgentState::Working)
+        );
+    }
+    #[test]
+    fn complete_approval_wins_over_an_earlier_activity_marker() {
+        let value = format!("Planning (4m • esc to interrupt)\n{APPROVAL}");
+        assert_eq!(
+            detect_codex_terminal_state(&value),
+            Some(AgentState::Waiting)
         );
     }
     #[test]
