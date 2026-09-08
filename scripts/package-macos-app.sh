@@ -11,8 +11,9 @@ if [[ ! -x "$SOURCE" ]]; then
   exit 1
 fi
 
-mkdir -p "$CONTENTS/MacOS"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$SOURCE" "$CONTENTS/MacOS/AgentStatusIndicator"
+cp "$ROOT/icons/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -20,6 +21,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>AgentStatusIndicator</string>
   <key>CFBundleExecutable</key><string>AgentStatusIndicator</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>
   <key>CFBundleIdentifier</key><string>com.durunzhe.agent-status-indicator</string>
   <key>CFBundleName</key><string>AgentStatusIndicator</string>
   <key>CFBundlePackageType</key><string>APPL</string>

@@ -4,6 +4,8 @@
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>AgentStatusIndicator</string>
   <key>CFBundleExecutable</key><string>AgentStatusIndicator</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>
   <key>CFBundleIdentifier</key><string>com.durunzhe.agent-status-indicator</string>
   <key>CFBundleName</key><string>AgentStatusIndicator</string>
   <key>CFBundlePackageType</key><string>APPL</string>
