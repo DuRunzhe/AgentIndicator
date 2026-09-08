@@ -38,6 +38,35 @@ resolve_latest_version() {
   :
 }
 
+# Linux: drop the hicolor icons into ~/.local/share and register a desktop
+# entry so the app shows up in launchers with the traffic-light artwork.
+install_linux_desktop() {
+  prefix=$1
+  data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
+  icon_root="$data_root/icons/hicolor"
+  mkdir -p "$icon_root" "$data_root/applications" || return 0
+  for size in 16 32 48 64 128 256 512; do
+    directory="$icon_root/${size}x${size}/apps"
+    mkdir -p "$directory"
+    if ! curl -fsSL --max-time 20 \
+      "https://raw.githubusercontent.com/$REPO/main/icons/hicolor/${size}x${size}/apps/agent-status-indicator.png" \
+      -o "$directory/agent-status-indicator.png"; then
+      echo "警告: 下载 ${size}px 图标失败，跳过" >&2
+    fi
+  done
+  cat > "$data_root/applications/agent-status-indicator.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=AgentStatusIndicator
+Comment=Native tray monitor for AI coding agents
+Exec="$prefix/agent-status-indicator"
+Icon=agent-status-indicator
+Terminal=false
+Categories=Utility;
+EOF
+  echo "已创建 Linux 桌面入口：$data_root/applications/agent-status-indicator.desktop"
+}
+
 if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
   VERSION=$(resolve_latest_version)
 fi
@@ -88,6 +117,10 @@ fi
 mkdir -p "$PREFIX"
 tar -xzf "$TMP/$ASSET" -C "$PREFIX" agent-status-indicator
 chmod +x "$PREFIX/agent-status-indicator"
+
+if [ "$OS" = "Linux" ]; then
+  install_linux_desktop "$PREFIX"
+fi
 
 echo "已安装: ${PREFIX}/agent-status-indicator (v${VERSION})"
 case ":$PATH:" in
