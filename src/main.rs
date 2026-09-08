@@ -205,9 +205,7 @@ impl App {
         }
     }
     fn rebuild(&mut self) {
-        let signature: Vec<_> = self
-            .current
-            .iter()
+        let signature: Vec<_> = visible_instances(&self.current, &self.config)
             .map(|instance| (instance.pid, instance.state))
             .collect();
         let needs_native_menu = self
@@ -237,7 +235,11 @@ impl App {
             return;
         }
         if let Some(menu) = &mut self.menu {
-            for (item, instance) in menu.instances.iter().zip(&self.current) {
+            for (item, instance) in menu
+                .instances
+                .iter()
+                .zip(visible_instances(&self.current, &self.config))
+            {
                 item.set_text(format_instance(instance, &self.config));
                 item.set_enabled(instance.state != AgentState::Stopped);
             }
@@ -287,7 +289,8 @@ impl App {
     fn create_menu(&self, signature: Vec<(u32, AgentState)>) -> MenuView {
         let menu = Menu::new();
         let mut instance_items = Vec::new();
-        for instance in &self.current {
+        let visible: Vec<_> = visible_instances(&self.current, &self.config).collect();
+        for instance in &visible {
             let id = format!("focus:{}", instance.pid);
             let item = MenuItem::with_id(
                 id,
@@ -298,7 +301,7 @@ impl App {
             let _ = menu.append(&item);
             instance_items.push(item);
         }
-        if self.current.is_empty() {
+        if visible.is_empty() {
             let item = MenuItem::new(i18n::text("no_agents"), false, None);
             let _ = menu.append(&item);
         }
@@ -735,13 +738,26 @@ fn toggle_label(_enabled: bool, label: &str) -> String {
     label.into()
 }
 
-fn display_settings() -> [(&'static str, &'static str); 5] {
+/// The Stopped placeholders occupy a tray row only while the matching display
+/// setting is on; hiding them leaves just the running sessions in the menu.
+fn visible_instances<'a>(
+    instances: &'a [AgentInstance],
+    config: &Config,
+) -> impl Iterator<Item = &'a AgentInstance> {
+    let show_stopped = config.show_stopped_agents;
+    instances
+        .iter()
+        .filter(move |instance| instance.state != AgentState::Stopped || show_stopped)
+}
+
+fn display_settings() -> [(&'static str, &'static str); 6] {
     [
         ("duration", i18n::text("show_duration")),
         ("model", i18n::text("show_model")),
         ("context_percent", i18n::text("show_context_percent")),
         ("context_used", i18n::text("show_context_used")),
         ("context_total", i18n::text("show_context_total")),
+        ("stopped_agents", i18n::text("show_stopped_agents")),
     ]
 }
 
@@ -786,6 +802,7 @@ fn config_value(config: &Config, key: &str) -> bool {
         "context_percent" => config.show_context_percent,
         "context_used" => config.show_context_used,
         "context_total" => config.show_context_total,
+        "stopped_agents" => config.show_stopped_agents,
         _ => false,
     }
 }
@@ -797,6 +814,7 @@ fn toggle_config(config: &mut Config, key: &str) {
         "context_percent" => config.show_context_percent = !config.show_context_percent,
         "context_used" => config.show_context_used = !config.show_context_used,
         "context_total" => config.show_context_total = !config.show_context_total,
+        "stopped_agents" => config.show_stopped_agents = !config.show_stopped_agents,
         _ => {}
     }
 }
@@ -1264,5 +1282,58 @@ mod summary_tests {
             ]),
             "1个等待回复 · 1个进行中 · 1个就绪"
         );
+    }
+}
+
+#[cfg(test)]
+mod stopped_visibility_tests {
+    use super::*;
+
+    fn instance(state: AgentState) -> AgentInstance {
+        AgentInstance {
+            kind: "Test".into(),
+            label: "Test".into(),
+            pid: 1,
+            cwd: None,
+            state,
+            uptime: Duration::ZERO,
+            model: None,
+            context: None,
+            open_url: None,
+            automatic_confirmation_mode: false,
+        }
+    }
+
+    fn config(show_stopped: bool) -> Config {
+        let mut config = Config::default();
+        config.show_stopped_agents = show_stopped;
+        config
+    }
+
+    #[test]
+    fn stopped_rows_are_visible_by_default() {
+        let instances = [instance(AgentState::Stopped), instance(AgentState::Working)];
+        let visible: Vec<_> = visible_instances(&instances, &config(true)).collect();
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn stopped_rows_can_be_hidden() {
+        let instances = [instance(AgentState::Stopped), instance(AgentState::Working)];
+        let visible: Vec<_> = visible_instances(&instances, &config(false)).collect();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].state, AgentState::Working);
+    }
+
+    #[test]
+    fn display_settings_include_stopped_agents_toggle() {
+        let keys = display_settings();
+        assert_eq!(keys.len(), 6);
+        assert!(keys.iter().any(|(key, _)| *key == "stopped_agents"));
+        let hidden = Config {
+            show_stopped_agents: false,
+            ..Config::default()
+        };
+        assert!(!config_value(&hidden, "stopped_agents"));
     }
 }

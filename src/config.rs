@@ -13,6 +13,7 @@ pub struct Config {
     pub show_context_percent: bool,
     pub show_context_used: bool,
     pub show_context_total: bool,
+    pub show_stopped_agents: bool,
     pub browser_tab_reuse: bool,
     pub locale: String,
 }
@@ -29,6 +30,7 @@ impl Default for Config {
             show_context_percent: true,
             show_context_used: true,
             show_context_total: true,
+            show_stopped_agents: true,
             browser_tab_reuse: false,
             locale: "auto".into(),
         }
@@ -79,5 +81,6 @@ mod tests {
         assert!(config.show_context_percent);
         assert!(config.show_context_used);
         assert!(config.show_context_total);
+        assert!(config.show_stopped_agents);
     }
 }

@@ -37,6 +37,7 @@ struct SettingsSignature {
     show_context_percent: bool,
     show_context_used: bool,
     show_context_total: bool,
+    show_stopped_agents: bool,
     locale: String,
 }
 
@@ -90,6 +91,7 @@ impl SettingsSignature {
             show_context_percent: config.show_context_percent,
             show_context_used: config.show_context_used,
             show_context_total: config.show_context_total,
+            show_stopped_agents: config.show_stopped_agents,
             locale: config.locale.clone(),
         }
     }
@@ -179,6 +181,7 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
             "context_percent" => config.show_context_percent,
             "context_used" => config.show_context_used,
             "context_total" => config.show_context_total,
+            "stopped_agents" => config.show_stopped_agents,
             _ => false,
         };
         let (name, color) = toggle_symbol(enabled);
