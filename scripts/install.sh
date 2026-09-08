@@ -10,15 +10,42 @@
 set -eu
 
 REPO="DuRunzhe/AgentIndicator"
-VERSION="${VERSION:-latest}"
+VERSION="${VERSION:-}"
 
-if [ "$VERSION" = "latest" ]; then
-  VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    | head -n1)
-  VERSION=${VERSION#v}
+# Resolve the newest release automatically. VERSION is optional and only pins
+# an older build; each source below is tried in turn so a blocked or
+# rate-limited endpoint never forces the caller to specify a version.
+resolve_latest_version() {
+  # 1) GitHub REST API (authoritative, but anonymous calls are rate-limited)
+  version=$(curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+  if [ -n "$version" ]; then
+    printf '%s' "${version#v}"
+    return
+  fi
+  # 2) releases/latest Location redirect, which needs no API quota
+  location=$(curl -fsS --max-time 15 -o /dev/null -w '%{redirect_url}' "https://github.com/$REPO/releases/latest" 2>/dev/null || true)
+  case "$location" in
+    */releases/tag/*)
+      version=${location##*/releases/tag/}
+      [ -n "$version" ] && { printf '%s' "${version#v}"; return; }
+      ;;
+  esac
+  # 3) npm registry, which carries the same tagged release version
+  version=$(curl -fsSL --max-time 15 "https://registry.npmjs.org/agent-status-indicator/latest" 2>/dev/null \
+    | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+  [ -n "$version" ] && { printf '%s' "$version"; return; }
+  :
+}
+
+if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
+  VERSION=$(resolve_latest_version)
 fi
-[ -n "$VERSION" ] || { echo "无法解析最新版本，请用 VERSION=0.2.10 显式指定" >&2; exit 1; }
+if [ -z "$VERSION" ]; then
+  echo "无法自动获取最新版本：GitHub API、releases 页面与 npm registry 均不可达。" >&2
+  echo "请检查网络后重试，或临时用 VERSION=0.2.14 显式指定版本安装。" >&2
+  exit 1
+fi
 
 OS=$(uname -s)
 ARCH=$(uname -m)
@@ -37,10 +64,10 @@ PREFIX="${PREFIX:-$HOME/.local/bin}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-echo "下载 $ASSET (v$VERSION) ..."
+echo "下载 ${ASSET} (v${VERSION}) ..."
 curl -fL --retry 3 --retry-delay 2 -sS "$BASE/$ASSET" -o "$TMP/$ASSET" || {
-  echo "该平台/版本制品暂未发布（$TARGET @ v$VERSION）" >&2
-  echo "请查看 https://github.com/$REPO/releases 确认可用版本" >&2
+  echo "该平台/版本制品暂未发布（${TARGET} @ v${VERSION}）" >&2
+  echo "请查看 https://github.com/${REPO}/releases 确认可用版本" >&2
   exit 1
 }
 
@@ -62,9 +89,9 @@ mkdir -p "$PREFIX"
 tar -xzf "$TMP/$ASSET" -C "$PREFIX" agent-status-indicator
 chmod +x "$PREFIX/agent-status-indicator"
 
-echo "已安装: $PREFIX/agent-status-indicator (v$VERSION)"
+echo "已安装: ${PREFIX}/agent-status-indicator (v${VERSION})"
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
-  *) echo "请将 $PREFIX 加入 PATH：export PATH=\"$PREFIX:\$PATH\"" ;;
+  *) echo "请将 ${PREFIX} 加入 PATH：export PATH=\"${PREFIX}:\$PATH\"" ;;
 esac
 echo "运行 agent-status-indicator --diagnose 查看状态；不带参数启动托盘"
