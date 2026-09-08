@@ -232,7 +232,7 @@ EOF
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
-Updating: just re-run the install command (it resolves the latest version).
+Without `VERSION` the script automatically resolves the latest release, trying the GitHub API, the `releases/latest` redirect and the npm registry in turn; you only need to pin a version when none of those is reachable. Updating: just re-run the install command (it resolves the latest version).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh

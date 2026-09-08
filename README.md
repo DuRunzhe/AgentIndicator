@@ -66,7 +66,7 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 - [x] OpenCode SQLite 状态、模型和上下文读取
 - [x] 等待态原生通知与 0/60/180 秒提醒；点击通知聚焦对应终端或 DeepSeek 浏览器会话
 - [x] macOS 按 TTY 精确定位 Terminal/iTerm 标签页
-- [x] 原生设置菜单、五项显示配置和 macOS 登录启动设置
+- [x] 原生设置菜单、六项显示配置和 macOS 登录启动设置
 - [x] macOS LaunchAgent、Windows Startup、Linux XDG autostart 登录启动
 - [ ] Windows/Linux 对既有终端窗口的精确聚焦（当前安全降级为启动/激活终端）
 
@@ -232,7 +232,7 @@ EOF
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
-更新：重新运行安装命令即可（默认取最新）。
+不带 `VERSION` 时脚本会依次从 GitHub API、releases 重定向与 npm registry 自动查找最新版本；只有三者都不可达时才需要手动指定。更新：重新运行安装命令即可（默认取最新）。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
