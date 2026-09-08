@@ -5,17 +5,28 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 const TAIL_BYTES: usize = 2 * 1024 * 1024;
 const TAIL_LINES: usize = 1000;
+
+/// A pi session file is created right when its pi process starts a new
+/// session. Two live pi processes sharing a directory therefore own two
+/// distinct files, and only files whose creation time matches a process start
+/// within this window are treated as that process's fresh session.
+const ANCHOR_WINDOW_SECONDS: u64 = 90;
 
 #[derive(Clone, Debug, Default)]
 pub struct PiFacts {
     pub state: Option<AgentState>,
     pub model: Option<String>,
     pub context: Option<ContextUsage>,
+}
+
+/// One live pi process that the detector found in a directory.
+pub struct LiveSession {
+    pub started: SystemTime,
 }
 
 struct Cached {
@@ -26,23 +37,56 @@ struct Cached {
     last_access: Instant,
 }
 
+struct Candidate {
+    path: PathBuf,
+    created: SystemTime,
+    modified: SystemTime,
+}
+
 #[derive(Default)]
 pub struct PiAnalyzer {
     cache: HashMap<PathBuf, Cached>,
 }
 
 impl PiAnalyzer {
-    pub fn analyze(&mut self, cwd: &Path) -> Option<PiFacts> {
-        let home = dirs::home_dir()?.join(".pi/agent");
-        let session = latest_session(cwd, &home.join("sessions"))?;
+    /// Resolve one session file per live pi process that shares `cwd` and
+    /// return the parsed facts in the same order as `live`.
+    ///
+    /// A pi session is bound to the process that created it: files whose
+    /// creation time matches a process start are claimed first, and any
+    /// remaining processes pair with the remaining files by recency. Without
+    /// this, two pi processes in one directory both read the most recently
+    /// written session and report the active one's state.
+    pub fn analyze(&mut self, cwd: &Path, live: &[LiveSession]) -> Vec<Option<PiFacts>> {
+        if live.is_empty() {
+            return Vec::new();
+        }
+        let Some(agent_dir) = dirs::home_dir().map(|home| home.join(".pi/agent")) else {
+            return live.iter().map(|_| None).collect();
+        };
+        let root = agent_dir.join("sessions").join(encode_project_key(cwd));
+        let candidates = session_candidates(&root);
+        if candidates.is_empty() {
+            return live.iter().map(|_| None).collect();
+        }
+        let mut output: Vec<Option<PiFacts>> = vec![None; live.len()];
+        for (index, claim) in assign_sessions(live, &candidates).into_iter().enumerate() {
+            if let Some(claim) = claim {
+                output[index] = self.read_facts(&candidates[claim].path, &agent_dir);
+            }
+        }
+        output
+    }
+
+    fn read_facts(&mut self, session: &Path, agent_dir: &Path) -> Option<PiFacts> {
         let metadata = session.metadata().ok()?;
         let session_modified = metadata.modified().ok()?;
-        let models = home.join("models.json");
+        let models = agent_dir.join("models.json");
         let models_modified = models
             .metadata()
             .ok()
             .and_then(|entry| entry.modified().ok());
-        if let Some(cached) = self.cache.get_mut(&session) {
+        if let Some(cached) = self.cache.get_mut(session) {
             cached.last_access = Instant::now();
             if cached.session_modified == session_modified
                 && cached.session_size == metadata.len()
@@ -51,9 +95,9 @@ impl PiAnalyzer {
                 return Some(cached.facts.clone());
             }
         }
-        let facts = parse_signals(&read_tail(&session)?, &models);
+        let facts = parse_signals(&read_tail(session)?, &models);
         self.cache.insert(
-            session,
+            session.to_path_buf(),
             Cached {
                 session_modified,
                 session_size: metadata.len(),
@@ -75,16 +119,139 @@ pub fn encode_project_key(cwd: &Path) -> String {
     format!("--{}--", trimmed.replace(['/', '\\', ':'], "-"))
 }
 
-fn latest_session(cwd: &Path, root: &Path) -> Option<PathBuf> {
-    root.join(encode_project_key(cwd))
-        .read_dir()
-        .ok()?
+fn session_candidates(root: &Path) -> Vec<Candidate> {
+    let Ok(entries) = root.read_dir() else {
+        return Vec::new();
+    };
+    entries
         .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl"))
-        .filter_map(|path| Some((path.metadata().ok()?.modified().ok()?, path)))
-        .max_by_key(|(modified, _)| *modified)
-        .map(|(_, path)| path)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "jsonl") {
+                let metadata = path.metadata().ok()?;
+                if metadata.is_file() {
+                    let created = session_created(&path).unwrap_or(SystemTime::UNIX_EPOCH);
+                    let modified = metadata.modified().unwrap_or(created);
+                    return Some(Candidate {
+                        path,
+                        created,
+                        modified,
+                    });
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// Assign each live pi process one session file. Returns an index into
+/// `candidates` per entry of `live` (or None when there is no fit).
+fn assign_sessions(live: &[LiveSession], candidates: &[Candidate]) -> Vec<Option<usize>> {
+    let mut claims: Vec<Option<usize>> = vec![None; live.len()];
+    let mut claimed = vec![false; candidates.len()];
+
+    // 1. Anchor: a pi process creates its fresh session file at startup, so a
+    //    file created within ANCHOR_WINDOW_SECONDS of a process start belongs
+    //    to that process. Claim the closest pair first so a slow-starting
+    //    sibling cannot steal another process's file.
+    loop {
+        let mut best: Option<(usize, usize)> = None;
+        let mut best_delta = u64::MAX;
+        for (index, process) in live.iter().enumerate() {
+            if claims[index].is_some() {
+                continue;
+            }
+            for (candidate, file) in candidates.iter().enumerate() {
+                if claimed[candidate] {
+                    continue;
+                }
+                if let Some(delta) = seconds_between(file.created, process.started) {
+                    if delta <= ANCHOR_WINDOW_SECONDS && delta < best_delta {
+                        best = Some((index, candidate));
+                        best_delta = delta;
+                    }
+                }
+            }
+        }
+        let Some((index, candidate)) = best else {
+            break;
+        };
+        claims[index] = Some(candidate);
+        claimed[candidate] = true;
+    }
+
+    // 2. Remaining processes (typically ones that resumed an older session)
+    //    pair with the remaining files by recency: the process started most
+    //    recently owns the file written most recently.
+    let mut unbound: Vec<(usize, SystemTime)> = live
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| claims[*index].is_none())
+        .map(|(index, process)| (index, process.started))
+        .collect();
+    unbound.sort_by_key(|(_, started)| std::cmp::Reverse(*started));
+    let mut free: Vec<usize> = (0..candidates.len())
+        .filter(|candidate| !claimed[*candidate])
+        .collect();
+    free.sort_by_key(|candidate| std::cmp::Reverse(candidates[*candidate].modified));
+    for ((index, _), candidate) in unbound.iter().zip(free.iter()) {
+        claims[*index] = Some(*candidate);
+    }
+    claims
+}
+
+fn seconds_between(a: SystemTime, b: SystemTime) -> Option<u64> {
+    if a >= b {
+        a.duration_since(b).ok().map(|delta| delta.as_secs())
+    } else {
+        b.duration_since(a).ok().map(|delta| delta.as_secs())
+    }
+}
+
+/// pi names session files like `2026-09-08T15-12-35-453Z_<uuid>.jsonl` with
+/// the UTC creation time first. Parse it without a chrono dependency.
+fn session_created(path: &Path) -> Option<SystemTime> {
+    let name = path.file_name()?.to_str()?;
+    let bytes = name.as_bytes();
+    if bytes.len() < 24 || bytes[10] != b'T' || bytes[23] != b'Z' {
+        return None;
+    }
+    let year = digits(&bytes[0..4])? as i64;
+    let month = digits(&bytes[5..7])? as i64;
+    let day = digits(&bytes[8..10])? as i64;
+    let hour = digits(&bytes[11..13])? as i64;
+    let minute = digits(&bytes[14..16])? as i64;
+    let second = digits(&bytes[17..19])? as i64;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let seconds = civil_seconds(year, month, day, hour, minute, second);
+    let seconds = u64::try_from(seconds).ok()?;
+    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
+}
+
+fn digits(bytes: &[u8]) -> Option<u32> {
+    if bytes.is_empty() || !bytes.iter().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(
+        bytes
+            .iter()
+            .fold(0u32, |value, byte| value * 10 + u32::from(byte - b'0')),
+    )
+}
+
+/// Convert a UTC civil time to seconds since the Unix epoch using Howard
+/// Hinnant's days-from-civil algorithm.
+fn civil_seconds(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146097 + day_of_era - 719468;
+    days * 86_400 + hour * 3_600 + minute * 60 + second
 }
 
 fn read_tail(path: &Path) -> Option<String> {
@@ -365,5 +532,80 @@ mod tests {
             Path::new("/missing"),
         );
         assert_eq!(facts.state, Some(AgentState::Working));
+    }
+
+    fn live(started_ago: u64) -> LiveSession {
+        LiveSession {
+            started: SystemTime::now() - Duration::from_secs(started_ago),
+        }
+    }
+
+    fn candidate(created_ago: u64, modified_ago: u64) -> Candidate {
+        let now = SystemTime::now();
+        Candidate {
+            path: PathBuf::from("unused"),
+            created: now - Duration::from_secs(created_ago),
+            modified: now - Duration::from_secs(modified_ago),
+        }
+    }
+
+    #[test]
+    fn session_created_parses_pi_file_names() {
+        let path = Path::new("2026-09-08T15-12-35-453Z_01a08194-007d-724a-80b9-7194e96353f9.jsonl");
+        let created = session_created(path).unwrap();
+        let epoch = created
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(epoch, 1788880355);
+        assert!(session_created(Path::new("not-a-session.jsonl")).is_none());
+    }
+
+    #[test]
+    fn each_live_pi_keeps_its_own_session() {
+        // Mirror the reported bug: two pi processes share a directory. The one
+        // started most recently created a fresh session and is now writing it,
+        // while the older process resumed an old session and is idle.
+        let idle_session = candidate(3 * 86_400, 3_600);
+        let busy_session = candidate(49, 1);
+        let sessions = [idle_session, busy_session];
+
+        let idle_first = assign_sessions(&[live(2 * 86_400), live(50)], &sessions);
+        assert_eq!(idle_first[0], Some(0), "idle process keeps its old session");
+        assert_eq!(
+            idle_first[1],
+            Some(1),
+            "working process keeps its new session"
+        );
+
+        // Results stay aligned with the caller's process order.
+        let busy_first = assign_sessions(&[live(50), live(2 * 86_400)], &sessions);
+        assert_eq!(busy_first[0], Some(1));
+        assert_eq!(busy_first[1], Some(0));
+    }
+
+    #[test]
+    fn without_creation_anchor_sessions_pair_by_recency() {
+        // Both processes resumed old sessions, so neither file creation matches
+        // a process start. The most recently started process owns the file
+        // written most recently.
+        let older_file = candidate(3 * 86_400, 7_200);
+        let newer_file = candidate(2 * 86_400, 300);
+        let sessions = [older_file, newer_file];
+        let claims = assign_sessions(&[live(7_200), live(300)], &sessions);
+        assert_eq!(claims[0], Some(0));
+        assert_eq!(claims[1], Some(1));
+    }
+
+    #[test]
+    fn stale_sessions_are_not_claimed_by_a_single_live_pi() {
+        // A directory can accumulate sessions from runs that already exited. A
+        // single live process must bind to its own file, not necessarily the
+        // newest one.
+        let live_session = candidate(60, 5);
+        let stale = candidate(4 * 86_400, 86_400);
+        let sessions = [stale, live_session];
+        let claims = assign_sessions(&[live(55)], &sessions);
+        assert_eq!(claims[0], Some(1), "fresh file belongs to the live process");
     }
 }

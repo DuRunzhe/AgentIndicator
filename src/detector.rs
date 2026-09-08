@@ -105,12 +105,11 @@ impl Detector {
                     enrich_deepseek(&mut instance, &mut self.deepseek);
                 } else if kind == "opencode" {
                     enrich_opencode(&mut instance, &mut self.opencode);
-                } else if kind == "pi" {
-                    enrich_pi(&mut instance, &mut self.pi);
                 }
                 instance
             })
             .collect();
+        enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
             if !instances
                 .iter()
@@ -184,12 +183,12 @@ impl Detector {
                     ),
                     "deepseek" => enrich_deepseek(&mut instance, &mut self.deepseek),
                     "opencode" => enrich_opencode(&mut instance, &mut self.opencode),
-                    "pi" => enrich_pi(&mut instance, &mut self.pi),
                     _ => {}
                 }
                 instance
             })
             .collect();
+        enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
             if !instances
                 .iter()
@@ -365,17 +364,50 @@ fn enrich_deepseek(instance: &mut AgentInstance, analyzer: &mut crate::deepseek:
     }
 }
 
-fn enrich_pi(instance: &mut AgentInstance, analyzer: &mut crate::pi::PiAnalyzer) {
-    let Some(cwd) = instance.cwd.as_deref() else {
+/// Bind each live pi process to its own session file and enrich rows with the
+/// per-process facts. Pi sessions are keyed by project directory, so without
+/// per-process selection two pi processes in one directory would both read the
+/// most recently written session and mirror the active one's state.
+fn enrich_pi_instances(instances: &mut [AgentInstance], analyzer: &mut crate::pi::PiAnalyzer) {
+    use crate::pi::LiveSession;
+    use std::time::SystemTime;
+
+    let mut by_cwd: HashMap<PathBuf, Vec<(usize, u32, Duration)>> = HashMap::new();
+    for (index, instance) in instances.iter().enumerate() {
+        if instance.kind != display_name("pi") || instance.state == AgentState::Stopped {
+            continue;
+        }
+        let Some(cwd) = instance.cwd.clone() else {
+            continue;
+        };
+        by_cwd
+            .entry(cwd)
+            .or_default()
+            .push((index, instance.pid, instance.uptime));
+    }
+    if by_cwd.is_empty() {
         return;
-    };
-    let Some(facts) = analyzer.analyze(cwd) else {
-        return;
-    };
-    instance.model = facts.model;
-    instance.context = facts.context;
-    if let Some(state) = facts.state {
-        instance.state = state;
+    }
+    let now = SystemTime::now();
+    for (cwd, mut rows) in by_cwd {
+        rows.sort_by_key(|(_, pid, _)| *pid);
+        let live: Vec<LiveSession> = rows
+            .iter()
+            .map(|(_, _, uptime)| LiveSession {
+                started: now.checked_sub(*uptime).unwrap_or(now),
+            })
+            .collect();
+        for ((index, _, _), facts) in rows.into_iter().zip(analyzer.analyze(&cwd, &live)) {
+            let Some(facts) = facts else {
+                continue;
+            };
+            let instance = &mut instances[index];
+            instance.model = facts.model;
+            instance.context = facts.context;
+            if let Some(state) = facts.state {
+                instance.state = state;
+            }
+        }
     }
 }
 
