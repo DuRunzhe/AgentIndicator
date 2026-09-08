@@ -113,7 +113,7 @@ ASI_SIGN_IDENTITY="Developer ID Application: Runzhe Du (TEAMID)" ASI_TEAM_ID="TE
 
 ## Installation
 
-The current release is **v0.2.14** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
+The current release is **v0.2.15** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
 
 ### Homebrew (macOS)
 
@@ -241,7 +241,7 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 Pin a version:
 
 ```bash
-VERSION=0.2.14 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+VERSION=0.2.15 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
 Install elsewhere:

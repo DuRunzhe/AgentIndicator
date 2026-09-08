@@ -113,7 +113,7 @@ ASI_SIGN_IDENTITY="Developer ID Application: Runzhe Du (TEAMID)" ASI_TEAM_ID="TE
 
 ## 安装
 
-当前已发布 **v0.2.14**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
+当前已发布 **v0.2.15**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
 
 ### Homebrew（macOS）
 
@@ -241,7 +241,7 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 指定版本：
 
 ```bash
-VERSION=0.2.14 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+VERSION=0.2.15 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
 指定安装目录：
