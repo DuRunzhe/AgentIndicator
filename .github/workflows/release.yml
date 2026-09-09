@@ -191,6 +191,20 @@ jobs:
             agent-status-indicator-aarch64-apple-darwin.tar.gz \
             agent-status-indicator-aarch64-apple-darwin.tar.gz.sha256 \
             --clobber
+      - name: Publish the notarized .app as a release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # curl/install.sh installs the notarized .app alongside the raw binary
+          # on macOS (Apple Silicon), so ship it as a dedicated release asset.
+          tar -czf agent-status-indicator-aarch64-apple-darwin.app.tar.gz \
+            -C app/darwin-arm64 AgentStatusIndicator.app
+          shasum -a 256 agent-status-indicator-aarch64-apple-darwin.app.tar.gz \
+            | awk '{print $1}' > agent-status-indicator-aarch64-apple-darwin.app.tar.gz.sha256
+          gh release upload "$GITHUB_REF_NAME" \
+            agent-status-indicator-aarch64-apple-darwin.app.tar.gz \
+            agent-status-indicator-aarch64-apple-darwin.app.tar.gz.sha256 \
+            --clobber
       - name: Upload the notarized app bundle for the npm job
         uses: actions/upload-artifact@v4
         with:

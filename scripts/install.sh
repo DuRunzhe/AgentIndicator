@@ -122,6 +122,50 @@ if [ "$OS" = "Linux" ]; then
   install_linux_desktop "$PREFIX"
 fi
 
+# macOS: also install the notarized .app bundle, so the tray app shows up in
+# Launchpad / Spotlight and can be started with `open -a AgentStatusIndicator`.
+# Releases publish it as <target>.app.tar.gz (currently Apple Silicon only);
+# when the asset is absent (e.g. x86_64 macOS) we keep the CLI binary alone.
+if [ "$OS" = "Darwin" ]; then
+  APP_ASSET="agent-status-indicator-$TARGET.app.tar.gz"
+  echo "下载 ${APP_ASSET} (v${VERSION}) ..."
+  if curl -fL --retry 3 --retry-delay 2 -sS "$BASE/$APP_ASSET" -o "$TMP/$APP_ASSET" 2>/dev/null; then
+    if curl -fsSL --retry 2 "$BASE/$APP_ASSET.sha256" -o "$TMP/$APP_ASSET.sha256" 2>/dev/null; then
+      if command -v shasum >/dev/null 2>&1; then
+        ACTUAL=$(shasum -a 256 "$TMP/$APP_ASSET" | awk '{print $1}')
+      else
+        ACTUAL=$(sha256sum "$TMP/$APP_ASSET" | awk '{print $1}')
+      fi
+      EXPECTED=$(tr -d '[:space:]' < "$TMP/$APP_ASSET.sha256")
+      [ "$ACTUAL" = "$EXPECTED" ] || { echo "SHA256 校验失败（$APP_ASSET）" >&2; exit 1; }
+      echo "SHA256 校验通过（$APP_ASSET）"
+    else
+      echo "警告: 未找到 $APP_ASSET.sha256 校验文件，跳过校验" >&2
+    fi
+    tar -xzf "$TMP/$APP_ASSET" -C "$TMP"
+    # /Applications is admin-writable on most Macs; otherwise fall back to the
+    # user-level ~/Applications.
+    APP_DIR=""
+    for candidate in /Applications "$HOME/Applications"; do
+      if mkdir -p "$candidate" 2>/dev/null && [ -w "$candidate" ]; then
+        rm -rf "$candidate/AgentStatusIndicator.app"
+        cp -R "$TMP/AgentStatusIndicator.app" "$candidate/"
+        APP_DIR="$candidate"
+        break
+      fi
+    done
+    if [ -n "$APP_DIR" ]; then
+      echo "已安装 .app：${APP_DIR}/AgentStatusIndicator.app"
+      echo "可用 open -a AgentStatusIndicator 或从启动台（Launchpad）启动"
+    else
+      echo "警告: 无法写入 /Applications 或 ~/Applications，未能安装 .app" >&2
+      echo "可改为手动安装，或改用 npm / Bun 方式安装（同样含公证 .app）" >&2
+    fi
+  else
+    echo "注意: 该版本未随 Release 发布 ${TARGET} 的 .app（x86_64 macOS 等暂无），仅安装命令行二进制" >&2
+  fi
+fi
+
 echo "已安装: ${PREFIX}/agent-status-indicator (v${VERSION})"
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
