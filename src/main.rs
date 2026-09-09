@@ -1,3 +1,4 @@
+mod about;
 mod browser_tabs;
 mod claude_statusline;
 mod config;
@@ -432,6 +433,16 @@ impl App {
             true,
             None,
         ));
+        let _ = menu.append(&MenuItem::new(
+            &format!(
+                "{}: {}",
+                i18n::text("about_version"),
+                env!("CARGO_PKG_VERSION")
+            ),
+            false,
+            None,
+        ));
+        let _ = menu.append(&MenuItem::with_id("about", i18n::menu("about"), true, None));
         let _ = menu.append(&MenuItem::with_id("quit", i18n::menu("quit"), true, None));
         MenuView {
             menu,
@@ -554,6 +565,8 @@ impl ApplicationHandler<UserEvent> for App {
             let id = event.id.0.as_str();
             if id == "quit" {
                 event_loop.exit();
+            } else if id == "about" {
+                about::show();
             } else if id == "notifications" {
                 if self.action_busy {
                     continue;
