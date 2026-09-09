@@ -10,17 +10,35 @@
 
 当前已发布 **v0.2.15**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
 
-### Homebrew（macOS）
+### curl（macOS / Linux）
 
 ```bash
-brew install DuRunzhe/tap/agent-status-indicator
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
-更新到最新版：
+不带 `VERSION` 时脚本会依次从 GitHub API、releases 重定向与 npm registry 自动查找最新版本；只有三者都不可达时才需要手动指定。更新：重新运行安装命令即可（默认取最新）。macOS（Apple Silicon）下除命令行二进制外，脚本还会一并从 Release 下载公证的 `.app` 装进“应用程序”（该 `.app` 资产随 workflow 改动后的新版本发布；若某版本未发布此资产，脚本会打印提示并仅安装命令行二进制）。
 
 ```bash
-brew upgrade DuRunzhe/tap/agent-status-indicator
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
+
+指定版本：
+
+```bash
+VERSION=0.2.15 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+```
+
+指定安装目录：
+
+```bash
+PREFIX=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+```
+
+#### 添加到系统应用（可选）
+
+- **macOS（Apple Silicon）**：无需手动处理。安装脚本会自动下载公证的 `.app` 并装入 `/Applications`（不可写时回退 `~/Applications`），之后可从启动台（Launchpad）或 `open -a AgentStatusIndicator` 启动，不会被 Gatekeeper 拦截；命令行二进制则装入 `${PREFIX:-$HOME/.local}/bin`。
+- **macOS（x86_64）**：该架构目前未随 Release 发布公证 `.app`，此方式只安装命令行二进制；需要应用包请改用 npm / Bun 渠道。
+- **Linux**：无需手动处理。安装脚本已自动写入桌面入口 `$XDG_DATA_HOME`（默认 `~/.local/share`）下的 `applications/agent-status-indicator.desktop` 与 `icons/hicolor/…` 图标；桌面环境支持 AppIndicator/StatusNotifier 即可从应用列表启动。
 
 ### npm（跨平台）
 
@@ -121,29 +139,29 @@ Categories=Utility;
 EOF
 ```
 
-### curl（macOS / Linux）
+### Homebrew（macOS）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+brew install DuRunzhe/tap/agent-status-indicator
 ```
 
-不带 `VERSION` 时脚本会依次从 GitHub API、releases 重定向与 npm registry 自动查找最新版本；只有三者都不可达时才需要手动指定。更新：重新运行安装命令即可（默认取最新）。
+更新到最新版：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+brew upgrade DuRunzhe/tap/agent-status-indicator
 ```
 
-指定版本：
+#### 添加到系统应用（可选）
 
-```bash
-VERSION=0.2.15 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
-```
+Homebrew tap 只安装**命令行二进制**（真实位置 `$(brew --prefix)/opt/agent-status-indicator/bin/agent-status-indicator`，`$(brew --prefix)/bin/agent-status-indicator` 是指向它的符号链接），**不含 macOS `.app`**，所以没有可复制进 `/Applications` 的应用包。
 
-指定安装目录：
+- 只需托盘与开机自启：直接运行 `agent-status-indicator`，在“设置”菜单打开「开机自启」，或注册为 brew 服务：
 
-```bash
-PREFIX=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
-```
+  ```bash
+  brew services start agent-status-indicator
+  ```
+
+- 确实需要在 Launchpad / Spotlight 中出现的 `.app`：请改用 npm 或 Bun 方式安装（内含公证的 `.app`），Homebrew 方式卸载即可，不必两种都装。
 
 ### PowerShell（Windows）
 
@@ -152,6 +170,20 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/DuR
 ```
 
 更新：重新运行上面的安装命令即可（默认取最新）。
+
+#### 添加到系统应用（可选）
+
+脚本把可执行文件放在 `%LOCALAPPDATA%\Programs\AgentStatusIndicator\agent-status-indicator.exe` 并把该目录加入用户 PATH，但**不会**自动创建开始菜单快捷方式。需要时在 PowerShell 中执行：
+
+```powershell
+$exe = "$env:LOCALAPPDATA\Programs\AgentStatusIndicator\agent-status-indicator.exe"
+$ws = New-Object -ComObject WScript.Shell
+$lnk = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentStatusIndicator.lnk")
+$lnk.TargetPath = $exe
+$lnk.Save()
+```
+
+开机自启可在应用“设置”菜单中开启。
 
 ### winget（Windows，合入 microsoft/winget-pkgs 后可用）
 
@@ -165,9 +197,13 @@ winget install --id DuRunzhe.AgentStatusIndicator
 winget upgrade --id DuRunzhe.AgentStatusIndicator
 ```
 
+合入后由 winget 自行管理文件位置，并自动注册开始菜单入口，无需手动「添加到系统应用」。
+
 ### GitHub Release
 
 直接下载 https://github.com/DuRunzhe/AgentIndicator/releases 下对应平台的 `tar.gz` / `zip`，以及 npm `tgz`。安装脚本会校验随资产发布的 `.sha256`。
+
+注意：`tar.gz` / `zip` 资产默认只含命令行二进制；公证 `.app` 单独以 darwin-arm64 的 `*.app.tar.gz` 发布（npm `tgz` 内也含一份），macOS Apple Silicon 用上方 curl 命令安装时会自动装好。手动解压的二进制需自己决定放在哪、是否创建开始菜单 / desktop entry。
 
 ### 使用
 

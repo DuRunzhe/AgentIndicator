@@ -10,17 +10,35 @@ Source and releases: <https://github.com/DuRunzhe/AgentIndicator>
 
 The current release is **v0.2.15** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
 
-### Homebrew (macOS)
+### curl (macOS / Linux)
 
 ```bash
-brew install DuRunzhe/tap/agent-status-indicator
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
-Update to the latest version:
+Without `VERSION` the script automatically resolves the latest release, trying the GitHub API, the `releases/latest` redirect and the npm registry in turn; you only need to pin a version when none of those is reachable. Updating: just re-run the install command (it resolves the latest version). On macOS (Apple Silicon) it also downloads the notarized `.app` from the release and installs it into your Applications folder (the `.app` asset ships with releases cut after this workflow change; if a version lacks the asset, the script prints a notice and installs the CLI binary only).
 
 ```bash
-brew upgrade DuRunzhe/tap/agent-status-indicator
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
+
+Pin a version:
+
+```bash
+VERSION=0.2.15 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+```
+
+Install elsewhere:
+
+```bash
+PREFIX=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+```
+
+#### Adding it to your applications (optional)
+
+- **macOS (Apple Silicon)**: nothing to do. The script automatically downloads the notarized `.app` and installs it into `/Applications` (falling back to `~/Applications` when it is not writable); launch it from Launchpad or with `open -a AgentStatusIndicator` — Gatekeeper will not block it. The CLI binary goes to `${PREFIX:-$HOME/.local}/bin`.
+- **macOS (x86_64)**: no notarized `.app` is published for this architecture yet, so this method installs the CLI binary only; use the npm / Bun channels if you want an app bundle.
+- **Linux**: nothing to do. The script already writes the desktop entry under `$XDG_DATA_HOME` (default `~/.local/share`) as `applications/agent-status-indicator.desktop` together with the `icons/hicolor/…` icons; it shows up in launchers as long as the desktop environment supports AppIndicator/StatusNotifier.
 
 ### npm (cross-platform)
 
@@ -121,29 +139,29 @@ Categories=Utility;
 EOF
 ```
 
-### curl (macOS / Linux)
+### Homebrew (macOS)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+brew install DuRunzhe/tap/agent-status-indicator
 ```
 
-Without `VERSION` the script automatically resolves the latest release, trying the GitHub API, the `releases/latest` redirect and the npm registry in turn; you only need to pin a version when none of those is reachable. Updating: just re-run the install command (it resolves the latest version).
+Update to the latest version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+brew upgrade DuRunzhe/tap/agent-status-indicator
 ```
 
-Pin a version:
+#### Adding it to your applications (optional)
 
-```bash
-VERSION=0.2.15 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
-```
+The Homebrew tap installs the **raw CLI binary only** (real path `$(brew --prefix)/opt/agent-status-indicator/bin/agent-status-indicator`; `$(brew --prefix)/bin/agent-status-indicator` is a symlink to it). It does **not** ship a macOS `.app`, so there is no bundle to copy into /Applications.
 
-Install elsewhere:
+- If you just need the tray plus start-at-login: run `agent-status-indicator` and enable “start at login” in the Settings menu, or register it as a brew service:
 
-```bash
-PREFIX=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
-```
+  ```bash
+  brew services start agent-status-indicator
+  ```
+
+- If you really want a `.app` that shows up in Launchpad / Spotlight: install via npm or Bun instead (they bundle the notarized `.app`) and uninstall the Homebrew one — there is no need to keep both.
 
 ### PowerShell (Windows)
 
@@ -152,6 +170,20 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/DuR
 ```
 
 Updating: just re-run the install command above (it resolves the latest version).
+
+#### Adding it to your applications (optional)
+
+The script places the executable at `%LOCALAPPDATA%\Programs\AgentStatusIndicator\agent-status-indicator.exe` and adds that directory to your user PATH, but it does **not** create a Start Menu shortcut. If you want one, run in PowerShell:
+
+```powershell
+$exe = "$env:LOCALAPPDATA\Programs\AgentStatusIndicator\agent-status-indicator.exe"
+$ws = New-Object -ComObject WScript.Shell
+$lnk = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\AgentStatusIndicator.lnk")
+$lnk.TargetPath = $exe
+$lnk.Save()
+```
+
+Start-at-login can be enabled from the app’s Settings menu.
 
 ### winget (Windows, once merged into microsoft/winget-pkgs)
 
@@ -165,9 +197,13 @@ Update to the latest version:
 winget upgrade --id DuRunzhe.AgentStatusIndicator
 ```
 
+Once merged, winget manages the file location and registers the Start Menu entry itself, so there is nothing to add manually.
+
 ### GitHub Releases
 
 Download the `tar.gz` / `zip` for your platform, or the npm `tgz`, from <https://github.com/DuRunzhe/AgentIndicator/releases>. The install scripts verify the `.sha256` sidecar published next to each asset.
+
+Note: the `tar.gz` / `zip` assets contain the CLI binary by default; the notarized `.app` is published separately as the darwin-arm64 `*.app.tar.gz` asset (the npm `tgz` includes a copy too) and is installed automatically by the curl command above on Apple Silicon. If you unzip binaries manually, you decide where to put them and whether to create a Start Menu / desktop entry.
 
 ### Usage
 
