@@ -54,9 +54,12 @@ impl PiAnalyzer {
     ///
     /// A pi session is bound to the process that created it: files whose
     /// creation time matches a process start are claimed first, and any
-    /// remaining processes pair with the remaining files by recency. Without
-    /// this, two pi processes in one directory both read the most recently
-    /// written session and report the active one's state.
+    /// remaining processes pair with the remaining files by recency only when
+    /// the file shows activity after that process started. Without this, two
+    /// pi processes in one directory both read the most recently written
+    /// session and report the active one's state, and a brand-new process that
+    /// has not materialized its own session file yet would inherit the newest
+    /// stale session of a dead conversation.
     pub fn analyze(&mut self, cwd: &Path, live: &[LiveSession]) -> Vec<Option<PiFacts>> {
         if live.is_empty() {
             return Vec::new();
@@ -144,6 +147,33 @@ fn session_candidates(root: &Path) -> Vec<Candidate> {
         .collect()
 }
 
+/// Slack (seconds) allowed between a process's start and a session file's last
+/// write when deciding the process wrote the file. Uptime comes from `ps`
+/// whole-second etime and filesystem mtime clocks can be coarse, so a fresh
+/// session file written right at boot can lag the start by a few seconds.
+const RECENT_WRITE_TOLERANCE_SECONDS: u64 = 5;
+
+/// A pi process may only own a session file that was written at (or within
+/// tolerance of) its start. A file whose last write clearly predates the
+/// process start belongs to an earlier conversation.
+///
+/// This matters because pi does not materialize its session file until the
+/// first user message arrives: a brand-new process idling at the empty prompt
+/// has no file of its own, and adopting the directory's most recently written
+/// old file would leak that dead conversation's tail state (e.g. an old
+/// "…还需要做什么吗？" turn reported as WaitingReply) into the fresh process.
+fn written_while_alive(file: &Candidate, process: &LiveSession) -> bool {
+    let started = unix_seconds(process.started);
+    let modified = unix_seconds(file.modified);
+    started.saturating_sub(modified) <= RECENT_WRITE_TOLERANCE_SECONDS
+}
+
+fn unix_seconds(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|delta| delta.as_secs())
+        .unwrap_or(0)
+}
+
 /// Assign each live pi process one session file. Returns an index into
 /// `candidates` per entry of `live` (or None when there is no fit).
 fn assign_sessions(live: &[LiveSession], candidates: &[Candidate]) -> Vec<Option<usize>> {
@@ -166,7 +196,10 @@ fn assign_sessions(live: &[LiveSession], candidates: &[Candidate]) -> Vec<Option
                     continue;
                 }
                 if let Some(delta) = seconds_between(file.created, process.started) {
-                    if delta <= ANCHOR_WINDOW_SECONDS && delta < best_delta {
+                    if delta <= ANCHOR_WINDOW_SECONDS
+                        && delta < best_delta
+                        && written_while_alive(file, process)
+                    {
                         best = Some((index, candidate));
                         best_delta = delta;
                     }
@@ -180,22 +213,28 @@ fn assign_sessions(live: &[LiveSession], candidates: &[Candidate]) -> Vec<Option
         claimed[candidate] = true;
     }
 
-    // 2. Remaining processes (typically ones that resumed an older session)
-    //    pair with the remaining files by recency: the process started most
-    //    recently owns the file written most recently.
-    let mut unbound: Vec<(usize, SystemTime)> = live
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| claims[*index].is_none())
-        .map(|(index, process)| (index, process.started))
+    // 2. Remaining processes (typically ones that resumed an older session and
+    //    are writing it again) pair with the remaining files by recency: the
+    //    process started most recently owns the file written most recently.
+    //    A file is only offered to a process when its last write is at or
+    //    after that process's start; otherwise the file belongs to a session
+    //    the process never wrote, and the process is left unbound so it shows
+    //    its default Ready state instead of a stale session's facts.
+    let mut unbound: Vec<usize> = (0..live.len())
+        .filter(|index| claims[*index].is_none())
         .collect();
-    unbound.sort_by_key(|(_, started)| std::cmp::Reverse(*started));
+    unbound.sort_by_key(|index| std::cmp::Reverse(live[*index].started));
     let mut free: Vec<usize> = (0..candidates.len())
         .filter(|candidate| !claimed[*candidate])
         .collect();
     free.sort_by_key(|candidate| std::cmp::Reverse(candidates[*candidate].modified));
-    for ((index, _), candidate) in unbound.iter().zip(free.iter()) {
-        claims[*index] = Some(*candidate);
+    for index in unbound {
+        if let Some(position) = free
+            .iter()
+            .position(|candidate| written_while_alive(&candidates[*candidate], &live[index]))
+        {
+            claims[index] = Some(free.remove(position));
+        }
     }
     claims
 }
@@ -607,5 +646,54 @@ mod tests {
         let sessions = [stale, live_session];
         let claims = assign_sessions(&[live(55)], &sessions);
         assert_eq!(claims[0], Some(1), "fresh file belongs to the live process");
+    }
+
+    #[test]
+    fn fresh_pi_without_own_file_is_not_bound_to_a_stale_session() {
+        // Regression: pi materializes its session file only once the first user
+        // message arrives. A newly started process idling at the empty prompt
+        // therefore has no file of its own, and must not adopt the directory's
+        // most recently written old session whose tail question would misreport
+        // it as WaitingReply.
+        let old_session = candidate(2 * 86_400, 3_600);
+        let claims = assign_sessions(&[live(90)], &[old_session]);
+        assert_eq!(claims[0], None, "fresh process stays unbound (Ready)");
+    }
+
+    #[test]
+    fn fresh_pi_ignores_all_old_files_regardless_of_their_recency() {
+        let old_recent = candidate(3 * 86_400, 600);
+        let old_older = candidate(5 * 86_400, 86_400);
+        let claims = assign_sessions(&[live(300)], &[old_older, old_recent]);
+        assert_eq!(claims[0], None, "no pre-start file may be adopted");
+    }
+
+    #[test]
+    fn anchor_ignores_another_sessions_file_whose_writes_stopped_before_start() {
+        // A file created inside the anchor window by an earlier process that has
+        // since exited must not be claimed once its writes stopped before the
+        // new process started.
+        let dead_session = candidate(60, 60);
+        let claims = assign_sessions(&[live(30)], &[dead_session]);
+        assert_eq!(claims[0], None);
+    }
+
+    #[test]
+    fn resumed_session_with_recent_writes_still_binds_by_recency() {
+        // A process that resumed an old session and is actively appending to it
+        // keeps owning that file.
+        let resumed = candidate(3 * 86_400, 10);
+        let claims = assign_sessions(&[live(120)], &[resumed]);
+        assert_eq!(claims[0], Some(0));
+    }
+
+    #[test]
+    fn stale_files_never_win_over_a_live_process_own_anchor() {
+        // A fresh file anchored to the live process beats a more recently
+        // modified stale file that predates the process.
+        let stale = candidate(3 * 86_400, 30);
+        let own = candidate(20, 1);
+        let claims = assign_sessions(&[live(15)], &[stale, own]);
+        assert_eq!(claims[0], Some(1), "own anchored file wins over stale file");
     }
 }
