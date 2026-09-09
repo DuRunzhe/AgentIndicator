@@ -137,8 +137,10 @@ if [ "$OS" = "Darwin" ]; then
         ACTUAL=$(sha256sum "$TMP/$APP_ASSET" | awk '{print $1}')
       fi
       EXPECTED=$(tr -d '[:space:]' < "$TMP/$APP_ASSET.sha256")
-      [ "$ACTUAL" = "$EXPECTED" ] || { echo "SHA256 校验失败（$APP_ASSET）" >&2; exit 1; }
-      echo "SHA256 校验通过（$APP_ASSET）"
+      # Bash 3.2 (macOS) in CJK locales can misparse an unbraced $VAR that a
+      # full-width character follows, aborting under `set -u`; always brace it.
+      [ "$ACTUAL" = "$EXPECTED" ] || { echo "SHA256 校验失败（${APP_ASSET}）" >&2; exit 1; }
+      echo "SHA256 校验通过（${APP_ASSET}）"
     else
       echo "警告: 未找到 $APP_ASSET.sha256 校验文件，跳过校验" >&2
     fi
