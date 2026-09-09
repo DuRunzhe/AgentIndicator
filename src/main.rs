@@ -72,6 +72,10 @@ fn main() -> Result<()> {
             return Ok(());
         }
     };
+    // If Claude Code's statusline still points at a collector installed by an
+    // earlier channel, re-point it at this executable so a fresh npm/Homebrew/
+    // curl install takes over without a manual menu action.
+    claude_statusline::auto_repoint_if_stale();
     let (refresh_tx, refresh_rx) = bounded(1);
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);

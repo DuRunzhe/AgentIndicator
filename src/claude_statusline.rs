@@ -53,6 +53,48 @@ pub fn install() -> Result<(), String> {
     Ok(())
 }
 
+/// True when settings.json routes the statusline to a collector command that
+/// is ours (carries `--claude-statusline`) but points at a different
+/// executable than this one. Foreign or absent statusLines are never stale, so
+/// explicit user configuration and deliberate removals survive.
+fn collector_is_stale(status_line: &Value, expected_command: &str) -> bool {
+    if status_line.get("type").and_then(Value::as_str) != Some("command") {
+        return false;
+    }
+    let Some(command) = status_line.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    command.contains("--claude-statusline") && command != expected_command
+}
+
+/// Re-point the Claude statusline at this executable when it still references a
+/// collector installed by an earlier channel (npm / Homebrew / curl). The tray
+/// calls this once at startup, so launching the freshly installed binary
+/// automatically updates `~/.claude/settings.json`; `install()` preserves the
+/// old command as `previous_status_line` for a clean uninstall.
+pub fn auto_repoint_if_stale() {
+    let Ok(config_dir) = claude_config_dir() else {
+        return;
+    };
+    let settings_path = config_dir.join("settings.json");
+    let Some(settings) = read_json(&settings_path) else {
+        return;
+    };
+    let Some(status_line) = settings.get("statusLine") else {
+        return;
+    };
+    let Ok(expected_command) = collector_command() else {
+        return;
+    };
+    if !collector_is_stale(status_line, &expected_command) {
+        return;
+    }
+    match install() {
+        Ok(()) => eprintln!("repointed Claude statusline to {expected_command}"),
+        Err(error) => eprintln!("could not repoint Claude statusline: {error}"),
+    }
+}
+
 pub fn collect_from_stdin() {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
@@ -175,5 +217,46 @@ mod tests {
     #[test]
     fn quotes_shell_paths() {
         assert_eq!(shell_quote("a'b"), "'a'\\\"'\\\"'b'");
+    }
+    #[test]
+    fn auto_repoint_rewrites_a_stale_collector_in_place() {
+        let config = std::env::temp_dir().join(format!(
+            "agent-status-indicator-repoint-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&config);
+        fs::create_dir_all(&config).expect("create temp config dir");
+        let settings_path = config.join("settings.json");
+        let stale = serde_json::json!({
+            "statusLine": {
+                "type": "command",
+                "command": "'/old/install/agent-status-indicator' --claude-statusline"
+            }
+        });
+        fs::write(&settings_path, serde_json::to_string(&stale).unwrap()).unwrap();
+        let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::set_var("CLAUDE_CONFIG_DIR", &config);
+        auto_repoint_if_stale();
+        if let Some(value) = previous {
+            std::env::set_var("CLAUDE_CONFIG_DIR", value);
+        } else {
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
+        let expected = std::env::current_exe().expect("current exe");
+        let updated: Value =
+            serde_json::from_reader(fs::File::open(&settings_path).unwrap()).unwrap();
+        let command = updated["statusLine"]["command"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(command.contains(&expected.to_string_lossy().into_owned()));
+        assert!(command.ends_with("--claude-statusline"));
+        // The stale path is preserved as previous so uninstall can restore it.
+        let metadata = read_json(&config.join("agent-status-indicator-statusline.json"))
+            .expect("integration metadata written");
+        assert_eq!(
+            metadata["previous_status_line"]["command"],
+            serde_json::json!("'/old/install/agent-status-indicator' --claude-statusline")
+        );
+        let _ = fs::remove_dir_all(&config);
     }
 }
