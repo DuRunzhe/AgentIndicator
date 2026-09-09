@@ -271,7 +271,13 @@ fn apply_event(event: &Value, agent: &str, cursor: &mut FileCursor) {
     collect_tools(event, &mut cursor.tools, &mut cursor.results);
     if agent == "claude" {
         if event["type"] == "system" && event["subtype"] == "turn_duration" {
-            cursor.facts.state = Some(AgentState::Ready);
+            // Claude Code closes every completed user turn with a
+            // turn_duration marker. When the turn's last assistant message
+            // ended in a question, that marker must not erase the
+            // awaiting-reply signal; only the user's next message clears it.
+            if cursor.facts.state != Some(AgentState::WaitingReply) {
+                cursor.facts.state = Some(AgentState::Ready);
+            }
         } else if event["type"] == "user" {
             cursor.facts.state = Some(AgentState::Working);
         } else if event["type"] == "assistant" {
@@ -472,6 +478,36 @@ fn apply_pending_priority(cursor: &mut FileCursor) {
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn claude_turn_duration_keeps_waiting_reply_after_a_question() {
+        // Mirrors the tail of a real interactive Claude session: after the
+        // assistant ends its turn with a question, Claude Code appends a
+        // turn_duration system event. That marker must not erase the
+        // awaiting-reply signal left by the question.
+        let mut cursor = FileCursor::default();
+        for raw in [
+            r#"{"type":"user","message":{"role":"user","content":"帮我做"}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"完成了。需要我帮你清理掉它吗？"}]}}"#,
+            r#"{"type":"system","subtype":"turn_duration","durationMs":100}"#,
+        ] {
+            apply_event(&serde_json::from_str(raw).unwrap(), "claude", &mut cursor);
+        }
+        assert_eq!(cursor.facts.state, Some(AgentState::WaitingReply));
+    }
+
+    #[test]
+    fn claude_turn_duration_stays_ready_without_a_question() {
+        let mut cursor = FileCursor::default();
+        for raw in [
+            r#"{"type":"user","message":{"role":"user","content":"帮我做"}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"完成了。"}]}}"#,
+            r#"{"type":"system","subtype":"turn_duration","durationMs":100}"#,
+        ] {
+            apply_event(&serde_json::from_str(raw).unwrap(), "claude", &mut cursor);
+        }
+        assert_eq!(cursor.facts.state, Some(AgentState::Ready));
+    }
+
     #[test]
     fn pairs_tools_by_id_and_prioritizes_user_input() {
         let mut cursor = FileCursor::default();
