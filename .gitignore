@@ -3,6 +3,11 @@
 /dist
 .DS_Store
 
+# The macOS release bundle is generated on demand by
+# scripts/package-macos-app.sh (and by CI during tagged releases); it is
+# published via GitHub Release assets and the npm package, not committed.
+/app/darwin-arm64
+
 # Local Claude Code settings must never be published with the repository.
 .claude/
 
