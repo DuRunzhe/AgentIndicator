@@ -7,8 +7,8 @@
 #   (or "AC_PASSWORD" via --apple-id/--team-id/--password)
 #
 # Usage:
-#   ASI_SIGN_IDENTITY="Developer ID Application: Runzhe Du (W796BPAJVP)" \
-#   ASI_TEAM_ID="W796BPAJVP" \
+#   ASI_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+#   ASI_TEAM_ID="TEAMID" \
 #   ASI_NOTARY_PROFILE="AC_API_KEY" \
 #   scripts/notarize-macos-app.sh
 set -euo pipefail

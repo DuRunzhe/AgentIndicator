@@ -139,8 +139,10 @@ jobs:
       NOTARY_KEY: ${{ secrets.ASI_NOTARY_KEY }}
       NOTARY_KEY_ID: ${{ secrets.ASI_NOTARY_KEY_ID }}
       NOTARY_ISSUER_ID: ${{ secrets.ASI_NOTARY_ISSUER_ID }}
-      TEAM_ID: W796BPAJVP
-      SIGN_IDENTITY: "Developer ID Application: Runzhe Du (W796BPAJVP)"
+      # Signing identity lives in repository Variables (not a secret — it is
+      # already public in every signed binary) so no personal info is committed.
+      TEAM_ID: ${{ vars.ASI_TEAM_ID }}
+      SIGN_IDENTITY: ${{ vars.ASI_SIGN_IDENTITY }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
