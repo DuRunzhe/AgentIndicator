@@ -5,7 +5,7 @@
 ### npm 本地安装
 
 ```bash
-npm install -g ./agent-status-indicator-0.2.16.tgz
+npm install -g ./agent-status-indicator-0.2.17.tgz
 agent-status-indicator
 ```
 
@@ -20,7 +20,7 @@ npm uninstall -g agent-status-indicator
 ### 独立二进制
 
 ```bash
-tar -xzf agent-status-indicator-0.2.16-aarch64-apple-darwin.tar.gz
+tar -xzf agent-status-indicator-0.2.17-aarch64-apple-darwin.tar.gz
 ./agent-status-indicator
 ```
 
