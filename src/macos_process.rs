@@ -10,6 +10,12 @@ pub struct ProcessRecord {
     pub pid: u32,
     pub ppid: u32,
     pub uptime: Duration,
+    /// The executed program's path, from `ps comm=`. Paths with spaces (for
+    /// example "Codex Framework.framework") stay intact here, unlike `command`.
+    pub executable: String,
+    /// The full command line, from `ps command=`. Only its arguments are
+    /// meaningful; its leading token can end mid-path when the path contains a
+    /// space.
     pub command: String,
 }
 
@@ -38,9 +44,30 @@ impl MacProcessSource {
         else {
             return vec![];
         };
+        let executables = self.executable_paths();
         String::from_utf8_lossy(&output.stdout)
             .lines()
-            .filter_map(parse_process_line)
+            .filter_map(|line| parse_process_line(line, &executables))
+            .collect()
+    }
+
+    /// The executed program per pid. Kept separate from the `command=` parse
+    /// because whitespace splitting breaks paths containing spaces: the leading
+    /// token of `.../Frameworks/Codex Framework.framework/...` is
+    /// `.../Frameworks/Codex`, whose basename looks like the Codex agent.
+    fn executable_paths(&self) -> HashMap<u32, String> {
+        let Ok(output) = Command::new("/bin/ps")
+            .args(["-axo", "pid=,comm="])
+            .output()
+        else {
+            return HashMap::new();
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let (pid, path) = line.trim_start().split_once(char::is_whitespace)?;
+                Some((pid.parse().ok()?, path.trim().to_owned()))
+            })
             .collect()
     }
 
@@ -93,17 +120,30 @@ impl MacProcessSource {
     }
 }
 
-fn parse_process_line(line: &str) -> Option<ProcessRecord> {
+fn parse_process_line(line: &str, executables: &HashMap<u32, String>) -> Option<ProcessRecord> {
     let mut fields = line.split_whitespace();
     let pid = fields.next()?.parse().ok()?;
     let ppid = fields.next()?.parse().ok()?;
     let uptime = parse_etime(fields.next()?)?;
     let _tty = fields.next()?;
     let command = fields.collect::<Vec<_>>().join(" ");
-    (!command.is_empty()).then_some(ProcessRecord {
+    if command.is_empty() {
+        return None;
+    }
+    // Fall back to the command line's leading token when `ps comm=` omitted the
+    // pid, which is no worse than the previous behavior.
+    let executable = executables.get(&pid).cloned().unwrap_or_else(|| {
+        command
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    });
+    Some(ProcessRecord {
         pid,
         ppid,
         uptime,
+        executable,
         command,
     })
 }
@@ -171,12 +211,24 @@ mod tests {
 
     #[test]
     fn parses_ps_snapshot_line() {
-        let record =
-            parse_process_line("42 1 01:02 ttys001 /opt/bin/codex resume thread-id").unwrap();
+        let executables = HashMap::from([(42, "/opt/bin/codex".to_owned())]);
+        let record = parse_process_line(
+            "42 1 01:02 ttys001 /opt/bin/codex resume thread-id",
+            &executables,
+        )
+        .unwrap();
         assert_eq!(record.pid, 42);
         assert_eq!(record.ppid, 1);
         assert_eq!(record.uptime, Duration::from_secs(62));
+        assert_eq!(record.executable, "/opt/bin/codex");
         assert_eq!(record.command, "/opt/bin/codex resume thread-id");
+    }
+
+    #[test]
+    fn falls_back_to_the_command_token_when_comm_is_missing() {
+        let record =
+            parse_process_line("42 1 01:02 ttys001 /opt/bin/codex", &HashMap::new()).unwrap();
+        assert_eq!(record.executable, "/opt/bin/codex");
     }
 
     #[test]
