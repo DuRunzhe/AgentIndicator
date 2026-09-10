@@ -6,10 +6,10 @@ class AgentStatusIndicator < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.22/agent-status-indicator-aarch64-apple-darwin.tar.gz"
-      sha256 "REPLACE_ON_RELEASE"
+      sha256 "1a6e21e0976f75837b7cdee172b84f22cddac61f3a15b17dbc9cd33db38034d3"
     else
       url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.22/agent-status-indicator-x86_64-apple-darwin.tar.gz"
-      sha256 "REPLACE_ON_RELEASE"
+      sha256 "b065f57f30d88192d904ad3c717ae269efb84d7fe9d0f58eeecb3dd4b54df232"
     end
   end
   def install
