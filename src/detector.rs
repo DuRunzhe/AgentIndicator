@@ -1,12 +1,13 @@
+use crate::codex_state::CodexTitles;
 #[cfg(target_os = "macos")]
 use crate::macos_process::{MacProcessSource, ProcessMetadata, ProcessRecord};
 use crate::model::{AgentInstance, AgentState};
-use crate::session::SessionAnalyzer;
+use crate::session::{SessionAnalyzer, SessionFacts};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 #[cfg(not(target_os = "macos"))]
 use sysinfo::ProcessesToUpdate;
@@ -24,6 +25,8 @@ pub struct Detector {
     pi: crate::pi::PiAnalyzer,
     terminal: crate::terminal::TerminalProbe,
     #[cfg(target_os = "macos")]
+    codex_titles: CodexTitles,
+    #[cfg(target_os = "macos")]
     web_urls: crate::web::WebUrlDetector,
 }
 
@@ -39,6 +42,8 @@ impl Detector {
             opencode: crate::opencode::OpenCodeAnalyzer::default(),
             pi: crate::pi::PiAnalyzer::default(),
             terminal: crate::terminal::TerminalProbe::default(),
+            #[cfg(target_os = "macos")]
+            codex_titles: CodexTitles::default(),
             #[cfg(target_os = "macos")]
             web_urls: crate::web::WebUrlDetector::default(),
         }
@@ -71,6 +76,7 @@ impl Detector {
                 let cwd = process.cwd().map(PathBuf::from);
                 let active = has_task_descendant(pid, kind, &self.system);
                 let mut instance = AgentInstance {
+                    key: pid.as_u32().to_string(),
                     kind: display_name(kind).into(),
                     label: cwd
                         .as_ref()
@@ -144,14 +150,35 @@ impl Detector {
             .into_iter()
             .collect();
         let metadata = self.macos_processes.metadata_for(&tracked_pids);
+        let now = SystemTime::now();
         let mut instances: Vec<_> = roots
             .into_iter()
-            .map(|(process, kind, host)| {
+            .flat_map(|(process, kind, host)| {
                 let group_pids = process_tree_pids(process.pid, &processes);
                 let group_metadata = group_pids
                     .iter()
                     .filter_map(|pid| metadata.get(pid))
                     .collect::<Vec<_>>();
+                // A GUI application drives every conversation it has open
+                // through one app-server process. Report the recently active
+                // conversations instead of collapsing them into a single row.
+                if kind == "codex" {
+                    if let Some(host) = host {
+                        let conversations = codex_conversations(
+                            &mut self.sessions,
+                            codex_rollouts_from_metadata(&group_metadata),
+                            now,
+                        );
+                        if !conversations.is_empty() {
+                            return hosted_codex_instances(
+                                process,
+                                host.display,
+                                &mut self.codex_titles,
+                                conversations,
+                            );
+                        }
+                    }
+                }
                 let cwd = group_metadata.iter().find_map(|entry| entry.cwd.clone());
                 let display = host.map_or_else(|| display_name(kind), |host| host.display);
                 // A GUI host keeps its helper processes alive permanently, so
@@ -160,6 +187,7 @@ impl Detector {
                 let active =
                     host.is_none() && has_active_process_descendant(process.pid, kind, &processes);
                 let mut instance = AgentInstance {
+                    key: process.pid.to_string(),
                     kind: display.into(),
                     label: cwd
                         .as_ref()
@@ -206,7 +234,7 @@ impl Detector {
                     "opencode" => enrich_opencode(&mut instance, &mut self.opencode),
                     _ => {}
                 }
-                instance
+                vec![instance]
             })
             .collect();
         enrich_pi_instances(&mut instances, &mut self.pi);
@@ -225,6 +253,7 @@ impl Detector {
 
 fn stopped_instance(kind: &str) -> AgentInstance {
     AgentInstance {
+        key: format!("stopped:{}", display_name(kind)),
         kind: display_name(kind).into(),
         label: display_name(kind).into(),
         pid: 0,
@@ -448,6 +477,123 @@ fn codex_rollouts_from_metadata(metadata: &[&ProcessMetadata]) -> Vec<PathBuf> {
         std::cmp::Reverse(path.metadata().ok().and_then(|entry| entry.modified().ok()))
     });
     rollouts
+}
+
+/// A conversation with no unfinished turn only earns a row while it has been
+/// touched recently: ChatGPT keeps a tab for every historical thread, and
+/// listing all of them would bury the menu.
+#[cfg(target_os = "macos")]
+const RECENT_CONVERSATION_SECONDS: u64 = 15 * 60;
+
+/// The conversations of a GUI host that deserve a row, newest activity first.
+#[cfg(target_os = "macos")]
+fn codex_conversations(
+    analyzer: &mut SessionAnalyzer,
+    rollouts: Vec<PathBuf>,
+    now: SystemTime,
+) -> Vec<(PathBuf, SessionFacts)> {
+    let conversations = rollouts
+        .into_iter()
+        .filter_map(|path| Some((path.clone(), analyzer.analyze_codex_rollout(&path)?)))
+        .collect();
+    select_conversations(conversations, now)
+}
+
+/// Keeps the conversations that deserve a row, newest activity first.
+#[cfg(target_os = "macos")]
+fn select_conversations(
+    mut conversations: Vec<(PathBuf, SessionFacts)>,
+    now: SystemTime,
+) -> Vec<(PathBuf, SessionFacts)> {
+    conversations.sort_by_key(|(_, facts)| std::cmp::Reverse(facts.activity));
+
+    let active: Vec<_> = conversations
+        .iter()
+        .filter(|(_, facts)| is_unfinished(facts) || touched_recently(facts, now))
+        .cloned()
+        .collect();
+    if active.is_empty() {
+        // Keep a single row so the application itself stays visible.
+        conversations.truncate(1);
+        conversations
+    } else {
+        active
+    }
+}
+
+/// A conversation whose turn has not finished: it is working, or it waits for
+/// the user. Those stay listed however long they have been idle, because the
+/// tray is how the user notices them.
+#[cfg(target_os = "macos")]
+fn is_unfinished(facts: &SessionFacts) -> bool {
+    matches!(
+        facts.state,
+        Some(AgentState::Working | AgentState::Waiting | AgentState::WaitingReply)
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn touched_recently(facts: &SessionFacts, now: SystemTime) -> bool {
+    facts
+        .activity
+        .and_then(|activity| now.duration_since(activity).ok())
+        .is_some_and(|age| age.as_secs() < RECENT_CONVERSATION_SECONDS)
+}
+
+/// One row per active conversation of a GUI host. Each row carries its own key
+/// and deep link, so several working conversations appear side by side and
+/// clicking one opens exactly that thread.
+#[cfg(target_os = "macos")]
+fn hosted_codex_instances(
+    process: &ProcessRecord,
+    display: &str,
+    titles: &mut CodexTitles,
+    conversations: Vec<(PathBuf, SessionFacts)>,
+) -> Vec<AgentInstance> {
+    conversations
+        .into_iter()
+        .map(|(rollout, facts)| {
+            let thread = crate::session::codex_rollout_thread_id(&rollout).map(str::to_owned);
+            let title = thread.as_deref().and_then(|thread| titles.title(thread));
+            AgentInstance {
+                key: thread.as_deref().map_or_else(
+                    || process.pid.to_string(),
+                    |thread| format!("{}:{thread}", process.pid),
+                ),
+                kind: display.into(),
+                label: conversation_label(display, facts.cwd.as_deref(), title.as_deref()),
+                pid: process.pid,
+                cwd: facts.cwd.clone(),
+                state: facts.state.unwrap_or(AgentState::Ready),
+                uptime: rollout_uptime(&rollout).unwrap_or(process.uptime),
+                model: facts.model.clone(),
+                context: facts.context.clone(),
+                open_url: codex_thread_url(&rollout),
+                automatic_confirmation_mode: facts.automatic_confirmation_mode,
+            }
+        })
+        .collect()
+}
+
+/// `Kind (project) · title`, omitting whatever is unknown. The title is what
+/// keeps several conversations of the same project apart.
+#[cfg(target_os = "macos")]
+fn conversation_label(display: &str, cwd: Option<&Path>, title: Option<&str>) -> String {
+    let mut label = match cwd.and_then(Path::file_name).and_then(|name| name.to_str()) {
+        Some(project) => format!("{display} ({project})"),
+        None => display.to_owned(),
+    };
+    if let Some(title) = title {
+        label.push_str(" · ");
+        label.push_str(&title.chars().take(24).collect::<String>());
+    }
+    label
+}
+
+/// How long ago the conversation started, from the rollout file's birth time.
+#[cfg(target_os = "macos")]
+fn rollout_uptime(rollout: &Path) -> Option<Duration> {
+    rollout.metadata().ok()?.created().ok()?.elapsed().ok()
 }
 
 /// A host application keeps one rollout open per conversation (the ChatGPT
@@ -970,6 +1116,118 @@ mod tests {
             "/opt/homebrew/bin/opencode",
             ""
         )));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn conversation(
+        thread: &str,
+        state: Option<AgentState>,
+        age_secs: u64,
+    ) -> (PathBuf, SessionFacts) {
+        let mut facts = SessionFacts::default();
+        facts.state = state;
+        facts.activity = Some(SystemTime::now() - Duration::from_secs(age_secs));
+        (
+            PathBuf::from(format!("rollout-2026-09-10T18-28-56-{thread}.jsonl")),
+            facts,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_unfinished_or_recent_conversations_get_rows() {
+        let now = SystemTime::now();
+        let conversations = vec![
+            conversation("working", Some(AgentState::Working), 3 * 3600),
+            conversation("waiting", Some(AgentState::Waiting), 4 * 3600),
+            conversation("recent", Some(AgentState::Ready), 60),
+            conversation("stale", Some(AgentState::Ready), 3 * 3600),
+        ];
+        let selected = select_conversations(conversations, now);
+        let threads: Vec<_> = selected
+            .iter()
+            .map(|(path, _)| crate::session::codex_rollout_thread_id(path).unwrap())
+            .collect();
+        // Newest activity first; the long-idle finished conversation is dropped
+        // so history tabs cannot bury the menu. Distinct ages keep the expected
+        // order independent of the clock's resolution.
+        assert_eq!(threads, ["recent", "working", "waiting"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_host_without_active_conversations_keeps_one_row() {
+        let now = SystemTime::now();
+        let selected = select_conversations(
+            vec![
+                conversation("older", Some(AgentState::Ready), 3 * 3600),
+                conversation("newer", Some(AgentState::Ready), 2 * 3600),
+            ],
+            now,
+        );
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            crate::session::codex_rollout_thread_id(&selected[0].0),
+            Some("newer")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hosted_rows_are_distinguished_by_their_conversation() {
+        let process = record(
+            233,
+            1,
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "",
+        );
+        let mut titles = CodexTitles::default();
+        let rows = hosted_codex_instances(
+            &process,
+            "ChatGPT",
+            &mut titles,
+            vec![
+                conversation(
+                    "01a08a9c-8b7b-7530-be66-8da1fee75728",
+                    Some(AgentState::Working),
+                    1,
+                ),
+                conversation(
+                    "01a08add-08dc-7362-b1ec-9006b7b625b4",
+                    Some(AgentState::Working),
+                    2,
+                ),
+            ],
+        );
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].key, rows[1].key, "each conversation owns its row");
+        assert_eq!(
+            rows[0].open_url.as_deref(),
+            Some("codex://threads/01a08a9c-8b7b-7530-be66-8da1fee75728")
+        );
+        assert_eq!(rows[0].pid, 233);
+        assert_eq!(rows[0].kind, "ChatGPT");
+    }
+
+    #[test]
+    fn conversation_labels_add_the_thread_title() {
+        let cwd = Path::new("/Users/me/code/nita");
+        assert_eq!(
+            conversation_label("ChatGPT", Some(cwd), Some("看看git状态")),
+            "ChatGPT (nita) · 看看git状态"
+        );
+        assert_eq!(
+            conversation_label("ChatGPT", Some(cwd), None),
+            "ChatGPT (nita)"
+        );
+        assert_eq!(
+            conversation_label("ChatGPT", None, Some("在吗")),
+            "ChatGPT · 在吗"
+        );
+        assert_eq!(
+            conversation_label("ChatGPT", Some(cwd), Some(&"标".repeat(40))),
+            format!("ChatGPT (nita) · {}", "标".repeat(24))
+        );
     }
 
     #[cfg(target_os = "macos")]

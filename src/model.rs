@@ -39,6 +39,12 @@ pub struct ContextUsage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentInstance {
+    /// Stable row identity. Normally the process id; when one process hosts
+    /// several sessions (the ChatGPT app-server drives many Codex threads) it
+    /// is `<pid>:<thread>`, so every conversation owns its own menu row and its
+    /// own notification state.
+    #[serde(default)]
+    pub key: String,
     pub kind: String,
     pub label: String,
     pub pid: u32,

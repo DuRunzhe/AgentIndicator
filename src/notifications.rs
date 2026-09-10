@@ -19,7 +19,9 @@ struct Tracker {
 
 #[derive(Default)]
 pub struct NotificationTracker {
-    instances: HashMap<u32, Tracker>,
+    /// Keyed by [`AgentInstance::key`]: one process can host several sessions,
+    /// and each needs its own reminder schedule.
+    instances: HashMap<String, Tracker>,
 }
 
 impl NotificationTracker {
@@ -34,18 +36,21 @@ impl NotificationTracker {
         }
         let mut due_notifications = vec![];
         let now = Instant::now();
-        let live: std::collections::HashSet<_> = instances.iter().map(|i| i.pid).collect();
-        self.instances.retain(|pid, _| live.contains(pid));
+        let live: std::collections::HashSet<_> = instances.iter().map(|i| i.key.clone()).collect();
+        self.instances.retain(|key, _| live.contains(key));
         for instance in instances {
             if !should_notify(instance, config) {
-                self.instances.remove(&instance.pid);
+                self.instances.remove(&instance.key);
                 continue;
             }
-            let tracker = self.instances.entry(instance.pid).or_insert(Tracker {
-                state: instance.state,
-                since: now,
-                sent: 0,
-            });
+            let tracker = self
+                .instances
+                .entry(instance.key.clone())
+                .or_insert(Tracker {
+                    state: instance.state,
+                    since: now,
+                    sent: 0,
+                });
             if tracker.state != instance.state {
                 *tracker = Tracker {
                     state: instance.state,
@@ -140,6 +145,7 @@ mod tests {
     fn only_attention_states_are_eligible_for_notifications() {
         let config = crate::config::Config::default();
         let instance = |state| AgentInstance {
+            key: "1".into(),
             kind: "Test".into(),
             label: "Test".into(),
             pid: 1,
@@ -170,6 +176,7 @@ mod tests {
     fn web_instance_uses_url_focus_action() {
         let request = NotificationRequest::from_instance(
             &AgentInstance {
+                key: "10".into(),
                 kind: "DeepSeek Harness".into(),
                 label: "DeepSeek".into(),
                 pid: 10,
@@ -197,6 +204,7 @@ mod tests {
     fn first_attention_state_emits_one_notification() {
         let mut tracker = NotificationTracker::default();
         let instance = AgentInstance {
+            key: "42".into(),
             kind: "Codex".into(),
             label: "Codex".into(),
             pid: 42,
@@ -223,6 +231,7 @@ mod tests {
         config.notifications_enabled = true;
         config.show_waiting_notifications_in_auto_confirm_mode = false;
         let waiting = AgentInstance {
+            key: "7".into(),
             kind: "Codex".into(),
             label: "Codex".into(),
             pid: 7,

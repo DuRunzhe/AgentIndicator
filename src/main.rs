@@ -1,6 +1,7 @@
 mod about;
 mod browser_tabs;
 mod claude_statusline;
+mod codex_state;
 mod config;
 mod deepseek;
 mod detector;
@@ -296,7 +297,7 @@ impl App {
         let mut instance_items = Vec::new();
         let visible: Vec<_> = visible_instances(&self.current, &self.config).collect();
         for instance in &visible {
-            let id = format!("focus:{}", instance.pid);
+            let id = format!("focus:{}", instance.key);
             let item = MenuItem::with_id(
                 id,
                 format_instance(instance, &self.config),
@@ -661,23 +662,24 @@ impl ApplicationHandler<UserEvent> for App {
                 i18n::set_locale(locale);
                 self.menu = None;
                 self.rebuild();
-            } else if let Some(pid) = id
-                .strip_prefix("focus:")
-                .and_then(|v| v.parse::<u32>().ok())
-            {
-                let web_url = self
+            } else if let Some(key) = id.strip_prefix("focus:") {
+                // Rows are addressed by key, not pid: one process can host
+                // several conversations, each with its own row.
+                let target = self
                     .current
                     .iter()
-                    .find(|instance| instance.pid == pid)
-                    .and_then(|instance| instance.open_url.clone());
-                let reuse_tabs = self.config.browser_tab_reuse;
-                thread::spawn(move || {
-                    if let Some(url) = web_url {
-                        let _ = web::focus_url(&url, reuse_tabs);
-                    } else {
-                        let _ = focus::focus(pid);
-                    }
-                });
+                    .find(|instance| instance.key == key)
+                    .map(|instance| (instance.open_url.clone(), instance.pid));
+                if let Some((web_url, pid)) = target {
+                    let reuse_tabs = self.config.browser_tab_reuse;
+                    thread::spawn(move || {
+                        if let Some(url) = web_url {
+                            let _ = web::focus_url(&url, reuse_tabs);
+                        } else {
+                            let _ = focus::focus(pid);
+                        }
+                    });
+                }
             }
         }
         self.update_tray_status(false);
@@ -1266,6 +1268,7 @@ mod summary_tests {
 
     fn instance(state: AgentState) -> AgentInstance {
         AgentInstance {
+            key: "1".into(),
             kind: "Test".into(),
             label: "Test".into(),
             pid: 1,
@@ -1308,6 +1311,7 @@ mod stopped_visibility_tests {
 
     fn instance(state: AgentState) -> AgentInstance {
         AgentInstance {
+            key: "1".into(),
             kind: "Test".into(),
             label: "Test".into(),
             pid: 1,
