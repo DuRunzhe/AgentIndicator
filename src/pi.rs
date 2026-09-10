@@ -33,6 +33,7 @@ struct Cached {
     session_modified: SystemTime,
     session_size: u64,
     models_modified: Option<SystemTime>,
+    store_modified: Option<SystemTime>,
     facts: PiFacts,
     last_access: Instant,
 }
@@ -89,22 +90,31 @@ impl PiAnalyzer {
             .metadata()
             .ok()
             .and_then(|entry| entry.modified().ok());
+        // Catalog providers resolve their window from models-store.json, so a
+        // refreshed store must also invalidate cached facts.
+        let store_modified = agent_dir
+            .join("models-store.json")
+            .metadata()
+            .ok()
+            .and_then(|entry| entry.modified().ok());
         if let Some(cached) = self.cache.get_mut(session) {
             cached.last_access = Instant::now();
             if cached.session_modified == session_modified
                 && cached.session_size == metadata.len()
                 && cached.models_modified == models_modified
+                && cached.store_modified == store_modified
             {
                 return Some(cached.facts.clone());
             }
         }
-        let facts = parse_signals(&read_tail(session)?, &models);
+        let facts = parse_signals(&read_tail(session)?, agent_dir);
         self.cache.insert(
             session.to_path_buf(),
             Cached {
                 session_modified,
                 session_size: metadata.len(),
                 models_modified,
+                store_modified,
                 facts: facts.clone(),
                 last_access: Instant::now(),
             },
@@ -303,7 +313,7 @@ fn read_tail(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn parse_signals(text: &str, models: &Path) -> PiFacts {
+fn parse_signals(text: &str, agent_dir: &Path) -> PiFacts {
     let mut facts = PiFacts::default();
     let mut provider = None;
     let mut model_id = None;
@@ -414,7 +424,7 @@ fn parse_signals(text: &str, models: &Path) -> PiFacts {
     };
     facts.context = last_usage
         .zip(context_window(
-            models,
+            agent_dir,
             provider.as_deref(),
             model_id.as_deref(),
         ))
@@ -442,13 +452,27 @@ fn usage_tokens(usage: &Value) -> Option<u64> {
     })
 }
 
-fn context_window(models: &Path, provider: Option<&str>, model: Option<&str>) -> Option<u64> {
-    let catalog: Value = serde_json::from_slice(&fs::read(models).ok()?).ok()?;
+/// Resolve a model's context window. User-defined providers live in
+/// `models.json` under `/providers/{id}/models`, while providers pi fetches
+/// from a catalog (e.g. a ZAI Coding Plan's zai-coding-cn models) are cached
+/// in `models-store.json` as `{id: {models: [...]}}` and never appear in
+/// models.json. Either source may own the provider; a custom entry wins over
+/// the catalog cache.
+fn context_window(agent_dir: &Path, provider: Option<&str>, model: Option<&str>) -> Option<u64> {
     let provider = provider?;
     let model = model?;
-    catalog
-        .pointer(&format!("/providers/{}/models", escape(provider)))?
-        .as_array()?
+    let read_json = |name: &str| {
+        fs::read(agent_dir.join(name))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or(Value::Null)
+    };
+    let custom = read_json("models.json");
+    let store = read_json("models-store.json");
+    custom
+        .pointer(&format!("/providers/{}/models", escape(provider)))
+        .or_else(|| store.pointer(&format!("/{}/models", escape(provider))))
+        .and_then(Value::as_array)?
         .iter()
         .find(|entry| entry["id"] == model)?["contextWindow"]
         .as_u64()
@@ -482,6 +506,58 @@ fn ends_with_question(text: &str) -> bool {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-status-indicator-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn catalog_provider_resolves_window_from_models_store() {
+        // Regression: providers fetched from a catalog (e.g. the ZAI Coding
+        // Plan's zai-coding-cn) only exist in models-store.json, never in the
+        // user's models.json; their context window must still resolve.
+        let dir = scratch_dir("pi-store");
+        std::fs::write(
+            dir.join("models-store.json"),
+            r#"{"zai-coding-cn":{"models":[{"id":"glm-5.3","contextWindow":1000000}]}}"#,
+        )
+        .unwrap();
+        let facts = parse_signals(
+            r#"{"type":"message","message":{"role":"assistant","provider":"zai-coding-cn","model":"glm-5.3","stopReason":"stop","content":[{"type":"text","text":"Done."}],"usage":{"totalTokens":20715}}}"#,
+            &dir,
+        );
+        let context = facts.context.expect("context usage");
+        assert_eq!(context.used_tokens, 20_715);
+        assert_eq!(context.window_tokens, 1_000_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn custom_models_win_over_the_catalog_cache() {
+        let dir = scratch_dir("pi-custom");
+        std::fs::write(
+            dir.join("models.json"),
+            r#"{"providers":{"ai-relay":{"models":[{"id":"gpt-5.6-sol","contextWindow":400000}]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("models-store.json"),
+            r#"{"ai-relay":{"models":[{"id":"gpt-5.6-sol","contextWindow":1}]}}"#,
+        )
+        .unwrap();
+        let facts = parse_signals(
+            r#"{"type":"message","message":{"role":"assistant","provider":"ai-relay","model":"gpt-5.6-sol","stopReason":"stop","content":[],"usage":{"totalTokens":10}}}"#,
+            &dir,
+        );
+        assert_eq!(facts.context.map(|c| c.window_tokens), Some(400_000));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn encodes_project_key() {
