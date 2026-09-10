@@ -407,7 +407,7 @@ fn collect_tools(
                 id.into(),
                 PendingTool {
                     user_input: matches!(name.as_str(), "requestuserinput" | "askuserquestion"),
-                    approval: contains_escalation(input),
+                    approval: contains_escalation(input) || is_permission_request(&name),
                 },
             );
         }
@@ -439,6 +439,17 @@ fn collect_tools(
         }
         _ => {}
     }
+}
+
+/// Codex can ask the user to widen its sandbox through a dedicated
+/// `request_permissions` tool (`{"permissions": {"file_system": ...,
+/// "network": ...}}`). That is how the ChatGPT desktop app drives its embedded
+/// Codex; the CLI instead marks a call's own arguments with
+/// `sandbox_permissions: "require_escalated"` (see [`contains_escalation`]).
+/// Without this, a permission request looks like an ordinary pending tool and
+/// the session reports Working while it is really waiting for confirmation.
+fn is_permission_request(normalized_name: &str) -> bool {
+    normalized_name == "requestpermissions"
 }
 
 fn contains_escalation(value: &Value) -> bool {
@@ -525,6 +536,68 @@ mod tests {
     fn recognizes_nested_escalation() {
         let input: Value = serde_json::json!({"args":{"sandbox_permissions":"require_escalated"}});
         assert!(contains_escalation(&input));
+    }
+
+    #[test]
+    fn chatgpt_style_permission_request_waits_for_confirmation() {
+        // The ChatGPT desktop app drives Codex through the app-server, which
+        // asks to widen the sandbox with a dedicated `request_permissions`
+        // tool instead of the CLI's `sandbox_permissions` argument. A pending
+        // such call means the session waits for the user, not that it works.
+        let mut cursor = FileCursor::default();
+        apply_event(
+            &serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "request_permissions",
+                    "call_id": "call-permissions",
+                    "arguments": "{\"permissions\":{\"file_system\":{\"write\":[\"/project/.git\"]},\"network\":{\"enabled\":true}},\"reason\":\"需要执行 git fetch\"}"
+                }
+            }),
+            "codex",
+            &mut cursor,
+        );
+        apply_pending_priority(&mut cursor);
+        assert_eq!(cursor.facts.state, Some(AgentState::Waiting));
+        assert!(cursor.facts.requires_terminal_probe);
+    }
+
+    #[test]
+    fn answered_permission_request_returns_to_working() {
+        let mut cursor = FileCursor::default();
+        for event in [
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "request_permissions",
+                    "call_id": "call-permissions",
+                    "arguments": "{\"permissions\":{\"network\":{\"enabled\":true}}}"
+                }
+            }),
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-permissions",
+                    "output": "approved"
+                }
+            }),
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call-exec",
+                    "arguments": "{\"cmd\":\"git fetch\"}"
+                }
+            }),
+        ] {
+            apply_event(&event, "codex", &mut cursor);
+        }
+        apply_pending_priority(&mut cursor);
+        assert_eq!(cursor.facts.state, Some(AgentState::Working));
     }
 
     #[test]

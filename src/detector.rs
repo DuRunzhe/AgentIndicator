@@ -190,7 +190,7 @@ impl Detector {
                         &mut instance,
                         &mut self.sessions,
                         active,
-                        codex_rollout_from_metadata(&group_metadata),
+                        codex_rollouts_from_metadata(&group_metadata),
                         &mut self.terminal,
                         host.is_none(),
                     ),
@@ -423,16 +423,36 @@ fn has_active_process_descendant(root: u32, kind: &str, processes: &[ProcessReco
 }
 
 #[cfg(target_os = "macos")]
-fn codex_rollout_from_metadata(metadata: &[&ProcessMetadata]) -> Option<PathBuf> {
-    let home = dirs::home_dir()?.join(".codex/sessions");
-    metadata
+fn codex_rollouts_from_metadata(metadata: &[&ProcessMetadata]) -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir().map(|home| home.join(".codex/sessions")) else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    let mut rollouts: Vec<_> = metadata
         .iter()
         .flat_map(|entry| entry.files.iter())
         .filter(|path| path.starts_with(&home))
         .filter(|path| crate::session::primary_codex_rollout_cwd(path).is_some())
-        .filter_map(|path| Some((path.metadata().ok()?.modified().ok()?, path.clone())))
-        .max_by_key(|(modified, _)| *modified)
-        .map(|(_, path)| path)
+        .filter(|path| seen.insert((*path).clone()))
+        .cloned()
+        .collect();
+    rollouts.sort_by_key(|path| {
+        std::cmp::Reverse(path.metadata().ok().and_then(|entry| entry.modified().ok()))
+    });
+    rollouts
+}
+
+/// A host application keeps one rollout open per conversation (the ChatGPT
+/// app-server holds several at once), so reporting the most recently written
+/// one picks whichever thread happened to be touched last. Report the most
+/// actionable instead: a session waiting for the user outranks one that is
+/// merely working, and ties go to the most recently active rollout.
+#[cfg(target_os = "macos")]
+fn most_actionable<T>(
+    items: impl Iterator<Item = T>,
+    key: impl Fn(&T) -> (AgentState, Option<std::time::SystemTime>),
+) -> Option<T> {
+    items.max_by_key(|item| key(item))
 }
 
 fn kind_order(kind: &str) -> usize {
@@ -583,19 +603,22 @@ fn enrich_macos_codex(
     instance: &mut AgentInstance,
     analyzer: &mut SessionAnalyzer,
     has_active_child: bool,
-    rollout: Option<PathBuf>,
+    rollouts: Vec<PathBuf>,
     terminal: &mut crate::terminal::TerminalProbe,
     probe_terminal: bool,
 ) {
-    let facts = rollout
-        .as_deref()
-        .and_then(|path| analyzer.analyze_codex_rollout(path))
-        .or_else(|| {
-            instance
-                .cwd
-                .as_deref()
-                .and_then(|cwd| analyzer.analyze_codex_for_cwd(cwd))
-        });
+    let facts = most_actionable(
+        rollouts
+            .iter()
+            .filter_map(|path| analyzer.analyze_codex_rollout(path)),
+        |facts| (facts.state.unwrap_or(AgentState::Stopped), facts.activity),
+    )
+    .or_else(|| {
+        instance
+            .cwd
+            .as_deref()
+            .and_then(|cwd| analyzer.analyze_codex_for_cwd(cwd))
+    });
     let Some(facts) = facts else {
         return;
     };
@@ -927,6 +950,36 @@ mod tests {
             "/opt/homebrew/bin/opencode",
             ""
         )));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn most_actionable_prefers_a_session_waiting_for_the_user() {
+        use std::time::SystemTime;
+        let at = |secs: u64| Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs));
+        let key = |(state, secs): &(AgentState, u64)| (*state, at(*secs));
+        // The waiting conversation is older than the working one: exactly the
+        // shape of the ChatGPT app-server holding two threads open, where
+        // picking the most recently written rollout reports the wrong one.
+        let chosen = most_actionable(
+            [
+                (AgentState::Working, 300),
+                (AgentState::Waiting, 100),
+                (AgentState::Ready, 400),
+            ]
+            .into_iter(),
+            key,
+        )
+        .expect("a session");
+        assert_eq!(chosen.0, AgentState::Waiting);
+
+        // Ties fall back to the most recently active rollout.
+        let chosen = most_actionable(
+            [(AgentState::Working, 300), (AgentState::Working, 500)].into_iter(),
+            key,
+        )
+        .expect("a session");
+        assert_eq!(chosen.1, 500);
     }
 
     #[test]
