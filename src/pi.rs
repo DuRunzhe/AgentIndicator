@@ -346,6 +346,11 @@ fn parse_signals(text: &str, agent_dir: &Path) -> PiFacts {
                 // reporting the previous turn's Ready state.
                 reply_requested = false;
                 task_state = Some(AgentState::Working);
+                // A message sent while a tool call is in flight (the user
+                // steering the agent) interrupts that call: pi never writes its
+                // toolResult. Leaving it pending would pin the session to
+                // Working for the rest of the conversation.
+                pending_tools.clear();
             }
             Some("toolResult") => {
                 if let Some(id) = message["toolCallId"].as_str() {
@@ -575,6 +580,43 @@ mod tests {
         );
         assert_eq!(facts.state, Some(AgentState::Working));
         assert_eq!(facts.model.as_deref(), Some("openai/gpt-5"));
+    }
+
+    #[test]
+    fn a_steering_message_drops_the_interrupted_tool_call() {
+        // The user can send a message while a tool call is in flight; pi never
+        // writes a toolResult for that call, so it must not keep the session
+        // Working after the new turn ends.
+        let facts = parse_signals(
+            concat!(
+                r#"{"type":"message","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"interrupted"}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"等等，先别改"}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"next"}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"toolResult","toolCallId":"next"}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"完成。"}]}}"#
+            ),
+            Path::new("/missing"),
+        );
+        assert_eq!(facts.state, Some(AgentState::Ready));
+    }
+
+    #[test]
+    fn files_without_tool_results_do_not_clear_real_pending_calls() {
+        // Sanity check for the same code path: a tool call that is still
+        // running (no result, no user message) keeps reporting Working.
+        let facts = parse_signals(
+            concat!(
+                r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"跑一下"}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"running"}]}}"#
+            ),
+            Path::new("/missing"),
+        );
+        assert_eq!(facts.state, Some(AgentState::Working));
     }
 
     #[test]
