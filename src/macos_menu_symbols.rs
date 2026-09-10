@@ -6,8 +6,10 @@
 //! scale, and this cache means a symbol is created only once per name/color.
 
 use crate::{
-    browser_tab_action_label, config::Config, display_settings, i18n, notification_action_label,
-    notification_preferences, startup, startup_action_label, toggle_label,
+    browser_tab_action_label,
+    config::{Config, CONVERSATION_WINDOWS},
+    display_settings, i18n, notification_action_label, notification_preferences, startup,
+    startup_action_label, toggle_label,
 };
 use objc2::{rc::Retained, AnyThread};
 use objc2_app_kit::{NSColor, NSImage, NSImageSymbolConfiguration, NSMenu};
@@ -27,7 +29,7 @@ struct SymbolKey {
     color: Option<[u8; 3]>,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 struct SettingsSignature {
     notifications_enabled: bool,
     browser_tab_reuse: bool,
@@ -39,6 +41,7 @@ struct SettingsSignature {
     show_context_total: bool,
     show_stopped_agents: bool,
     locale: String,
+    conversation_window: String,
 }
 
 impl SymbolCache {
@@ -93,6 +96,7 @@ impl SettingsSignature {
             show_context_total: config.show_context_total,
             show_stopped_agents: config.show_stopped_agents,
             locale: config.locale.clone(),
+            conversation_window: config.conversation_window.clone(),
         }
     }
 }
@@ -201,5 +205,58 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
         let (name, color) = toggle_symbol(selected);
         add(i18n::language_name(value).into(), name, color);
     }
+    for (key, _) in CONVERSATION_WINDOWS {
+        let (name, color) = toggle_symbol(config.conversation_window == key);
+        add(i18n::conversation_window_label(key).into(), name, color);
+    }
     symbols
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_selected_conversation_window_is_checked() {
+        let mut config = Config {
+            conversation_window: "12h".into(),
+            ..Default::default()
+        };
+        // The global locale is left untouched: labels are looked up through
+        // i18n in whatever language the rest of the test run uses.
+        for (key, _) in CONVERSATION_WINDOWS {
+            let symbol = menu_symbols(&config)
+                .get(i18n::conversation_window_label(key))
+                .map(|symbol| symbol.name)
+                .unwrap_or_default();
+            if key == "12h" {
+                assert_eq!(symbol, "checkmark.circle.fill", "{key}");
+            } else {
+                assert_eq!(symbol, "circle", "{key}");
+            }
+        }
+
+        // Moving the selection moves the check mark.
+        config.conversation_window = "all".into();
+        assert_eq!(
+            menu_symbols(&config)
+                .get(i18n::conversation_window_label("all"))
+                .map(|symbol| symbol.name),
+            Some("checkmark.circle.fill")
+        );
+    }
+
+    #[test]
+    fn settings_signature_tracks_the_conversation_window() {
+        let before = Config::default();
+        let after = Config {
+            conversation_window: "1h".into(),
+            ..Default::default()
+        };
+        assert_ne!(
+            SettingsSignature::new(&before),
+            SettingsSignature::new(&after),
+            "changing the window must re-apply the menu symbols"
+        );
+    }
 }
