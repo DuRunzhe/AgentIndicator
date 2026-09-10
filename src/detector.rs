@@ -186,14 +186,22 @@ impl Detector {
                 };
                 match kind {
                     "claude" => enrich_claude(&mut instance, &mut self.sessions),
-                    "codex" => enrich_macos_codex(
-                        &mut instance,
-                        &mut self.sessions,
-                        active,
-                        codex_rollouts_from_metadata(&group_metadata),
-                        &mut self.terminal,
-                        host.is_none(),
-                    ),
+                    "codex" => {
+                        let rollout = enrich_macos_codex(
+                            &mut instance,
+                            &mut self.sessions,
+                            active,
+                            codex_rollouts_from_metadata(&group_metadata),
+                            &mut self.terminal,
+                            host.is_none(),
+                        );
+                        // A hosted session lives inside the application's own
+                        // conversation view, so clicking must open that thread
+                        // instead of only activating the application.
+                        if host.is_some() {
+                            instance.open_url = rollout.as_deref().and_then(codex_thread_url);
+                        }
+                    }
                     "deepseek" => enrich_deepseek(&mut instance, &mut self.deepseek),
                     "opencode" => enrich_opencode(&mut instance, &mut self.opencode),
                     _ => {}
@@ -606,22 +614,26 @@ fn enrich_macos_codex(
     rollouts: Vec<PathBuf>,
     terminal: &mut crate::terminal::TerminalProbe,
     probe_terminal: bool,
-) {
-    let facts = most_actionable(
+) -> Option<PathBuf> {
+    // Returns the rollout the reported facts came from, so a hosted session can
+    // link to that exact conversation.
+    let chosen = most_actionable(
         rollouts
             .iter()
-            .filter_map(|path| analyzer.analyze_codex_rollout(path)),
-        |facts| (facts.state.unwrap_or(AgentState::Stopped), facts.activity),
-    )
-    .or_else(|| {
-        instance
-            .cwd
-            .as_deref()
-            .and_then(|cwd| analyzer.analyze_codex_for_cwd(cwd))
-    });
-    let Some(facts) = facts else {
-        return;
+            .filter_map(|path| Some((path.clone(), analyzer.analyze_codex_rollout(path)?))),
+        |(_, facts)| (facts.state.unwrap_or(AgentState::Stopped), facts.activity),
+    );
+    let (rollout, facts) = match chosen {
+        Some((path, facts)) => (Some(path), Some(facts)),
+        None => (
+            None,
+            instance
+                .cwd
+                .as_deref()
+                .and_then(|cwd| analyzer.analyze_codex_for_cwd(cwd)),
+        ),
     };
+    let facts = facts?;
     if let Some(cwd) = facts.cwd {
         instance.cwd = Some(cwd.clone());
         if let Some(project) = cwd.file_name().and_then(|name| name.to_str()) {
@@ -651,6 +663,14 @@ fn enrich_macos_codex(
             _ => {}
         }
     }
+    rollout
+}
+
+/// Codex's app-server exposes every thread at `codex://threads/<id>`; that is
+/// also the link the ChatGPT desktop app itself opens for a conversation.
+#[cfg(target_os = "macos")]
+fn codex_thread_url(rollout: &Path) -> Option<String> {
+    crate::session::codex_rollout_thread_id(rollout).map(|id| format!("codex://threads/{id}"))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -950,6 +970,18 @@ mod tests {
             "/opt/homebrew/bin/opencode",
             ""
         )));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hosted_session_links_to_its_own_conversation() {
+        assert_eq!(
+            codex_thread_url(Path::new(
+                "/home/u/.codex/sessions/2026/09/10/rollout-2026-09-10T17-18-30-01a08a9c-8b7b-7530-be66-8da1fee75728.jsonl"
+            )),
+            Some("codex://threads/01a08a9c-8b7b-7530-be66-8da1fee75728".to_owned())
+        );
+        assert_eq!(codex_thread_url(Path::new("session.jsonl")), None);
     }
 
     #[cfg(target_os = "macos")]

@@ -232,6 +232,23 @@ fn collect_rollouts(directory: &Path, output: &mut Vec<(PathBuf, PathBuf)>) {
     }
 }
 
+/// The thread id of a rollout, taken from its file name
+/// (`rollout-<timestamp>-<uuid>.jsonl`). Codex uses this id both for
+/// `codex resume <id>` and for the app's `codex://threads/<id>` deep link, and
+/// it matches `session_meta`'s `session_id`.
+pub fn codex_rollout_thread_id(path: &Path) -> Option<&str> {
+    let name = path.file_name()?.to_str()?.strip_suffix(".jsonl")?;
+    let rest = name.strip_prefix("rollout-")?;
+    // The name is `rollout-<YYYY-MM-DDTHH-MM-SS>-<uuid>`: a fixed-width
+    // timestamp, then `-`, then the id.
+    let (timestamp, id) = rest.split_at_checked(19)?;
+    if timestamp.as_bytes().get(10) != Some(&b'T') {
+        return None;
+    }
+    let id = id.strip_prefix('-')?;
+    (!id.is_empty()).then_some(id)
+}
+
 pub fn primary_codex_rollout_cwd(path: &Path) -> Option<PathBuf> {
     let mut reader = BufReader::new(File::open(path).ok()?);
     let mut line = String::new();
@@ -689,6 +706,20 @@ mod tests {
         apply_pending_priority(&mut cursor);
         assert!(cursor.facts.automatic_confirmation_mode);
         assert_eq!(cursor.facts.state, Some(AgentState::Waiting));
+    }
+
+    #[test]
+    fn extracts_the_thread_id_from_a_rollout_name() {
+        assert_eq!(
+            codex_rollout_thread_id(Path::new(
+                "/home/u/.codex/sessions/2026/09/10/rollout-2026-09-10T17-18-30-01a08a9c-8b7b-7530-be66-8da1fee75728.jsonl"
+            )),
+            Some("01a08a9c-8b7b-7530-be66-8da1fee75728")
+        );
+        assert_eq!(
+            codex_rollout_thread_id(Path::new("not-a-rollout.jsonl")),
+            None
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
