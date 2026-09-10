@@ -60,7 +60,13 @@ fn local_port(address: &str) -> Option<&str> {
 
 pub fn focus_url(url: &str, reuse_tabs: bool) -> bool {
     if !is_local_http_url(url) {
-        return false;
+        // Application deep links such as ChatGPT's `codex://threads/<id>` are
+        // handed to the OS, which routes them to the app that registered the
+        // scheme.
+        return Command::new("open")
+            .arg(url)
+            .status()
+            .is_ok_and(|status| status.success());
     }
     #[cfg(target_os = "macos")]
     if reuse_tabs && focus_existing_tab(url) {

@@ -48,12 +48,30 @@ fn focus_macos(pid: u32) -> bool {
     if tty.as_deref().is_some_and(focus_exact_terminal_session) {
         return true;
     }
-    terminal_app_for_pid(pid).is_some_and(|app| {
-        Command::new("/usr/bin/open")
-            .args(["-a", app])
-            .status()
-            .is_ok_and(|status| status.success())
-    })
+    let ancestry = process_ancestry(pid);
+    // A GUI application that hosts an agent (ChatGPT drives its own Codex)
+    // owns the session, so activating the application is the focus action.
+    detect_host_application(&ancestry)
+        .or_else(|| detect_terminal_app(&ancestry))
+        .is_some_and(activate_application)
+}
+
+#[cfg(target_os = "macos")]
+fn activate_application(app: &str) -> bool {
+    Command::new("/usr/bin/open")
+        .args(["-a", app])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// GUI applications that embed and drive an agent themselves, mapped to their
+/// application name for `open -a`. Mirrors the detector's host applications.
+#[cfg(target_os = "macos")]
+fn detect_host_application(ancestry: &str) -> Option<&'static str> {
+    const HOST_APPLICATIONS: [(&str, &str); 1] = [("ChatGPT.app/", "ChatGPT")];
+    HOST_APPLICATIONS
+        .iter()
+        .find_map(|(needle, app)| ancestry.contains(needle).then_some(*app))
 }
 
 #[cfg(target_os = "macos")]
@@ -83,24 +101,28 @@ fn focus_exact_terminal_session(tty: &str) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn terminal_app_for_pid(pid: u32) -> Option<&'static str> {
+fn process_ancestry(pid: u32) -> String {
     let mut commands = Vec::new();
     let mut current = pid;
     for _ in 0..16 {
-        let output = Command::new("/bin/ps")
+        let Ok(output) = Command::new("/bin/ps")
             .args(["-o", "ppid=", "-o", "command=", "-p", &current.to_string()])
             .output()
-            .ok()?;
+        else {
+            break;
+        };
         let line = String::from_utf8_lossy(&output.stdout);
         let mut fields = line.split_whitespace();
-        let parent = fields.next()?.parse::<u32>().ok()?;
+        let Some(parent) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
+            break;
+        };
         commands.push(fields.collect::<Vec<_>>().join(" "));
         if parent <= 1 || parent == current {
             break;
         }
         current = parent;
     }
-    detect_terminal_app(&commands.join("\n"))
+    commands.join("\n")
 }
 
 #[cfg(target_os = "macos")]
@@ -138,6 +160,18 @@ mod tests {
             Some("Cursor")
         );
         assert_eq!(detect_terminal_app("iTermServer"), Some("iTerm"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn detects_host_application_ancestors() {
+        assert_eq!(
+            detect_host_application(
+                "/Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server"
+            ),
+            Some("ChatGPT")
+        );
+        assert_eq!(detect_host_application("/opt/homebrew/bin/codex"), None);
     }
 
     #[cfg(target_os = "macos")]
