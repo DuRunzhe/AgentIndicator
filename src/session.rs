@@ -249,7 +249,20 @@ pub fn codex_rollout_thread_id(path: &Path) -> Option<&str> {
     (!id.is_empty()).then_some(id)
 }
 
-pub fn primary_codex_rollout_cwd(path: &Path) -> Option<PathBuf> {
+/// Thread sources Codex uses for work it runs on its own behalf. Subagents and
+/// the "guardian" review agent share the session directory with real
+/// conversations, and reporting one produces a row the app refuses to open
+/// ("already open in another app").
+const INTERNAL_THREAD_SOURCES: [&str; 2] = ["subagent", "guardian_review"];
+
+/// The session header of a rollout: which project it belongs to and whether it
+/// is a conversation at all.
+pub struct CodexRolloutHeader {
+    pub cwd: PathBuf,
+    pub user_thread: bool,
+}
+
+pub fn codex_rollout_header(path: &Path) -> Option<CodexRolloutHeader> {
     let mut reader = BufReader::new(File::open(path).ok()?);
     let mut line = String::new();
     for _ in 0..8 {
@@ -258,20 +271,29 @@ pub fn primary_codex_rollout_cwd(path: &Path) -> Option<PathBuf> {
             break;
         }
         let event: Value = serde_json::from_str(&line).ok()?;
-        if event["type"] == "session_meta" {
-            let cwd = event["payload"]["cwd"]
-                .as_str()
-                .or_else(|| event["cwd"].as_str())?;
-            let source = event["payload"]["thread_source"]
-                .as_str()
-                .or_else(|| event["thread_source"].as_str());
-            if source == Some("subagent") {
-                return None;
-            }
-            return Some(PathBuf::from(cwd));
+        if event["type"] != "session_meta" {
+            continue;
         }
+        let payload = &event["payload"];
+        let cwd = payload["cwd"].as_str().or_else(|| event["cwd"].as_str())?;
+        let thread_source = payload["thread_source"]
+            .as_str()
+            .or_else(|| event["thread_source"].as_str());
+        let source = &payload["source"];
+        let internal = thread_source
+            .is_some_and(|source| INTERNAL_THREAD_SOURCES.contains(&source))
+            || source["subagent"].is_object();
+        return Some(CodexRolloutHeader {
+            cwd: PathBuf::from(cwd),
+            user_thread: !internal,
+        });
     }
     None
+}
+
+pub fn primary_codex_rollout_cwd(path: &Path) -> Option<PathBuf> {
+    let header = codex_rollout_header(path)?;
+    header.user_thread.then_some(header.cwd)
 }
 
 fn apply_event(event: &Value, agent: &str, cursor: &mut FileCursor) {
@@ -779,6 +801,46 @@ mod tests {
         )
         .unwrap();
         assert_eq!(primary_codex_rollout_cwd(&path), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn guardian_review_threads_are_not_conversations() {
+        // The guardian review agent shares the session directory with real
+        // conversations; listing it produced a row the app rejected with
+        // "already open in another app".
+        let path = std::env::temp_dir().join(format!(
+            "agent-status-indicator-guardian-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/project\",\"thread_source\":\"guardian_review\",\"source\":{\"subagent\":{\"other\":\"guardian\"}}}}\n",
+        )
+        .unwrap();
+        let header = codex_rollout_header(&path).expect("header");
+        assert!(!header.user_thread);
+        assert_eq!(primary_codex_rollout_cwd(&path), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn user_threads_keep_their_project() {
+        let path = std::env::temp_dir().join(format!(
+            "agent-status-indicator-user-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/project\",\"thread_source\":\"user\",\"source\":\"vscode\"}}\n",
+        )
+        .unwrap();
+        let header = codex_rollout_header(&path).expect("header");
+        assert!(header.user_thread);
+        assert_eq!(
+            primary_codex_rollout_cwd(&path),
+            Some(PathBuf::from("/project"))
+        );
         let _ = std::fs::remove_file(path);
     }
 
