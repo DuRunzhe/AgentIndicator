@@ -45,7 +45,9 @@ impl Detector {
             opencode: crate::opencode::OpenCodeAnalyzer::default(),
             pi: crate::pi::PiAnalyzer::default(),
             terminal: crate::terminal::TerminalProbe::default(),
-            conversation_window: crate::config::Config::default().conversation_window_duration(),
+            // Read the saved setting so a restart (and `--diagnose`) reports the
+            // same window the menu shows.
+            conversation_window: crate::config::Config::load().conversation_window_duration(),
             #[cfg(target_os = "macos")]
             codex_titles: CodexTitles::default(),
             #[cfg(target_os = "macos")]
@@ -179,14 +181,20 @@ impl Detector {
                             now,
                             window,
                         );
-                        if !conversations.is_empty() {
-                            return hosted_codex_instances(
+                        // With no conversation inside the configured range,
+                        // report the application itself: reusing an old
+                        // conversation would show the user a session they have
+                        // moved on from as if it were live.
+                        return if conversations.is_empty() {
+                            vec![hosted_application_instance(process, host.display)]
+                        } else {
+                            hosted_codex_instances(
                                 process,
                                 host.display,
                                 &mut self.codex_titles,
                                 conversations,
-                            );
-                        }
+                            )
+                        };
                     }
                 }
                 let cwd = group_metadata.iter().find_map(|entry| entry.cwd.clone());
@@ -507,7 +515,9 @@ fn codex_conversations(
 /// Keeps the conversations that deserve a row, newest activity first. A
 /// conversation with no unfinished turn only earns a row while it has been
 /// touched within the configured window: ChatGPT keeps a tab for every
-/// historical thread, and listing all of them would bury the menu.
+/// historical thread, and listing all of them would bury the menu. An empty
+/// result is meaningful: the caller then reports the application itself instead
+/// of one of its older conversations.
 #[cfg(target_os = "macos")]
 fn select_conversations(
     mut conversations: Vec<(PathBuf, SessionFacts)>,
@@ -521,12 +531,26 @@ fn select_conversations(
         .filter(|(_, facts)| is_unfinished(facts) || touched_recently(facts, now, window))
         .cloned()
         .collect();
-    if active.is_empty() {
-        // Keep a single row so the application itself stays visible.
-        conversations.truncate(1);
-        conversations
-    } else {
-        active
+    active
+}
+
+/// The row for a GUI application with no conversation inside the configured
+/// range (or none open at all). It has no thread to open, so clicking only
+/// activates the application.
+#[cfg(target_os = "macos")]
+fn hosted_application_instance(process: &ProcessRecord, display: &str) -> AgentInstance {
+    AgentInstance {
+        key: process.pid.to_string(),
+        kind: display.into(),
+        label: display.into(),
+        pid: process.pid,
+        cwd: None,
+        state: AgentState::Ready,
+        uptime: process.uptime,
+        model: None,
+        context: None,
+        open_url: None,
+        automatic_confirmation_mode: false,
     }
 }
 
@@ -1171,11 +1195,14 @@ mod tests {
         let now = SystemTime::now();
         let conversations = || {
             vec![
+                conversation("recent", Some(AgentState::Ready), 5 * 60),
                 conversation("fresh", Some(AgentState::Ready), 30 * 60),
                 conversation("day", Some(AgentState::Ready), 20 * 3600),
             ]
         };
-        let threads = |selected: Vec<(PathBuf, SessionFacts)>| {
+        let at = |seconds: u64| {
+            let selected =
+                select_conversations(conversations(), now, Some(Duration::from_secs(seconds)));
             selected
                 .iter()
                 .map(|(path, _)| {
@@ -1186,29 +1213,20 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        // 15 minutes: the half-hour-old conversation is history already.
-        let selected =
-            select_conversations(conversations(), now, Some(Duration::from_secs(15 * 60)));
-        assert_eq!(threads(selected), ["fresh"]);
-
-        // 24 hours (the default) keeps it, the 20-hour-old one too.
-        let selected =
-            select_conversations(conversations(), now, Some(Duration::from_secs(24 * 3600)));
-        assert_eq!(threads(selected), ["fresh", "day"]);
-
-        // 12 hours drops the 20-hour-old one again.
-        let selected =
-            select_conversations(conversations(), now, Some(Duration::from_secs(12 * 3600)));
-        assert_eq!(threads(selected), ["fresh"]);
-
-        // "All conversations" keeps everything, however old.
-        let selected = select_conversations(conversations(), now, None);
-        assert_eq!(threads(selected), ["fresh", "day"]);
+        assert_eq!(at(15 * 60), ["recent"]);
+        assert_eq!(at(3600), ["recent", "fresh"]);
+        assert_eq!(at(12 * 3600), ["recent", "fresh"]);
+        assert_eq!(at(24 * 3600), ["recent", "fresh", "day"]);
+        let all = select_conversations(conversations(), now, None);
+        assert_eq!(all.len(), 3, "\"all\" keeps every conversation");
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_host_without_active_conversations_keeps_one_row() {
+    fn no_conversation_in_range_selects_nothing() {
+        // An empty selection is what makes the caller fall back to the
+        // application row; keeping an old conversation here would present a
+        // session the user has moved on from as if it were live.
         let now = SystemTime::now();
         let selected = select_conversations(
             vec![
@@ -1218,11 +1236,25 @@ mod tests {
             now,
             Some(Duration::from_secs(15 * 60)),
         );
-        assert_eq!(selected.len(), 1);
-        assert_eq!(
-            crate::session::codex_rollout_thread_id(&selected[0].0),
-            Some("newer")
+        assert!(selected.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_application_row_has_no_conversation_to_open() {
+        let process = record(
+            233,
+            1,
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "",
         );
+        let row = hosted_application_instance(&process, "ChatGPT");
+        assert_eq!(row.kind, "ChatGPT");
+        assert_eq!(row.label, "ChatGPT");
+        assert_eq!(row.key, "233");
+        assert_eq!(row.state, AgentState::Ready);
+        assert!(row.open_url.is_none(), "nothing to deep link to");
+        assert!(row.cwd.is_none());
     }
 
     #[cfg(target_os = "macos")]

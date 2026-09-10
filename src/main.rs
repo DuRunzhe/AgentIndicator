@@ -78,7 +78,6 @@ fn main() -> Result<()> {
     // curl install takes over without a manual menu action.
     claude_statusline::auto_repoint_if_stale();
     let (refresh_tx, refresh_rx) = bounded(1);
-    let conversation_window = config::Config::load().conversation_window_duration();
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let event_proxy = event_loop.create_proxy();
@@ -86,8 +85,6 @@ fn main() -> Result<()> {
     let worker_snapshot = Arc::clone(&latest_snapshot);
     thread::spawn(move || {
         let mut detector = Detector::new();
-        let mut window = conversation_window;
-        detector.set_conversation_window(window);
         loop {
             // Keep just the newest state while AppKit is handling a menu action.
             // The UI never replays stale snapshots after it becomes available.
@@ -98,13 +95,9 @@ fn main() -> Result<()> {
             // Match the reference monitor's full detection cadence. Tray animation
             // remains independent and updates on the UI event loop.
             match refresh_rx.recv_timeout(Duration::from_secs(2)) {
-                Ok(WorkerCommand::Restart) => {
-                    // A restart rebuilds every analyzer; keep the live window.
-                    detector = Detector::new();
-                    detector.set_conversation_window(window);
-                }
-                Ok(WorkerCommand::ConversationWindow(value)) => {
-                    window = value;
+                // A restart rebuilds every analyzer and re-reads the config.
+                Ok(WorkerCommand::Restart) => detector = Detector::new(),
+                Ok(WorkerCommand::ConversationWindow(window)) => {
                     detector.set_conversation_window(window);
                 }
                 Ok(WorkerCommand::Refresh) | Err(_) => {}
