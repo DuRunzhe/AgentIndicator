@@ -95,11 +95,11 @@ mod macos {
 
             unsafe {
                 builder.add_method(
-                    sel!(openRepository:),
+                    sel!(openRepository),
                     open_repository as unsafe extern "C-unwind" fn(_, _),
                 );
                 builder.add_method(
-                    sel!(closePanel:),
+                    sel!(closePanel),
                     close_panel as unsafe extern "C-unwind" fn(_, _),
                 );
             }
@@ -166,7 +166,7 @@ mod macos {
             mtm,
             &container,
             i18n::text("about_open_repository"),
-            sel!(openRepository:),
+            sel!(openRepository),
             (PANEL_WIDTH - BUTTONS_WIDTH) / 2.0,
             24.0,
             OPEN_BUTTON_WIDTH,
@@ -177,7 +177,7 @@ mod macos {
             mtm,
             &container,
             i18n::text("close"),
-            sel!(closePanel:),
+            sel!(closePanel),
             (PANEL_WIDTH - BUTTONS_WIDTH) / 2.0 + OPEN_BUTTON_WIDTH + BUTTON_GAP,
             24.0,
             CLOSE_BUTTON_WIDTH,
