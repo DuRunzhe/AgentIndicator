@@ -133,6 +133,17 @@ pub fn language_name(value: &str) -> &'static str {
         _ => "简体中文",
     }
 }
+/// Menu label for one [`crate::config::CONVERSATION_WINDOWS`] key.
+pub fn conversation_window_label(key: &str) -> &'static str {
+    text(match key {
+        "15m" => "window_15m",
+        "1h" => "window_1h",
+        "12h" => "window_12h",
+        "all" => "window_all",
+        _ => "window_24h",
+    })
+}
+
 pub fn menu(key: &str) -> &'static str {
     match (locale().as_str(), key) {
         ("en", "settings") => "Settings",
@@ -141,6 +152,7 @@ pub fn menu(key: &str) -> &'static str {
         ("en", "test_notification") => "Send test notification",
         ("en", "browser") => "Browser tabs",
         ("en", "display") => "Display options",
+        ("en", "chatgpt_window") => "ChatGPT conversation range",
         ("en", "refresh") => "Refresh now",
         ("en", "about") => "About",
         ("en", "quit") => "Quit",
@@ -155,6 +167,7 @@ pub fn menu(key: &str) -> &'static str {
         ("zh-Hant", "test_notification") => "發送測試通知",
         ("zh-Hant", "browser") => "瀏覽器分頁",
         ("zh-Hant", "display") => "顯示設定",
+        ("zh-Hant", "chatgpt_window") => "ChatGPT 會話顯示範圍",
         ("zh-Hant", "refresh") => "立即重新整理",
         ("zh-Hant", "about") => "關於",
         ("zh-Hant", "quit") => "結束",
@@ -169,6 +182,7 @@ pub fn menu(key: &str) -> &'static str {
         (_, "test_notification") => "发送测试通知",
         (_, "browser") => "浏览器标签页",
         (_, "display") => "显示配置",
+        (_, "chatgpt_window") => "ChatGPT 会话显示范围",
         (_, "refresh") => "立即刷新",
         (_, "about") => "关于",
         (_, "quit") => "退出",
@@ -204,6 +218,11 @@ pub fn text(key: &str) -> &'static str {
         ("en", "show_context_used") => "Context used",
         ("en", "show_context_total") => "Total context",
         ("en", "show_stopped_agents") => "Stopped agents",
+        ("en", "window_15m") => "Last 15 minutes",
+        ("en", "window_1h") => "Last hour",
+        ("en", "window_12h") => "Last 12 hours",
+        ("en", "window_24h") => "Last 24 hours",
+        ("en", "window_all") => "All conversations",
         ("en", "notify_waiting_confirmation") => "Notify: needs confirmation",
         ("en", "notify_waiting_reply") => "Notify: waiting for reply",
         ("en", "notify_auto_confirm") => "Notify in auto-confirmation mode",
@@ -254,6 +273,11 @@ pub fn text(key: &str) -> &'static str {
         ("zh-Hant", "show_context_used") => "已用上下文",
         ("zh-Hant", "show_context_total") => "總上下文",
         ("zh-Hant", "show_stopped_agents") => "已停止 Agent",
+        ("zh-Hant", "window_15m") => "15 分鐘",
+        ("zh-Hant", "window_1h") => "1 小時",
+        ("zh-Hant", "window_12h") => "12 小時",
+        ("zh-Hant", "window_24h") => "24 小時",
+        ("zh-Hant", "window_all") => "全部",
         ("zh-Hant", "notify_waiting_confirmation") => "通知：等待確認",
         ("zh-Hant", "notify_waiting_reply") => "通知：等待回覆",
         ("zh-Hant", "notify_auto_confirm") => "自動確認模式仍通知",
@@ -303,6 +327,11 @@ pub fn text(key: &str) -> &'static str {
         (_, "show_context_used") => "已用上下文",
         (_, "show_context_total") => "总上下文",
         (_, "show_stopped_agents") => "已停止 Agent",
+        (_, "window_15m") => "15 分钟",
+        (_, "window_1h") => "1 小时",
+        (_, "window_12h") => "12 小时",
+        (_, "window_24h") => "24 小时",
+        (_, "window_all") => "全部",
         (_, "notify_waiting_confirmation") => "通知：等待确认",
         (_, "notify_waiting_reply") => "通知：等待回复",
         (_, "notify_auto_confirm") => "自动确认模式仍通知",

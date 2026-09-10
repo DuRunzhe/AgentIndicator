@@ -129,6 +129,11 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
     add(i18n::menu("notifications").into(), "bell", None);
     add(i18n::menu("browser").into(), "rectangle.on.rectangle", None);
     add(i18n::menu("language").into(), "globe", None);
+    add(
+        i18n::menu("chatgpt_window").into(),
+        "clock.arrow.circlepath",
+        None,
+    );
     add(i18n::menu("display").into(), "slider.horizontal.3", None);
 
     let toggle_symbol = |enabled| {

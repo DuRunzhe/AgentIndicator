@@ -1,5 +1,18 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, time::Duration};
+
+/// Conversation display windows, in menu order. Each entry is the key stored in
+/// the config and how long a finished ChatGPT conversation keeps its row;
+/// `None` keeps every conversation.
+pub const CONVERSATION_WINDOWS: [(&str, Option<u64>); 5] = [
+    ("15m", Some(15 * 60)),
+    ("1h", Some(60 * 60)),
+    ("12h", Some(12 * 60 * 60)),
+    ("24h", Some(24 * 60 * 60)),
+    ("all", None),
+];
+
+pub const DEFAULT_CONVERSATION_WINDOW: &str = "24h";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
@@ -16,6 +29,8 @@ pub struct Config {
     pub show_stopped_agents: bool,
     pub browser_tab_reuse: bool,
     pub locale: String,
+    /// Which [`CONVERSATION_WINDOWS`] key applies to ChatGPT conversations.
+    pub conversation_window: String,
 }
 
 impl Default for Config {
@@ -33,11 +48,27 @@ impl Default for Config {
             show_stopped_agents: true,
             browser_tab_reuse: false,
             locale: "auto".into(),
+            conversation_window: DEFAULT_CONVERSATION_WINDOW.into(),
         }
     }
 }
 
 impl Config {
+    /// How long a finished ChatGPT conversation keeps its row; `None` keeps it
+    /// forever ("all"). An unknown value, such as one written by an older
+    /// version, falls back to the default window.
+    pub fn conversation_window_duration(&self) -> Option<Duration> {
+        let key = CONVERSATION_WINDOWS
+            .iter()
+            .map(|(key, _)| *key)
+            .find(|key| *key == self.conversation_window)
+            .unwrap_or(DEFAULT_CONVERSATION_WINDOW);
+        CONVERSATION_WINDOWS
+            .iter()
+            .find(|(candidate, _)| *candidate == key)
+            .and_then(|(_, seconds)| seconds.map(Duration::from_secs))
+    }
+
     pub fn load() -> Self {
         config_path()
             .and_then(|path| fs::File::open(path).ok())
@@ -82,5 +113,29 @@ mod tests {
         assert!(config.show_context_used);
         assert!(config.show_context_total);
         assert!(config.show_stopped_agents);
+        assert_eq!(config.conversation_window, DEFAULT_CONVERSATION_WINDOW);
+    }
+
+    #[test]
+    fn conversation_window_keys_map_to_durations() {
+        let window = |key: &str| {
+            Config {
+                conversation_window: key.into(),
+                ..Default::default()
+            }
+            .conversation_window_duration()
+        };
+        assert_eq!(window("15m"), Some(Duration::from_secs(15 * 60)));
+        assert_eq!(window("1h"), Some(Duration::from_secs(3600)));
+        assert_eq!(window("12h"), Some(Duration::from_secs(12 * 3600)));
+        assert_eq!(window("24h"), Some(Duration::from_secs(24 * 3600)));
+        // "all" keeps every conversation; an unknown value written by an older
+        // version falls back to the default window.
+        assert_eq!(window("all"), None);
+        assert_eq!(window("nonsense"), Some(Duration::from_secs(24 * 3600)));
+        assert_eq!(
+            Config::default().conversation_window_duration(),
+            Some(Duration::from_secs(24 * 3600))
+        );
     }
 }

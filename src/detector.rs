@@ -24,6 +24,9 @@ pub struct Detector {
     opencode: crate::opencode::OpenCodeAnalyzer,
     pi: crate::pi::PiAnalyzer,
     terminal: crate::terminal::TerminalProbe,
+    /// How long a finished hosted conversation keeps its row; `None` keeps it
+    /// forever. Set from the config and updated when the menu changes it.
+    conversation_window: Option<Duration>,
     #[cfg(target_os = "macos")]
     codex_titles: CodexTitles,
     #[cfg(target_os = "macos")]
@@ -42,11 +45,16 @@ impl Detector {
             opencode: crate::opencode::OpenCodeAnalyzer::default(),
             pi: crate::pi::PiAnalyzer::default(),
             terminal: crate::terminal::TerminalProbe::default(),
+            conversation_window: crate::config::Config::default().conversation_window_duration(),
             #[cfg(target_os = "macos")]
             codex_titles: CodexTitles::default(),
             #[cfg(target_os = "macos")]
             web_urls: crate::web::WebUrlDetector::default(),
         }
+    }
+
+    pub fn set_conversation_window(&mut self, window: Option<Duration>) {
+        self.conversation_window = window;
     }
 
     pub fn scan(&mut self) -> Vec<AgentInstance> {
@@ -151,6 +159,7 @@ impl Detector {
             .collect();
         let metadata = self.macos_processes.metadata_for(&tracked_pids);
         let now = SystemTime::now();
+        let window = self.conversation_window;
         let mut instances: Vec<_> = roots
             .into_iter()
             .flat_map(|(process, kind, host)| {
@@ -168,6 +177,7 @@ impl Detector {
                             &mut self.sessions,
                             codex_rollouts_from_metadata(&group_metadata),
                             now,
+                            window,
                         );
                         if !conversations.is_empty() {
                             return hosted_codex_instances(
@@ -479,37 +489,36 @@ fn codex_rollouts_from_metadata(metadata: &[&ProcessMetadata]) -> Vec<PathBuf> {
     rollouts
 }
 
-/// A conversation with no unfinished turn only earns a row while it has been
-/// touched recently: ChatGPT keeps a tab for every historical thread, and
-/// listing all of them would bury the menu.
-#[cfg(target_os = "macos")]
-const RECENT_CONVERSATION_SECONDS: u64 = 15 * 60;
-
 /// The conversations of a GUI host that deserve a row, newest activity first.
 #[cfg(target_os = "macos")]
 fn codex_conversations(
     analyzer: &mut SessionAnalyzer,
     rollouts: Vec<PathBuf>,
     now: SystemTime,
+    window: Option<Duration>,
 ) -> Vec<(PathBuf, SessionFacts)> {
     let conversations = rollouts
         .into_iter()
         .filter_map(|path| Some((path.clone(), analyzer.analyze_codex_rollout(&path)?)))
         .collect();
-    select_conversations(conversations, now)
+    select_conversations(conversations, now, window)
 }
 
-/// Keeps the conversations that deserve a row, newest activity first.
+/// Keeps the conversations that deserve a row, newest activity first. A
+/// conversation with no unfinished turn only earns a row while it has been
+/// touched within the configured window: ChatGPT keeps a tab for every
+/// historical thread, and listing all of them would bury the menu.
 #[cfg(target_os = "macos")]
 fn select_conversations(
     mut conversations: Vec<(PathBuf, SessionFacts)>,
     now: SystemTime,
+    window: Option<Duration>,
 ) -> Vec<(PathBuf, SessionFacts)> {
     conversations.sort_by_key(|(_, facts)| std::cmp::Reverse(facts.activity));
 
     let active: Vec<_> = conversations
         .iter()
-        .filter(|(_, facts)| is_unfinished(facts) || touched_recently(facts, now))
+        .filter(|(_, facts)| is_unfinished(facts) || touched_recently(facts, now, window))
         .cloned()
         .collect();
     if active.is_empty() {
@@ -533,11 +542,13 @@ fn is_unfinished(facts: &SessionFacts) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn touched_recently(facts: &SessionFacts, now: SystemTime) -> bool {
+fn touched_recently(facts: &SessionFacts, now: SystemTime, window: Option<Duration>) -> bool {
+    // "All conversations" keeps every finished conversation listed.
+    let Some(window) = window else { return true };
     facts
         .activity
         .and_then(|activity| now.duration_since(activity).ok())
-        .is_some_and(|age| age.as_secs() < RECENT_CONVERSATION_SECONDS)
+        .is_some_and(|age| age < window)
 }
 
 /// One row per active conversation of a GUI host. Each row carries its own key
@@ -1143,7 +1154,7 @@ mod tests {
             conversation("recent", Some(AgentState::Ready), 60),
             conversation("stale", Some(AgentState::Ready), 3 * 3600),
         ];
-        let selected = select_conversations(conversations, now);
+        let selected = select_conversations(conversations, now, Some(Duration::from_secs(15 * 60)));
         let threads: Vec<_> = selected
             .iter()
             .map(|(path, _)| crate::session::codex_rollout_thread_id(path).unwrap())
@@ -1156,6 +1167,47 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn the_configured_window_decides_how_long_finished_conversations_stay() {
+        let now = SystemTime::now();
+        let conversations = || {
+            vec![
+                conversation("fresh", Some(AgentState::Ready), 30 * 60),
+                conversation("day", Some(AgentState::Ready), 20 * 3600),
+            ]
+        };
+        let threads = |selected: Vec<(PathBuf, SessionFacts)>| {
+            selected
+                .iter()
+                .map(|(path, _)| {
+                    crate::session::codex_rollout_thread_id(path)
+                        .unwrap()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // 15 minutes: the half-hour-old conversation is history already.
+        let selected =
+            select_conversations(conversations(), now, Some(Duration::from_secs(15 * 60)));
+        assert_eq!(threads(selected), ["fresh"]);
+
+        // 24 hours (the default) keeps it, the 20-hour-old one too.
+        let selected =
+            select_conversations(conversations(), now, Some(Duration::from_secs(24 * 3600)));
+        assert_eq!(threads(selected), ["fresh", "day"]);
+
+        // 12 hours drops the 20-hour-old one again.
+        let selected =
+            select_conversations(conversations(), now, Some(Duration::from_secs(12 * 3600)));
+        assert_eq!(threads(selected), ["fresh"]);
+
+        // "All conversations" keeps everything, however old.
+        let selected = select_conversations(conversations(), now, None);
+        assert_eq!(threads(selected), ["fresh", "day"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn a_host_without_active_conversations_keeps_one_row() {
         let now = SystemTime::now();
         let selected = select_conversations(
@@ -1164,6 +1216,7 @@ mod tests {
                 conversation("newer", Some(AgentState::Ready), 2 * 3600),
             ],
             now,
+            Some(Duration::from_secs(15 * 60)),
         );
         assert_eq!(selected.len(), 1);
         assert_eq!(
