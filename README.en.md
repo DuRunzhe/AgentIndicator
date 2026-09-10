@@ -211,12 +211,15 @@ Note: the `tar.gz` / `zip` assets contain the CLI binary by default; the notariz
 agent-status-indicator
 agent-status-indicator --diagnose
 agent-status-indicator --debug-ui
+agent-status-indicator --check-update
 ```
 
 - `--diagnose`: prints the detected agents, sessions and states without starting the tray.
 - `--debug-ui`: debug mode; writes the tray UI state to `~/.agent-status-indicator-ui.json`.
+- `--check-update`: asks GitHub for the newest release and prints the result without starting the tray.
 - Click the tray icon to open the menu: instances are shown with model, context and uptime in the “waiting for confirmation → waiting for reply → working → ready” order; clicking a live instance jumps to its terminal or browser session.
 - Native notifications fire when human attention is needed; notification types, display options and start-at-login are adjusted in the Settings menu.
+- The About panel checks GitHub for a newer release every time it opens; when one exists the button becomes “Update to x.y.z”, and installing shows a progress window before the app restarts itself.
 - If you added it to your applications as above, you can also launch it from the graphical launcher.
 
 ## Uninstalling

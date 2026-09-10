@@ -21,11 +21,12 @@ mod pi;
 mod session;
 mod startup;
 mod terminal;
+mod update;
 mod web;
 
 use anyhow::Result;
 use config::Config;
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
 use detector::Detector;
 use model::{AgentInstance, AgentState};
 use native_notifications::NotificationService;
@@ -63,6 +64,19 @@ fn main() -> Result<()> {
     if arguments.iter().any(|argument| argument == "--diagnose") {
         let mut detector = Detector::new();
         println!("{}", serde_json::to_string_pretty(&detector.scan())?);
+        return Ok(());
+    }
+    if arguments
+        .iter()
+        .any(|argument| argument == "--check-update")
+    {
+        match update::check() {
+            update::CheckOutcome::UpToDate => {
+                println!("up to date ({})", update::CURRENT_VERSION)
+            }
+            update::CheckOutcome::Available(version) => println!("update available: {version}"),
+            update::CheckOutcome::Failed(error) => println!("check failed: {error}"),
+        }
         return Ok(());
     }
     let debug_ui = arguments.iter().any(|argument| argument == "--debug-ui");
@@ -106,6 +120,11 @@ fn main() -> Result<()> {
     });
     let mut app = App::new(refresh_tx, latest_snapshot, debug_ui, instance_lock);
     event_loop.run_app(&mut app)?;
+    if let Some(executable) = app.take_restart_target() {
+        // Release the single-instance lock before the replacement starts.
+        drop(app);
+        update::restart(&executable);
+    }
     Ok(())
 }
 
@@ -132,6 +151,11 @@ struct App {
     animation: Animation,
     last_updated: Option<std::time::SystemTime>,
     last_locale_check: Instant,
+    about: Option<about::AboutPanel>,
+    update_panel: Option<about::UpdatePanel>,
+    update_rx: Option<Receiver<update::Message>>,
+    pending_update: Option<String>,
+    restart_target: Option<PathBuf>,
 }
 
 enum UserEvent {
@@ -213,6 +237,11 @@ impl App {
             animation: Animation::default(),
             last_updated: None,
             last_locale_check: Instant::now(),
+            about: None,
+            update_panel: None,
+            update_rx: None,
+            pending_update: None,
+            restart_target: None,
         }
     }
     fn rebuild(&mut self) {
@@ -541,6 +570,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.rebuild();
             }
         }
+        if self.poll_dialogs() {
+            event_loop.exit();
+            return;
+        }
         while let Ok(action) = self.notification_action_rx.try_recv() {
             thread::spawn(move || match action {
                 NotificationAction::FocusPid(pid) => {
@@ -587,7 +620,7 @@ impl ApplicationHandler<UserEvent> for App {
             if id == "quit" {
                 event_loop.exit();
             } else if id == "about" {
-                about::show();
+                self.open_about();
             } else if id == "notifications" {
                 if self.action_busy {
                     continue;
@@ -707,8 +740,13 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.update_tray_status(false);
+        let interval = if self.about.is_some() || self.update_rx.is_some() {
+            80
+        } else {
+            250
+        };
         event_loop.set_control_flow(ControlFlow::WaitUntil(
-            std::time::Instant::now() + Duration::from_millis(250),
+            std::time::Instant::now() + Duration::from_millis(interval),
         ));
     }
     fn user_event(&mut self, _: &ActiveEventLoop, event: UserEvent) {
@@ -731,6 +769,128 @@ impl ApplicationHandler<UserEvent> for App {
 }
 
 impl App {
+    /// Opens the About panel and starts a fresh update check.
+    fn open_about(&mut self) {
+        // An install is already running; keep its progress window in front.
+        if self.update_rx.is_some() {
+            return;
+        }
+        if let Some(panel) = self.about.take() {
+            panel.close();
+        }
+        // Dismiss a leftover "update failed" window from an earlier attempt.
+        if let Some(panel) = self.update_panel.take() {
+            panel.close();
+        }
+        self.pending_update = None;
+        self.about = about::open();
+    }
+
+    /// Advances both dialogs. Returns `true` once an installed update is ready
+    /// and the event loop should stop so the process can be replaced.
+    fn poll_dialogs(&mut self) -> bool {
+        self.poll_about();
+        self.poll_update()
+    }
+
+    fn poll_about(&mut self) {
+        let Some(panel) = self.about.as_mut() else {
+            return;
+        };
+        if let Some(outcome) = panel.poll_check() {
+            match outcome {
+                update::CheckOutcome::Available(version) => {
+                    panel.set_update_available(&version);
+                    self.pending_update = Some(version);
+                }
+                update::CheckOutcome::UpToDate => panel.set_up_to_date(),
+                update::CheckOutcome::Failed(_) => panel.set_check_failed(),
+            }
+        }
+        let requested = panel.update_requested();
+        let visible = panel.is_visible();
+        if !visible {
+            self.about = None;
+        } else if requested {
+            match self.pending_update.take() {
+                Some(version) => {
+                    panel.close();
+                    self.about = None;
+                    self.start_update(version);
+                }
+                // No update known yet: the click was a retry after a failure.
+                None => panel.start_check(),
+            }
+        }
+    }
+
+    fn start_update(&mut self, version: String) {
+        if let Some(panel) = self.update_panel.take() {
+            panel.close();
+        }
+        self.update_panel = Some(about::UpdatePanel::new(&version));
+        self.update_rx = Some(update::spawn_install(version));
+    }
+
+    fn poll_update(&mut self) -> bool {
+        let Some(receiver) = self.update_rx.clone() else {
+            self.dismiss_update_panel();
+            return false;
+        };
+        let mut restart = false;
+        loop {
+            match receiver.try_recv() {
+                Ok(update::Message::Progress(progress)) => {
+                    if let Some(panel) = self.update_panel.as_ref() {
+                        panel.set_progress(&progress);
+                    }
+                }
+                Ok(update::Message::Finished(result)) => {
+                    self.update_rx = None;
+                    match result {
+                        Ok(executable) => {
+                            if let Some(panel) = self.update_panel.as_ref() {
+                                panel.set_done();
+                            }
+                            self.restart_target = Some(executable);
+                            restart = true;
+                        }
+                        Err(error) => {
+                            if let Some(panel) = self.update_panel.as_ref() {
+                                panel.set_error(&error);
+                            }
+                        }
+                    }
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.update_rx = None;
+                    break;
+                }
+            }
+        }
+        // A failed install keeps the panel around so the user can read the
+        // error; drop it as soon as its Close button dismisses the window.
+        self.dismiss_update_panel();
+        restart
+    }
+
+    fn dismiss_update_panel(&mut self) {
+        if self.update_rx.is_none()
+            && self
+                .update_panel
+                .as_ref()
+                .is_some_and(|panel| !panel.is_visible())
+        {
+            self.update_panel = None;
+        }
+    }
+
+    fn take_restart_target(&mut self) -> Option<PathBuf> {
+        self.restart_target.take()
+    }
+
     fn send_test_notification(&mut self) {
         self.notification_service
             .send(notifications::NotificationRequest {

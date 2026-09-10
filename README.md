@@ -211,12 +211,15 @@ winget upgrade --id DuRunzhe.AgentStatusIndicator
 agent-status-indicator
 agent-status-indicator --diagnose
 agent-status-indicator --debug-ui
+agent-status-indicator --check-update
 ```
 
 - `--diagnose`：打印当前探测到的 Agent、会话与状态，不启动托盘。
 - `--debug-ui`：调试模式，把托盘 UI 状态写入 `~/.agent-status-indicator-ui.json`。
+- `--check-update`：向 GitHub 查询最新版本并打印结果，不启动托盘。
 - 单击托盘图标展开菜单：实例按“等待确认 → 等待回复 → 进行中 → 就绪”显示模型、上下文与时长；点击存活实例可跳回对应终端或浏览器会话。
 - 需要人工介入时触发系统通知；通知类型、显示内容与开机自启都在“设置”菜单中调整。
+- “关于”面板每次打开都会检查 GitHub 最新版本；有新版本时按钮变为“更新到 x.y.z”，点击后显示进度并在下载完成后自动安装、重启。
 - 已按上文加入系统应用后，也可以直接从图形启动器启动。
 
 ## 卸载
