@@ -8,7 +8,7 @@
 
 ## 安装
 
-当前已发布 **v0.2.23**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
+当前已发布 **v0.2.22**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
 
 ### curl（macOS / Linux）
 
@@ -25,13 +25,13 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 指定版本：
 
 ```bash
-VERSION=0.2.23 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.22 sh
 ```
 
 指定安装目录：
 
 ```bash
-PREFIX=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | PREFIX=/usr/local/bin sh
 ```
 
 #### 添加到系统应用（可选）
@@ -218,7 +218,9 @@ agent-status-indicator --check-update
 - `--debug-ui`：调试模式，把托盘 UI 状态写入 `~/.agent-status-indicator-ui.json`。
 - `--check-update`：向 GitHub 查询最新版本并打印结果，不启动托盘。
 - 单击托盘图标展开菜单：实例按“等待确认 → 等待回复 → 进行中 → 就绪”显示模型、上下文与时长；点击存活实例可跳回对应终端或浏览器会话。
-- 需要人工介入时触发系统通知；通知类型、显示内容与开机自启都在“设置”菜单中调整。
+- 系统通知默认关闭，可在“设置”中开启，并调整等待确认、等待回复及自动确认模式下的通知。
+- “设置”提供六项显示选项、语言、开机自启及 DeepSeek 浏览器标签页复用。ChatGPT 托管的 Codex 会话支持 15 分钟、1 小时、12 小时、24 小时（默认）或全部的会话显示范围。
+- 点击“设置”中的 Claude 上下文采集菜单项可安装或卸载采集器。安装会配置 Claude 的 `statusLine`，保留并转发原有命令；卸载会还原原配置。
 - “关于”面板每次打开都会检查 GitHub 最新版本；有新版本时按钮变为“更新到 x.y.z”，点击后显示进度并在下载完成后自动安装、重启。
 - 已按上文加入系统应用后，也可以直接从图形启动器启动。
 
@@ -269,10 +271,10 @@ launchctl bootout "gui/$(id -u)/com.agentstatusindicator.app" 2>/dev/null || tru
 rm -f ~/Library/LaunchAgents/com.agentstatusindicator.app.plist
 ```
 
-配置残留可删除 `~/.config/agent-status-indicator/config.json`。卸载不影响 Claude/Codex/OpenCode/Pi 的会话文件。
+配置文件按系统存放：macOS 为 `~/Library/Application Support/agent-status-indicator/config.json`，Linux 为 `${XDG_CONFIG_HOME:-$HOME/.config}/agent-status-indicator/config.json`，Windows 为 `%APPDATA%\agent-status-indicator\config.json`。可按需删除；会话文件无需清理。
 ## 实现方案
 
-采用 **Rust 单进程 + `tray-icon` 原生系统托盘**，不使用 Electron、Python 或常驻 Node.js。`winit` 负责跨平台事件循环，`sysinfo` 负责低成本进程快照，Claude/Codex/OpenCode 的会话文件由 Rust 增量解析。Node 仅作为 npm 安装后的平台二进制启动包装，不参与常驻运行。
+核心采用 **Rust 单进程 + `tray-icon` 原生系统托盘**。直接运行二进制或 `.app` 无需 Node.js；通过 npm / Bun 命令启动时会额外常驻一个 Node 包装进程。
 
 选择这套方案的原因：托盘本来就是轻量原生控件，使用 WebView 会额外引入渲染进程和几十到上百 MB 内存；纯 Swift 又无法共享 Windows/Linux 实现。Rust 可同时满足原生菜单、单二进制发布和低常驻资源占用。
 
@@ -374,4 +376,3 @@ ASI_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" bash scripts/pa
 ```bash
 ASI_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ASI_TEAM_ID="TEAMID" ASI_NOTARY_PROFILE="AC_API_KEY" bash scripts/notarize-macos-app.sh
 ```
-

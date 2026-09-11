@@ -8,7 +8,7 @@ Source and releases: <https://github.com/DuRunzhe/AgentIndicator>
 
 ## Installation
 
-The current release is **v0.2.23** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
+The current release is **v0.2.22** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
 
 ### curl (macOS / Linux)
 
@@ -25,13 +25,13 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 Pin a version:
 
 ```bash
-VERSION=0.2.23 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.22 sh
 ```
 
 Install elsewhere:
 
 ```bash
-PREFIX=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | PREFIX=/usr/local/bin sh
 ```
 
 #### Adding it to your applications (optional)
@@ -218,7 +218,9 @@ agent-status-indicator --check-update
 - `--debug-ui`: debug mode; writes the tray UI state to `~/.agent-status-indicator-ui.json`.
 - `--check-update`: asks GitHub for the newest release and prints the result without starting the tray.
 - Click the tray icon to open the menu: instances are shown with model, context and uptime in the “waiting for confirmation → waiting for reply → working → ready” order; clicking a live instance jumps to its terminal or browser session.
-- Native notifications fire when human attention is needed; notification types, display options and start-at-login are adjusted in the Settings menu.
+- Notifications are disabled by default. Enable them in Settings and choose whether to notify for confirmation, reply and automatic confirmation mode.
+- Settings includes six display options, language, start-at-login and DeepSeek browser tab reuse. ChatGPT-hosted Codex conversations support 15 minutes, 1 hour, 12 hours, 24 hours (default) or all conversations.
+- Click the Claude context collector row in Settings to install or uninstall it. Installation configures Claude's `statusLine`, preserving and forwarding an existing command; uninstalling restores the previous configuration.
 - The About panel checks GitHub for a newer release every time it opens; when one exists the button becomes “Update to x.y.z”, and installing shows a progress window before the app restarts itself.
 - If you added it to your applications as above, you can also launch it from the graphical launcher.
 
@@ -269,10 +271,10 @@ launchctl bootout "gui/$(id -u)/com.agentstatusindicator.app" 2>/dev/null || tru
 rm -f ~/Library/LaunchAgents/com.agentstatusindicator.app.plist
 ```
 
-Optional leftover config: `~/.config/agent-status-indicator/config.json`. Uninstalling never touches your Claude/Codex/OpenCode/Pi session files.
+Configuration paths: `~/Library/Application Support/agent-status-indicator/config.json` on macOS, `${XDG_CONFIG_HOME:-$HOME/.config}/agent-status-indicator/config.json` on Linux and `%APPDATA%\agent-status-indicator\config.json` on Windows. Remove these if needed; session files do not need cleanup.
 ## Implementation approach
 
-A **Rust single-process app on the native `tray-icon` system tray**, without Electron, Python or a resident Node.js runtime. `winit` drives the cross-platform event loop, `sysinfo` takes low-cost process snapshots, and Claude/Codex/OpenCode session files are parsed incrementally in Rust. Node appears only as the platform binary launcher inside the npm package; it never runs as a resident process.
+The core is a **Rust single-process app on the native `tray-icon` system tray**. Running the binary or `.app` directly requires no Node.js runtime; the npm / Bun command entry point keeps an additional Node wrapper process alive while Rust runs.
 
 Rationale: the tray is a lightweight native control — a WebView would add a rendering process and tens to hundreds of MB of memory, while pure Swift could not share the Windows/Linux implementation. Rust provides native menus, single-binary distribution and low resident resource usage at the same time.
 
@@ -316,7 +318,7 @@ Measured with a release build, 10 active agents and ~1 GB of cumulative session 
 | Long-log per-round reads | appended bytes only | offset + inode/mtime incremental cache |
 | Install size | ≤ 15 MB (compressed) | single stripped + LTO binary |
 
-CI records RSS, CPU, scan time and menu update time on macOS arm64/x64, Windows x64 and Linux x64, and blocks a release when a budget is exceeded.
+These are acceptance targets; the current release workflow does not automate measurements or block releases that exceed them.
 
 ## Current status
 
@@ -330,7 +332,7 @@ CI records RSS, CPU, scan time and menu update time on macOS arm64/x64, Windows 
 - [x] OpenCode SQLite state, model and context reading
 - [x] Native notifications for waiting states with 0/60/180 s reminders; clicking focuses the terminal or the DeepSeek browser session
 - [x] Precise Terminal/iTerm tab focus by TTY on macOS
-- [x] Native settings menu, five display options and macOS login-startup settings
+- [x] Native settings menu, six display options and macOS login-startup settings
 - [x] macOS LaunchAgent, Windows Startup and Linux XDG autostart entries
 - [ ] Precise focus of existing terminal windows on Windows/Linux (currently a safe fallback to launching/activating the terminal)
 
@@ -374,4 +376,3 @@ Sign + notarize + staple (requires configured notarytool credentials):
 ```bash
 ASI_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ASI_TEAM_ID="TEAMID" ASI_NOTARY_PROFILE="AC_API_KEY" bash scripts/notarize-macos-app.sh
 ```
-
