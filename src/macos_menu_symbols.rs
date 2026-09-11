@@ -6,7 +6,7 @@
 //! scale, and this cache means a symbol is created only once per name/color.
 
 use crate::{
-    browser_tab_action_label,
+    browser_tab_action_label, claude_action_label, claude_statusline,
     config::{Config, CONVERSATION_WINDOWS},
     display_settings, i18n, notification_action_label, notification_preferences, startup,
     startup_action_label, toggle_label,
@@ -34,6 +34,7 @@ struct SettingsSignature {
     notifications_enabled: bool,
     browser_tab_reuse: bool,
     startup_enabled: bool,
+    claude_installed: bool,
     show_duration: bool,
     show_model: bool,
     show_context_percent: bool,
@@ -89,6 +90,7 @@ impl SettingsSignature {
             notifications_enabled: config.notifications_enabled,
             browser_tab_reuse: config.browser_tab_reuse,
             startup_enabled: startup::is_enabled(),
+            claude_installed: claude_statusline::is_installed(),
             show_duration: config.show_duration,
             show_model: config.show_model,
             show_context_percent: config.show_context_percent,
@@ -177,11 +179,11 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
     );
     add(i18n::menu("automation").into(), "gearshape", None);
     add(i18n::menu("permission").into(), "lock.shield", None);
-    add(
-        i18n::menu("install_claude").into(),
-        "arrow.down.circle",
-        None,
-    );
+    // The row flips between install and uninstall, so its symbol tracks the
+    // live collector state and is refreshed whenever that state changes.
+    let claude_installed = claude_statusline::is_installed();
+    let (name, color) = toggle_symbol(claude_installed);
+    add(claude_action_label(claude_installed).into(), name, color);
 
     for (key, label) in display_settings() {
         let enabled = match key {

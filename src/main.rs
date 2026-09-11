@@ -169,7 +169,11 @@ enum WorkerCommand {
 
 enum ActionResult {
     BrowserTabs(bool),
-    ClaudeStatusLine(Result<(), String>),
+    ClaudeStatusLine {
+        /// The row showed "uninstall", so this run removed the collector.
+        uninstall: bool,
+        result: Result<(), String>,
+    },
     Finished,
 }
 
@@ -312,6 +316,14 @@ impl App {
             menu.test_notification
                 .set_enabled(self.config.notifications_enabled && !self.action_busy);
             menu.browser_tabs.set_enabled(!self.action_busy);
+            // The Claude row toggles between install and uninstall, so its
+            // label, icon, and macOS symbol depend on the live collector state.
+            let claude_installed = claude_statusline::is_installed();
+            menu.claude_statusline
+                .set_text(claude_action_label(claude_installed));
+            #[cfg(not(target_os = "macos"))]
+            menu.claude_statusline
+                .set_icon(Some(toggle_menu_icon(claude_installed)));
             menu.claude_statusline.set_enabled(!self.action_busy);
             menu.startup.set_enabled(!self.action_busy);
             for (item, (key, label)) in menu.display.iter().zip(display_settings()) {
@@ -420,11 +432,12 @@ impl App {
         ));
         let _ = browser_menu.append(&MenuItem::new(i18n::menu("permission"), false, None));
         let _ = settings.append(&browser_menu);
+        let claude_installed = claude_statusline::is_installed();
         let claude_statusline = IconMenuItem::with_id(
-            "install_claude_statusline",
-            i18n::menu("install_claude"),
+            "claude_statusline",
+            claude_action_label(claude_installed),
             true,
-            menu_symbol_menu_icon([142, 142, 147]),
+            menu_toggle_icon(claude_installed),
             None,
         );
         let _ = settings.append(&claude_statusline);
@@ -556,6 +569,16 @@ fn browser_tab_action_label(enabled: bool) -> &'static str {
     }
 }
 
+/// The Claude collector row describes the state the user sees: installing when
+/// absent, uninstalling when the collector already owns Claude's statusLine.
+fn claude_action_label(installed: bool) -> &'static str {
+    if installed {
+        i18n::menu("uninstall_claude")
+    } else {
+        i18n::menu("install_claude")
+    }
+}
+
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, _: &ActiveEventLoop) {
         self.rebuild();
@@ -604,12 +627,22 @@ impl ApplicationHandler<UserEvent> for App {
                 self.config.browser_tab_reuse = enabled;
                 self.config.save();
             }
-            if let ActionResult::ClaudeStatusLine(result) = result {
-                match result {
-                    Ok(()) => {
-                        dialog::notice(i18n::text("claude_installed"), i18n::menu("install_claude"))
+            if let ActionResult::ClaudeStatusLine { uninstall, result } = result {
+                match (uninstall, result) {
+                    (true, Ok(())) => dialog::notice(
+                        i18n::text("claude_uninstalled"),
+                        i18n::menu("install_claude"),
+                    ),
+                    (false, Ok(())) => dialog::notice(
+                        i18n::text("claude_installed"),
+                        i18n::menu("uninstall_claude"),
+                    ),
+                    (true, Err(error)) => {
+                        dialog::notice(&error, i18n::text("claude_uninstall_failed"))
                     }
-                    Err(error) => dialog::notice(&error, i18n::text("claude_install_failed")),
+                    (false, Err(error)) => {
+                        dialog::notice(&error, i18n::text("claude_install_failed"))
+                    }
                 }
             }
             self.action_busy = false;
@@ -670,25 +703,44 @@ impl ApplicationHandler<UserEvent> for App {
                     let enabled = browser_tabs::configure(current);
                     let _ = tx.send(ActionResult::BrowserTabs(enabled));
                 });
-            } else if id == "install_claude_statusline" {
+            } else if id == "claude_statusline" {
                 if self.action_busy {
                     continue;
                 }
+                // Read the state at click time so the dialog matches the row
+                // the user just clicked, even if Claude settings changed.
+                let uninstall = claude_statusline::is_installed();
+                let title = claude_action_label(uninstall);
+                let confirm = if uninstall {
+                    i18n::text("uninstall")
+                } else {
+                    i18n::text("install")
+                };
+                let prompt = if uninstall {
+                    i18n::text("claude_uninstall_prompt")
+                } else {
+                    i18n::text("claude_install_prompt")
+                };
                 let choice = dialog::choose(
-                    i18n::text("claude_install_prompt"),
-                    i18n::menu("install_claude"),
-                    &[i18n::text("cancel"), i18n::text("install")],
-                    i18n::text("install"),
+                    prompt,
+                    title,
+                    &[i18n::text("cancel"), confirm],
+                    confirm,
                     Some(i18n::text("cancel")),
                 );
-                if choice.as_deref() != Some(i18n::text("install")) {
+                if choice.as_deref() != Some(confirm) {
                     continue;
                 }
                 self.action_busy = true;
                 self.rebuild();
                 let tx = self.action_tx.clone();
                 thread::spawn(move || {
-                    let _ = tx.send(ActionResult::ClaudeStatusLine(claude_statusline::install()));
+                    let result = if uninstall {
+                        claude_statusline::uninstall()
+                    } else {
+                        claude_statusline::install()
+                    };
+                    let _ = tx.send(ActionResult::ClaudeStatusLine { uninstall, result });
                 });
             } else if id == "open_login_settings" {
                 thread::spawn(startup::open_settings);

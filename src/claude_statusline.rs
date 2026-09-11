@@ -2,19 +2,39 @@ use serde_json::{json, Value};
 use std::{
     fs,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 const CONTEXT_DIR: &str = "/tmp/agent-statusbar-claude-context";
 
+/// True when Claude Code routes its statusline through this collector. The
+/// tray queries this on every refresh so the menu row always shows the current
+/// state instead of a stale one cached at startup.
+pub fn is_installed() -> bool {
+    match claude_config_dir() {
+        Ok(config_dir) => is_installed_in(&config_dir),
+        Err(_) => false,
+    }
+}
+
+fn is_installed_in(config_dir: &Path) -> bool {
+    read_json(&config_dir.join("settings.json"))
+        .as_ref()
+        .and_then(|settings| settings.get("statusLine"))
+        .is_some_and(is_collector_status_line)
+}
+
 pub fn install() -> Result<(), String> {
-    let config_dir = claude_config_dir()?;
+    install_in(&claude_config_dir()?)
+}
+
+fn install_in(config_dir: &Path) -> Result<(), String> {
     let settings_path = config_dir.join("settings.json");
     let integration_path = config_dir.join("agent-status-indicator-statusline.json");
     let mut settings = read_json(&settings_path).unwrap_or_else(|| json!({}));
     if !settings.is_object() {
-        return Err("Claude settings.json 不是 JSON 对象".into());
+        return Err(crate::i18n::text("claude_error_settings_not_object").into());
     }
     let collector_command = collector_command()?;
     let existing = read_json(&integration_path);
@@ -37,7 +57,7 @@ pub fn install() -> Result<(), String> {
             {
                 value
             }
-            Some(_) => return Err("现有 Claude statusLine 不是 command 类型，未作修改".into()),
+            Some(_) => return Err(crate::i18n::text("claude_error_foreign_statusline").into()),
         }
     };
     settings["statusLine"] = json!({"type": "command", "command": collector_command});
@@ -53,18 +73,62 @@ pub fn install() -> Result<(), String> {
     Ok(())
 }
 
+/// True for a statusline that belongs to us: a command carrying
+/// `--claude-statusline`, whichever executable it points at.
+fn is_collector_status_line(status_line: &Value) -> bool {
+    status_line.get("type").and_then(Value::as_str) == Some("command")
+        && status_line
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| command.contains("--claude-statusline"))
+}
+
 /// True when settings.json routes the statusline to a collector command that
 /// is ours (carries `--claude-statusline`) but points at a different
 /// executable than this one. Foreign or absent statusLines are never stale, so
 /// explicit user configuration and deliberate removals survive.
 fn collector_is_stale(status_line: &Value, expected_command: &str) -> bool {
-    if status_line.get("type").and_then(Value::as_str) != Some("command") {
-        return false;
+    is_collector_status_line(status_line)
+        && status_line.get("command").and_then(Value::as_str) != Some(expected_command)
+}
+
+/// Undo [`install`]: restore the statusLine the collector replaced and drop the
+/// integration metadata. A statusLine that is not ours is never touched, so a
+/// re-configured or deliberately removed collector reports an error instead of
+/// overwriting user settings.
+pub fn uninstall() -> Result<(), String> {
+    uninstall_in(&claude_config_dir()?)
+}
+
+fn uninstall_in(config_dir: &Path) -> Result<(), String> {
+    let settings_path = config_dir.join("settings.json");
+    let integration_path = config_dir.join("agent-status-indicator-statusline.json");
+    let mut settings = read_json(&settings_path)
+        .ok_or_else(|| crate::i18n::text("claude_error_settings_missing").to_owned())?;
+    if !settings.is_object() {
+        return Err(crate::i18n::text("claude_error_settings_not_object").into());
     }
-    let Some(command) = status_line.get("command").and_then(Value::as_str) else {
-        return false;
-    };
-    command.contains("--claude-statusline") && command != expected_command
+    if !settings
+        .get("statusLine")
+        .is_some_and(is_collector_status_line)
+    {
+        return Err(crate::i18n::text("claude_error_not_installed").into());
+    }
+    let previous = read_json(&integration_path)
+        .and_then(|value| value.get("previous_status_line").cloned())
+        .unwrap_or(Value::Null);
+    match previous {
+        // No statusLine existed before the collector was installed.
+        Value::Null => {
+            if let Some(object) = settings.as_object_mut() {
+                object.remove("statusLine");
+            }
+        }
+        previous => settings["statusLine"] = previous,
+    }
+    atomic_json(&settings_path, &settings)?;
+    let _ = fs::remove_file(&integration_path);
+    Ok(())
 }
 
 /// Re-point the Claude statusline at this executable when it still references a
@@ -89,7 +153,7 @@ pub fn auto_repoint_if_stale() {
     if !collector_is_stale(status_line, &expected_command) {
         return;
     }
-    match install() {
+    match install_in(&config_dir) {
         Ok(()) => eprintln!("repointed Claude statusline to {expected_command}"),
         Err(error) => eprintln!("could not repoint Claude statusline: {error}"),
     }
@@ -171,7 +235,8 @@ fn forward_original_statusline(input: &str) {
 }
 
 fn collector_command() -> Result<String, String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("{}: {error}", crate::i18n::text("claude_error_executable")))?;
     Ok(format!(
         "{} --claude-statusline",
         shell_quote(&executable.to_string_lossy())
@@ -182,7 +247,7 @@ fn claude_config_dir() -> Result<PathBuf, String> {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
-        .ok_or_else(|| "无法确定 Claude 配置目录".into())
+        .ok_or_else(|| crate::i18n::text("claude_error_config_dir").to_owned())
 }
 
 fn safe_session_id(value: &str) -> bool {
@@ -194,16 +259,24 @@ fn safe_session_id(value: &str) -> bool {
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\\"'\\\"'"))
 }
-fn read_json(path: &PathBuf) -> Option<Value> {
+fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_reader(fs::File::open(path).ok()?).ok()
 }
-fn atomic_json(path: &PathBuf, value: &Value) -> Result<(), String> {
-    let parent = path.parent().ok_or_else(|| "无效配置路径".to_owned())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+fn atomic_json(path: &Path, value: &Value) -> Result<(), String> {
+    let write_error = |error: std::io::Error| {
+        format!(
+            "{}: {error}",
+            crate::i18n::text("claude_error_write_failed")
+        )
+    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| crate::i18n::text("claude_error_invalid_path").to_owned())?;
+    fs::create_dir_all(parent).map_err(write_error)?;
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-    let file = fs::File::create(&temporary).map_err(|error| error.to_string())?;
-    serde_json::to_writer(file, value).map_err(|error| error.to_string())?;
-    fs::rename(temporary, path).map_err(|error| error.to_string())
+    let file = fs::File::create(&temporary).map_err(write_error)?;
+    serde_json::to_writer(file, value).map_err(|error| write_error(error.into()))?;
+    fs::rename(temporary, path).map_err(write_error)
 }
 
 #[cfg(test)]
@@ -217,6 +290,63 @@ mod tests {
     #[test]
     fn quotes_shell_paths() {
         assert_eq!(shell_quote("a'b"), "'a'\\\"'\\\"'b'");
+    }
+    #[test]
+    fn install_then_uninstall_restores_the_previous_statusline() {
+        let config = temp_config("round-trip");
+        let settings_path = config.join("settings.json");
+        let original = json!({
+            "statusLine": {"type": "command", "command": "my-statusline"},
+            "model": "opus",
+        });
+        fs::write(&settings_path, serde_json::to_string(&original).unwrap()).unwrap();
+
+        assert!(!is_installed_in(&config));
+        install_in(&config).expect("install");
+        assert!(is_installed_in(&config));
+        // A second install is idempotent and still remembers the original.
+        install_in(&config).expect("reinstall");
+        assert!(is_installed_in(&config));
+
+        uninstall_in(&config).expect("uninstall");
+        assert!(!is_installed_in(&config));
+        let restored: Value =
+            serde_json::from_reader(fs::File::open(&settings_path).unwrap()).unwrap();
+        assert_eq!(restored["statusLine"], original["statusLine"]);
+        assert_eq!(restored["model"], json!("opus"));
+
+        // Uninstalling when nothing is installed must not rewrite settings.
+        assert!(uninstall_in(&config).is_err());
+        let _ = fs::remove_dir_all(&config);
+    }
+    #[test]
+    fn uninstall_without_a_previous_statusline_removes_the_key() {
+        let config = temp_config("fresh");
+        let settings_path = config.join("settings.json");
+        fs::write(
+            &settings_path,
+            serde_json::to_string(&json!({"theme": "dark"})).unwrap(),
+        )
+        .unwrap();
+
+        install_in(&config).expect("install");
+        assert!(is_installed_in(&config));
+        uninstall_in(&config).expect("uninstall");
+
+        let restored: Value =
+            serde_json::from_reader(fs::File::open(&settings_path).unwrap()).unwrap();
+        assert!(restored.get("statusLine").is_none());
+        assert_eq!(restored["theme"], json!("dark"));
+        let _ = fs::remove_dir_all(&config);
+    }
+    fn temp_config(name: &str) -> PathBuf {
+        let config = std::env::temp_dir().join(format!(
+            "agent-status-indicator-{name}-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&config);
+        fs::create_dir_all(&config).expect("create temp config dir");
+        config
     }
     #[test]
     fn auto_repoint_rewrites_a_stale_collector_in_place() {
