@@ -584,10 +584,10 @@ impl ApplicationHandler<UserEvent> for App {
         self.rebuild();
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.config.locale == "auto"
-            && self.last_locale_check.elapsed() >= Duration::from_secs(60)
-        {
+        if self.last_locale_check.elapsed() >= Duration::from_secs(60) {
             self.last_locale_check = Instant::now();
+            // The "follow system" row leads with the system language, so keep
+            // that detection fresh even when an explicit language is selected.
             if i18n::refresh_system_locale() {
                 self.menu = None;
                 self.rebuild();

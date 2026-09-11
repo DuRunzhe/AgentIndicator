@@ -205,7 +205,7 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
     for value in i18n::LANGUAGES {
         let selected = config.locale == value;
         let (name, color) = toggle_symbol(selected);
-        add(i18n::language_name(value).into(), name, color);
+        add(i18n::language_name(value), name, color);
     }
     for (key, _) in CONVERSATION_WINDOWS {
         let (name, color) = toggle_symbol(config.conversation_window == key);

@@ -1,6 +1,14 @@
-use std::sync::{OnceLock, RwLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    OnceLock, RwLock,
+};
 
 static LOCALE: OnceLock<RwLock<String>> = OnceLock::new();
+/// The language the system is set to, cached separately from [`LOCALE`]. The
+/// "follow system" row names it first so it stays readable no matter which
+/// explicit language the user is currently stuck in.
+static SYSTEM_LOCALE: OnceLock<RwLock<String>> = OnceLock::new();
+static FOLLOW_SYSTEM: AtomicBool = AtomicBool::new(false);
 
 /// Every selectable language in menu order. `auto` resolves through the system
 /// locale; the rest are matched literally by the `(locale, key)` lookups.
@@ -10,29 +18,61 @@ pub const LANGUAGES: [&str; 15] = [
 ];
 
 pub fn set_locale(value: &str) {
-    let value = if value == "auto" {
-        system_locale()
+    let following = value == "auto";
+    FOLLOW_SYSTEM.store(following, Ordering::SeqCst);
+    let resolved = if following {
+        let detected = system_locale();
+        *SYSTEM_LOCALE
+            .get_or_init(|| RwLock::new(detected.clone()))
+            .write()
+            .expect("locale lock") = detected.clone();
+        detected
     } else {
         value.to_owned()
     };
     *LOCALE
         .get_or_init(|| RwLock::new("zh-Hans".into()))
         .write()
-        .expect("locale lock") = value;
+        .expect("locale lock") = resolved;
 }
 
+/// Re-read the system language. Returns `true` when it changed so the caller
+/// can rebuild the menu: the first half of the "follow system" row is always in
+/// the system language, so it must refresh even while an explicit language is
+/// selected. The effective locale follows along only for `auto`.
 pub fn refresh_system_locale() -> bool {
-    let value = system_locale();
-    let mut locale = LOCALE
-        .get_or_init(|| RwLock::new("zh-Hans".into()))
-        .write()
-        .expect("locale lock");
-    if *locale == value {
-        false
-    } else {
-        *locale = value;
-        true
+    let detected = system_locale();
+    let changed = {
+        let mut cache = SYSTEM_LOCALE
+            .get_or_init(|| RwLock::new(detected.clone()))
+            .write()
+            .expect("locale lock");
+        if *cache == detected {
+            false
+        } else {
+            *cache = detected.clone();
+            true
+        }
+    };
+    if changed && following_system() {
+        *LOCALE
+            .get_or_init(|| RwLock::new("zh-Hans".into()))
+            .write()
+            .expect("locale lock") = detected;
     }
+    changed
+}
+
+fn following_system() -> bool {
+    FOLLOW_SYSTEM.load(Ordering::SeqCst)
+}
+
+fn cached_system_locale() -> String {
+    SYSTEM_LOCALE
+        .get_or_init(|| RwLock::new(system_locale()))
+        .read()
+        .expect("locale lock")
+        .clone()
 }
 
 fn locale() -> String {
@@ -319,28 +359,54 @@ fn notification_message_for(locale: &str, state: &str, stage: usize) -> &'static
         (_, true, _) => "仍在等待你的回复（3 分钟）。",
     }
 }
-pub fn language_name(value: &str) -> &'static str {
-    language_name_for(&locale(), value)
+/// Menu label for one language entry. The "follow system" row reads
+/// `<system language> / <selected language>`, both saying "follow system": the
+/// first half is the language the option returns to, the second is the user's
+/// current one. When `auto` itself is selected there is no second language, so
+/// the English wording is appended instead. This way a user who lands in a
+/// language they cannot read can still recognize and click the row.
+pub fn language_name(value: &str) -> String {
+    if value == "auto" {
+        return auto_language_label(&locale(), &cached_system_locale(), following_system());
+    }
+    native_language_name(value).to_owned()
 }
 
-fn language_name_for(locale: &str, value: &str) -> &'static str {
-    match value {
-        "auto" => match locale {
-            "en" => "Follow system",
-            "zh-Hant" => "跟隨系統",
-            "ja" => "システムに従う",
-            "ko" => "시스템 설정 따르기",
-            "id" => "Ikuti sistem",
-            "ms" => "Ikut sistem",
-            "vi" => "Theo hệ thống",
-            "es" => "Seguir el sistema",
-            "fr" => "Suivre le système",
-            "it" => "Segui il sistema",
-            "de" => "Systemeinstellung folgen",
-            "ru" => "Как в системе",
-            "tr" => "Sistemi izle",
-            _ => "跟随系统",
-        },
+const FOLLOW_SYSTEM_EN: &str = "Follow system";
+
+fn auto_language_label(ui_locale: &str, system_locale: &str, following: bool) -> String {
+    let suffix = if following {
+        FOLLOW_SYSTEM_EN
+    } else {
+        follow_system_label(ui_locale)
+    };
+    format!("{} / {suffix}", follow_system_label(system_locale))
+}
+
+/// Localized wording of the "follow system" option, shown in the UI language.
+fn follow_system_label(locale: &str) -> &'static str {
+    match locale {
+        "en" => "Follow system",
+        "zh-Hant" => "跟隨系統",
+        "ja" => "システムに従う",
+        "ko" => "시스템 설정 따르기",
+        "id" => "Ikuti sistem",
+        "ms" => "Ikut sistem",
+        "vi" => "Theo hệ thống",
+        "es" => "Seguir el sistema",
+        "fr" => "Suivre le système",
+        "it" => "Segui il sistema",
+        "de" => "Systemeinstellung folgen",
+        "ru" => "Как в системе",
+        "tr" => "Sistemi izle",
+        _ => "跟随系统",
+    }
+}
+
+/// A language's own name, shown in the picker so users can find it regardless
+/// of the current UI language.
+fn native_language_name(locale: &str) -> &'static str {
+    match locale {
         "en" => "English",
         "zh-Hant" => "繁體中文",
         "zh-Hans" => "简体中文",
@@ -1877,5 +1943,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn language_picker_labels_cover_every_language() {
+        for value in LANGUAGES {
+            if value == "auto" {
+                continue;
+            }
+            assert!(
+                !native_language_name(value).is_empty(),
+                "native name for {value}"
+            );
+        }
+        for locale in LOCALES {
+            assert!(
+                !follow_system_label(locale).is_empty(),
+                "follow-system label for {locale}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_label_pairs_the_system_and_selected_languages() {
+        // Following the system: system language first, English fallback second.
+        assert_eq!(
+            auto_language_label("zh-Hans", "zh-Hans", true),
+            "跟随系统 / Follow system"
+        );
+        // Explicit language: system language first, selected language second.
+        assert_eq!(
+            auto_language_label("ja", "zh-Hans", false),
+            "跟随系统 / システムに従う"
+        );
+        assert_eq!(
+            auto_language_label("ja", "en", false),
+            "Follow system / システムに従う"
+        );
+        // English selected: both halves read the same.
+        assert_eq!(
+            auto_language_label("en", "zh-Hans", false),
+            "跟随系统 / Follow system"
+        );
     }
 }
