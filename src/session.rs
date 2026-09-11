@@ -301,7 +301,7 @@ fn apply_event(event: &Value, agent: &str, cursor: &mut FileCursor) {
         && event["type"] == "event_msg"
         && matches!(
             event["payload"]["type"].as_str(),
-            Some("task_started" | "task_complete")
+            Some("task_started" | "task_complete" | "turn_aborted")
         )
     {
         cursor.tools.clear();
@@ -335,7 +335,7 @@ fn apply_event(event: &Value, agent: &str, cursor: &mut FileCursor) {
         let event_type = event["type"].as_str();
         let payload_type = event["payload"]["type"].as_str();
         match (event_type, payload_type) {
-            (Some("event_msg"), Some("task_complete")) => {
+            (Some("event_msg"), Some("task_complete" | "turn_aborted")) => {
                 cursor.facts.state = Some(AgentState::Ready)
             }
             (Some("event_msg"), Some("task_started")) => {
@@ -669,6 +669,48 @@ mod tests {
         apply_pending_priority(&mut cursor);
         assert_eq!(cursor.facts.state, Some(AgentState::Ready));
         assert!(!cursor.facts.requires_terminal_probe);
+    }
+
+    #[test]
+    fn turn_aborted_clears_pending_states_and_allows_next_turn() {
+        for (name, arguments, expected) in [
+            ("exec", "{}", AgentState::Working),
+            (
+                "exec",
+                r#"{"sandbox_permissions":"require_escalated"}"#,
+                AgentState::Waiting,
+            ),
+            ("request_user_input", "{}", AgentState::WaitingReply),
+        ] {
+            let mut cursor = FileCursor::default();
+            apply_event(
+                &serde_json::json!({"type":"response_item","payload":{
+                    "type":"function_call","call_id":"pending","name":name,"arguments":arguments
+                }}),
+                "codex",
+                &mut cursor,
+            );
+            apply_pending_priority(&mut cursor);
+            assert_eq!(cursor.facts.state, Some(expected));
+            cursor.results.insert("completed-call".into());
+            apply_event(
+                &serde_json::json!({"type":"event_msg","payload":{"type":"turn_aborted"}}),
+                "codex",
+                &mut cursor,
+            );
+            apply_pending_priority(&mut cursor);
+            assert_eq!(cursor.facts.state, Some(AgentState::Ready));
+            assert!(cursor.tools.is_empty());
+            assert!(cursor.results.is_empty());
+            assert!(!cursor.facts.requires_terminal_probe);
+            apply_event(
+                &serde_json::json!({"type":"event_msg","payload":{"type":"task_started"}}),
+                "codex",
+                &mut cursor,
+            );
+            apply_pending_priority(&mut cursor);
+            assert_eq!(cursor.facts.state, Some(AgentState::Working));
+        }
     }
 
     #[test]
