@@ -453,7 +453,7 @@ impl App {
         }
         let _ = settings.append(&conversation_menu);
         let language_menu = Submenu::new(i18n::menu("language"), true);
-        for value in ["auto", "zh-Hans", "zh-Hant", "en"] {
+        for value in i18n::LANGUAGES {
             let selected = self.config.locale == value;
             let _ = language_menu.append(&IconMenuItem::with_id(
                 format!("locale:{value}"),
