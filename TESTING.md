@@ -95,3 +95,20 @@ ps -o pid,%cpu,rss,etime,command -p "$(pgrep -x agent-status-indicator)"
 - 预期状态与实际状态
 - 复现步骤
 - 上述 `ps` 命令输出
+
+## Codex 确认状态回归
+
+确认识别优先使用会话工具信号，Terminal 界面探测作为兜底。界面解析按能力/格式兼容，不按 Codex 版本号分支：要求底部确认/取消按键提示、连续编号及选中项，并检查允许/拒绝快捷键；无快捷键的旧格式保留 Yes/No 兼容。未知格式不猜测为等待确认。未返回的 `apply_patch` 本身不是审批证据。
+
+- `cargo test terminal::tests` 覆盖旧版提示、文件修改审批、文案变化、本地化快捷键提示、历史提示、普通菜单和 TTY 隔离。
+- 在 Terminal 中保留一个真实 Codex 确认框，使用其进程 PID 运行只读集成验证（需要自动化权限）：
+
+  ```bash
+  ASI_TEST_CODEX_PID=<pid> cargo test terminal::tests::live_terminal_confirmation -- --ignored
+  ```
+
+- 接受或取消后，确认托盘恢复后续状态；另一个 TTY 中的执行任务不得被该确认框影响。
+- Terminal 脚本必须通过具体 `tab ... of window ...` 读取 `contents`；通过 repeat 引用变量读取可能返回 tab 对象并触发 `-1700` 转换错误。
+- 当前界面兜底针对 macOS Terminal；没有终端读取权限、其他终端或全新提示布局时，仍依赖会话日志已有信号，不能保证识别所有审批。
+
+确认框保持未处理至少 20 秒（跨越多次 5 秒探测缓存刷新），状态应持续为等待确认，不应重复触发首次通知；1 分钟和 3 分钟的既有提醒仍保留。确认处理后，新日志活动或明确的终端执行信号应解除等待状态。
