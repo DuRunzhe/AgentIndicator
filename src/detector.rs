@@ -798,6 +798,13 @@ fn enrich_macos_codex(
 ) -> Option<PathBuf> {
     // Returns the rollout the reported facts came from, so a hosted session can
     // link to that exact conversation.
+    // A newly opened terminal Codex may not have created/opened its rollout yet.
+    // Do not fall back to the newest rollout in the same cwd: that belongs to
+    // another Codex process and would incorrectly mirror its state.
+    if rollouts.is_empty() {
+        instance.state = AgentState::Ready;
+        return None;
+    }
     let chosen = most_actionable(
         rollouts
             .iter()
@@ -806,13 +813,7 @@ fn enrich_macos_codex(
     );
     let (rollout, facts) = match chosen {
         Some((path, facts)) => (Some(path), Some(facts)),
-        None => (
-            None,
-            instance
-                .cwd
-                .as_deref()
-                .and_then(|cwd| analyzer.analyze_codex_for_cwd(cwd)),
-        ),
+        None => (None, None),
     };
     let facts = facts?;
     if let Some(cwd) = facts.cwd {
