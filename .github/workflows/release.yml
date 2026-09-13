@@ -67,6 +67,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
 
   # Assemble one cross-platform npm tarball from every build and publish it.
   # Only runs when an NPM_TOKEN secret is configured (automation token with
