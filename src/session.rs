@@ -343,7 +343,15 @@ fn apply_event(event: &Value, agent: &str, cursor: &mut FileCursor) {
         let payload_type = event["payload"]["type"].as_str();
         match (event_type, payload_type) {
             (Some("event_msg"), Some("turn_aborted")) => {
-                cursor.facts.state = Some(AgentState::Error)
+                // Codex may emit an abort marker while initializing a fresh
+                // terminal session. Without a preceding task, that is an idle
+                // session rather than an error.
+                cursor.facts.state = Some(match cursor.facts.state {
+                    Some(AgentState::Working | AgentState::Waiting | AgentState::WaitingReply) => {
+                        AgentState::Error
+                    }
+                    _ => AgentState::Ready,
+                })
             }
             (Some("event_msg"), Some("task_complete")) => {
                 cursor.facts.state = Some(AgentState::Ready)
@@ -731,6 +739,18 @@ mod tests {
             apply_pending_priority(&mut cursor);
             assert_eq!(cursor.facts.state, Some(AgentState::Working));
         }
+    }
+
+    #[test]
+    fn initial_codex_abort_marker_is_ready() {
+        let mut cursor = FileCursor::default();
+        apply_event(
+            &serde_json::json!({"type":"event_msg","payload":{"type":"turn_aborted"}}),
+            "codex",
+            &mut cursor,
+        );
+        apply_pending_priority(&mut cursor);
+        assert_eq!(cursor.facts.state, Some(AgentState::Ready));
     }
 
     #[test]
