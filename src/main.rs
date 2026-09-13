@@ -1016,7 +1016,7 @@ fn display_settings() -> [(&'static str, &'static str); 6] {
     ]
 }
 
-fn notification_preferences(config: &Config) -> [(&'static str, &'static str, bool); 3] {
+fn notification_preferences(config: &Config) -> [(&'static str, &'static str, bool); 4] {
     [
         (
             "waiting_confirmation",
@@ -1028,6 +1028,7 @@ fn notification_preferences(config: &Config) -> [(&'static str, &'static str, bo
             i18n::text("notify_waiting_reply"),
             config.notify_waiting_reply,
         ),
+        ("error", i18n::text("notify_error"), config.notify_error),
         (
             "auto_confirm",
             i18n::text("notify_auto_confirm"),
@@ -1042,6 +1043,7 @@ fn toggle_notification_preference(config: &mut Config, key: &str) {
             config.notify_waiting_confirmation = !config.notify_waiting_confirmation
         }
         "waiting_reply" => config.notify_waiting_reply = !config.notify_waiting_reply,
+        "error" => config.notify_error = !config.notify_error,
         "auto_confirm" => {
             config.show_waiting_notifications_in_auto_confirm_mode =
                 !config.show_waiting_notifications_in_auto_confirm_mode
@@ -1148,6 +1150,7 @@ fn summary(items: &[AgentInstance]) -> String {
         i18n::no_activity().into()
     } else {
         [
+            AgentState::Error,
             AgentState::Waiting,
             AgentState::WaitingReply,
             AgentState::Working,
@@ -1166,7 +1169,7 @@ fn animation_frame(state: AgentState, elapsed: Duration) -> usize {
     match state {
         AgentState::Waiting | AgentState::WaitingReply => elapsed.as_secs() as usize % 2,
         AgentState::Working => (elapsed.as_secs() / 2) as usize % 2,
-        AgentState::Ready | AgentState::Stopped => 0,
+        AgentState::Ready | AgentState::Stopped | AgentState::Error => 0,
     }
 }
 
@@ -1191,6 +1194,7 @@ fn status_icon_rgba_at_size(state: AgentState, frame: usize, size: usize) -> Vec
         (AgentState::Working, _) => ([100, 210, 255], 7.0_f32),
         (AgentState::Ready, _) => ([52, 199, 89], 6.0_f32),
         (AgentState::Stopped, _) => ([142, 142, 147], 6.0_f32),
+        (AgentState::Error, _) => ([255, 59, 48], 6.0_f32),
     };
     let scale = size as f32 / 16.0;
     let center = size as f32 / 2.0;
@@ -1214,7 +1218,9 @@ fn status_icon_rgba_at_size(state: AgentState, frame: usize, size: usize) -> Vec
                     );
                     ring.max(center_dot)
                 }
-                AgentState::Ready | AgentState::Stopped => edge_alpha(outer_radius - distance),
+                AgentState::Ready | AgentState::Stopped | AgentState::Error => {
+                    edge_alpha(outer_radius - distance)
+                }
             };
             if alpha > 0 {
                 let pixel = (y * size + x) * 4;
@@ -1239,6 +1245,7 @@ fn status_icon_rgba(state: AgentState, frame: usize) -> Vec<u8> {
         (AgentState::Working, _) => ([100, 210, 255], 7_i32),
         (AgentState::Ready, _) => ([52, 199, 89], 6_i32),
         (AgentState::Stopped, _) => ([142, 142, 147], 6_i32),
+        (AgentState::Error, _) => ([255, 59, 48], 6_i32),
     };
     let mut rgba = vec![0; 16 * 16 * 4];
     for y in 0..16 {

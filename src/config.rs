@@ -20,6 +20,7 @@ pub struct Config {
     pub notifications_enabled: bool,
     pub notify_waiting_confirmation: bool,
     pub notify_waiting_reply: bool,
+    pub notify_error: bool,
     pub show_waiting_notifications_in_auto_confirm_mode: bool,
     pub show_duration: bool,
     pub show_model: bool,
@@ -39,6 +40,7 @@ impl Default for Config {
             notifications_enabled: false,
             notify_waiting_confirmation: true,
             notify_waiting_reply: true,
+            notify_error: true,
             show_waiting_notifications_in_auto_confirm_mode: true,
             show_duration: true,
             show_model: true,
@@ -106,6 +108,7 @@ mod tests {
         assert!(config.notifications_enabled);
         assert!(config.notify_waiting_confirmation);
         assert!(config.notify_waiting_reply);
+        assert!(config.notify_error);
         assert!(config.show_waiting_notifications_in_auto_confirm_mode);
         assert!(config.show_duration);
         assert!(config.show_model);

@@ -2,7 +2,7 @@
 
 **English** | [中文](README.md)
 
-A native tray monitor for AI coding agents (macOS first, with Windows/Linux support). It watches coding agents such as Claude Code, Codex CLI, OpenCode, DeepSeek Harness and Pi: while a process is alive, sessions are grouped by project, and the tray shows a five-state summary — *waiting for confirmation, waiting for reply, working, ready, stopped*. Clicking a menu item jumps back to the matching terminal or browser session, and native system notifications fire whenever human attention is needed.
+A native tray monitor for AI coding agents (macOS first, with Windows/Linux support). It watches coding agents such as Claude Code, Codex CLI, OpenCode, DeepSeek Harness and Pi: while a process is alive, sessions are grouped by project, and the tray shows a six-state summary — *waiting for confirmation, waiting for reply, working, ready, error, stopped*. Error, failed, aborted and disconnect signals are surfaced as the error state. Clicking a menu item jumps back to the matching terminal or browser session, and native system notifications fire whenever human attention is needed.
 
 Source and releases: <https://github.com/DuRunzhe/AgentIndicator>
 
@@ -324,7 +324,7 @@ These are acceptance targets; the current release workflow does not automate mea
 
 - [x] Single-process native system tray
 - [x] Multi-instance process discovery for Claude/Codex/OpenCode/DeepSeek
-- [x] Process-tree activity detection, 2s async refresh, five-state model
+- [x] Process-tree activity detection, 2s async refresh, six-state model with error detection
 - [x] DeepSeek projection/session state, waiting signals, model and context parsing
 - [x] Codex terminal confirmation screen and positive correction of background tasks
 - [x] Native dynamic menu, summary icon, npm/Homebrew release skeleton

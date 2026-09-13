@@ -320,22 +320,32 @@ fn apply_event(event: &Value, agent: &str, cursor: &mut FileCursor) {
         } else if event["type"] == "user" {
             cursor.facts.state = Some(AgentState::Working);
         } else if event["type"] == "assistant" {
-            cursor.facts.state = Some(if event["message"]["stop_reason"] == "end_turn" {
-                if assistant_ends_with_question(event) {
-                    AgentState::WaitingReply
+            cursor.facts.state = Some(
+                if matches!(
+                    event["message"]["stop_reason"].as_str(),
+                    Some("error" | "failed" | "aborted")
+                ) {
+                    AgentState::Error
+                } else if event["message"]["stop_reason"] == "end_turn" {
+                    if assistant_ends_with_question(event) {
+                        AgentState::WaitingReply
+                    } else {
+                        AgentState::Ready
+                    }
                 } else {
-                    AgentState::Ready
-                }
-            } else {
-                AgentState::Working
-            });
+                    AgentState::Working
+                },
+            );
             set_model(&mut cursor.facts, event["message"]["model"].as_str());
         }
     } else if agent == "codex" {
         let event_type = event["type"].as_str();
         let payload_type = event["payload"]["type"].as_str();
         match (event_type, payload_type) {
-            (Some("event_msg"), Some("task_complete" | "turn_aborted")) => {
+            (Some("event_msg"), Some("turn_aborted")) => {
+                cursor.facts.state = Some(AgentState::Error)
+            }
+            (Some("event_msg"), Some("task_complete")) => {
                 cursor.facts.state = Some(AgentState::Ready)
             }
             (Some("event_msg"), Some("task_started")) => {
@@ -352,6 +362,13 @@ fn apply_event(event: &Value, agent: &str, cursor: &mut FileCursor) {
                     | "custom_tool_call_output",
                 ),
             ) => cursor.facts.state = Some(AgentState::Working),
+            (
+                Some("response_item" | "event_msg"),
+                Some(
+                    "error" | "failed" | "aborted" | "turn_failed" | "connection_error"
+                    | "disconnected",
+                ),
+            ) => cursor.facts.state = Some(AgentState::Error),
             _ => {}
         }
         if event_type == Some("turn_context") {
@@ -513,6 +530,9 @@ fn apply_pending_priority(cursor: &mut FileCursor) {
         .map(|(_, tool)| tool)
         .collect();
     cursor.facts.requires_terminal_probe = false;
+    if cursor.facts.state == Some(AgentState::Error) {
+        return;
+    }
     if pending.iter().any(|tool| tool.user_input) {
         cursor.facts.state = Some(AgentState::WaitingReply);
     } else if pending.iter().any(|tool| tool.approval) {
@@ -699,7 +719,7 @@ mod tests {
                 &mut cursor,
             );
             apply_pending_priority(&mut cursor);
-            assert_eq!(cursor.facts.state, Some(AgentState::Ready));
+            assert_eq!(cursor.facts.state, Some(AgentState::Error));
             assert!(cursor.tools.is_empty());
             assert!(cursor.results.is_empty());
             assert!(!cursor.facts.requires_terminal_probe);

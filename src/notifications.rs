@@ -71,6 +71,7 @@ impl NotificationTracker {
 
 fn should_notify(instance: &AgentInstance, config: &crate::config::Config) -> bool {
     match instance.state {
+        AgentState::Error => config.notify_error,
         AgentState::WaitingReply => config.notify_waiting_reply,
         AgentState::Waiting => {
             config.notify_waiting_confirmation
@@ -98,6 +99,7 @@ impl NotificationRequest {
     fn from_instance(instance: &AgentInstance, stage: usize) -> Self {
         let body = crate::i18n::notification_message(
             match instance.state {
+                AgentState::Error => "error",
                 AgentState::WaitingReply => "waiting_reply",
                 _ => "waiting",
             },
@@ -159,6 +161,7 @@ mod tests {
         };
         assert!(should_notify(&instance(AgentState::Waiting), &config));
         assert!(should_notify(&instance(AgentState::WaitingReply), &config));
+        assert!(should_notify(&instance(AgentState::Error), &config));
         assert!(!should_notify(&instance(AgentState::Working), &config));
     }
 

@@ -923,6 +923,7 @@ fn enrich_claude(instance: &mut AgentInstance, analyzer: &mut SessionAnalyzer) {
             "waiting" => Some(AgentState::Waiting),
             "busy" | "working" | "running" => Some(AgentState::Working),
             "idle" | "ready" => Some(AgentState::Ready),
+            "error" | "failed" | "aborted" | "disconnected" | "offline" => Some(AgentState::Error),
             _ => None,
         });
     let snapshot = read_json(

@@ -9,6 +9,7 @@ pub enum AgentState {
     Working,
     WaitingReply,
     Waiting,
+    Error,
 }
 
 impl AgentState {
@@ -18,6 +19,7 @@ impl AgentState {
             Self::Working => "🔵",
             Self::Ready => "🟢",
             Self::Stopped => "⚪",
+            Self::Error => "🔴",
         }
     }
     pub fn label(self) -> &'static str {
@@ -27,6 +29,7 @@ impl AgentState {
             Self::Working => crate::i18n::state("working"),
             Self::Ready => crate::i18n::state("ready"),
             Self::Stopped => crate::i18n::state("stopped"),
+            Self::Error => crate::i18n::state("error"),
         }
     }
 }

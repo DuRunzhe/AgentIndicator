@@ -200,7 +200,9 @@ fn runtime_state_from_log(path: &Path, session_id: Option<&str>) -> Option<Agent
         .rev()
         .filter(|line| line.contains(&format!("session.id={session_id}")))
         .find_map(|line| {
-            if line.contains("message=\"exiting loop\"") {
+            if line.contains("error") || line.contains("failed") || line.contains("disconnect") {
+                Some(AgentState::Error)
+            } else if line.contains("message=\"exiting loop\"") {
                 Some(AgentState::Ready)
             } else if line.contains("message=loop")
                 || line.contains("message=process")
@@ -251,6 +253,14 @@ fn model_identity(
 }
 
 fn state_from_message(message: &Value, assistant_text: Option<&str>) -> AgentState {
+    if message.get("error").is_some()
+        || matches!(
+            message["finish"].as_str(),
+            Some("error" | "failed" | "aborted")
+        )
+    {
+        return AgentState::Error;
+    }
     match message["role"].as_str() {
         Some("user") => AgentState::Working,
         Some("assistant") if message.pointer("/time/completed").is_none() => AgentState::Working,

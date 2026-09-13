@@ -396,7 +396,7 @@ fn parse_signals(text: &str, agent_dir: &Path) -> PiFacts {
                         for id in &calls {
                             pending_tools.remove(*id);
                         }
-                        task_state = Some(AgentState::Ready);
+                        task_state = Some(AgentState::Error);
                         reply_requested = false;
                     }
                     Some("stop" | "length") => {

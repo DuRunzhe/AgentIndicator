@@ -237,6 +237,9 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
                     questions.remove(id);
                 }
             }
+            Some("error" | "turn/error" | "turn/failed" | "connection/error") => {
+                facts.state = Some(AgentState::Error);
+            }
             _ => {}
         }
     }

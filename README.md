@@ -2,7 +2,7 @@
 
 **中文** | [English](README.en.md)
 
-原生 AI Coding Agent 托盘监控器（macOS 优先，支持 Windows/Linux）。监控 Claude Code、Codex CLI、OpenCode、DeepSeek Harness 与 Pi 等 Coding Agent 的运行状态：进程存活时按项目区分多个会话，在系统托盘汇总展示「等待确认、等待回复、进行中、就绪、已停止」五态，点击菜单项跳回对应终端或浏览器会话，并在需要人工介入时触发原生系统通知。
+原生 AI Coding Agent 托盘监控器（macOS 优先，支持 Windows/Linux）。监控 Claude Code、Codex CLI、OpenCode、DeepSeek Harness 与 Pi 等 Coding Agent 的运行状态：进程存活时按项目区分多个会话，在系统托盘汇总展示「等待确认、等待回复、进行中、就绪、异常、已停止」六态；可识别 error、failed、aborted 及断连信号，点击菜单项跳回对应终端或浏览器会话，并在需要人工介入时触发原生系统通知。
 
 源码与发布：<https://github.com/DuRunzhe/AgentIndicator>
 
@@ -324,7 +324,7 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 
 - [x] 单进程原生系统托盘
 - [x] Claude/Codex/OpenCode/DeepSeek 多实例进程发现
-- [x] 进程树任务活跃判定、2 秒异步刷新、五态数据模型
+- [x] 进程树任务活跃判定、2 秒异步刷新、六态数据模型（含异常）
 - [x] DeepSeek projection/session 状态、等待信号、模型与上下文解析
 - [x] Codex Terminal 确认界面与后台任务正向状态纠正
 - [x] 原生动态菜单、汇总图标、npm/Homebrew 发布骨架
