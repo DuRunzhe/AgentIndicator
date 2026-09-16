@@ -528,7 +528,7 @@ fn select_conversations(
 
     let active: Vec<_> = conversations
         .iter()
-        .filter(|(_, facts)| is_unfinished(facts) || touched_recently(facts, now, window))
+        .filter(|(_, facts)| needs_attention(facts) || touched_recently(facts, now, window))
         .cloned()
         .collect();
     active
@@ -554,14 +554,21 @@ fn hosted_application_instance(process: &ProcessRecord, display: &str) -> AgentI
     }
 }
 
-/// A conversation whose turn has not finished: it is working, or it waits for
-/// the user. Those stay listed however long they have been idle, because the
-/// tray is how the user notices them.
+/// A conversation that is still mid-turn or otherwise demands the user's
+/// attention: it is working, waits for the user, or its last turn failed.
+/// Those stay listed however long they have been idle, because the tray is how
+/// the user notices them. A failed turn must not age out either: dropping it
+/// would make the application fall back to a plain "ready" row.
 #[cfg(target_os = "macos")]
-fn is_unfinished(facts: &SessionFacts) -> bool {
+fn needs_attention(facts: &SessionFacts) -> bool {
     matches!(
         facts.state,
-        Some(AgentState::Working | AgentState::Waiting | AgentState::WaitingReply)
+        Some(
+            AgentState::Working
+                | AgentState::Waiting
+                | AgentState::WaitingReply
+                | AgentState::Error
+        )
     )
 }
 
@@ -1177,6 +1184,7 @@ mod tests {
         let conversations = vec![
             conversation("working", Some(AgentState::Working), 3 * 3600),
             conversation("waiting", Some(AgentState::Waiting), 4 * 3600),
+            conversation("failed", Some(AgentState::Error), 5 * 3600),
             conversation("recent", Some(AgentState::Ready), 60),
             conversation("stale", Some(AgentState::Ready), 3 * 3600),
         ];
@@ -1186,9 +1194,10 @@ mod tests {
             .map(|(path, _)| crate::session::codex_rollout_thread_id(path).unwrap())
             .collect();
         // Newest activity first; the long-idle finished conversation is dropped
-        // so history tabs cannot bury the menu. Distinct ages keep the expected
-        // order independent of the clock's resolution.
-        assert_eq!(threads, ["recent", "working", "waiting"]);
+        // so history tabs cannot bury the menu. A failed turn stays listed: the
+        // user still has to notice it. Distinct ages keep the expected order
+        // independent of the clock's resolution.
+        assert_eq!(threads, ["recent", "working", "waiting", "failed"]);
     }
 
     #[cfg(target_os = "macos")]

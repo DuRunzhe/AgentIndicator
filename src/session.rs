@@ -354,7 +354,15 @@ fn apply_event(event: &Value, agent: &str, cursor: &mut FileCursor) {
                 })
             }
             (Some("event_msg"), Some("task_complete")) => {
-                cursor.facts.state = Some(AgentState::Ready)
+                // A turn can finish unsuccessfully. Codex still emits
+                // `task_complete`, but records the failure in the payload's
+                // `error` field (rate limits, disconnected streams, 5xx
+                // responses). Such a session is stopped on an error, not idle.
+                cursor.facts.state = Some(if task_complete_failed(event) {
+                    AgentState::Error
+                } else {
+                    AgentState::Ready
+                })
             }
             (Some("event_msg"), Some("task_started")) => {
                 cursor.facts.state = Some(AgentState::Working)
@@ -416,6 +424,19 @@ fn apply_event(event: &Value, agent: &str, cursor: &mut FileCursor) {
 fn set_model(facts: &mut SessionFacts, model: Option<&str>) {
     if let Some(value) = model.map(str::trim).filter(|v| !v.is_empty()) {
         facts.model = Some(value.chars().take(80).collect());
+    }
+}
+
+/// Whether a `task_complete` event reports a failed turn. Codex attaches the
+/// failure to the event payload as `error`, either an object like
+/// `{"message": ..., "codex_error_info": ...}` or a plain string.
+fn task_complete_failed(event: &Value) -> bool {
+    match &event["payload"]["error"] {
+        Value::Null => false,
+        Value::Bool(failed) => *failed,
+        Value::String(message) => !message.trim().is_empty(),
+        Value::Object(error) => !error.is_empty(),
+        _ => true,
     }
 }
 
@@ -738,6 +759,63 @@ mod tests {
             );
             apply_pending_priority(&mut cursor);
             assert_eq!(cursor.facts.state, Some(AgentState::Working));
+        }
+    }
+
+    #[test]
+    fn task_complete_with_error_reports_an_error_state() {
+        // Real Codex rollouts finish a failed turn with `task_complete` and an
+        // `error` payload: "exceeded retry limit, last status: 429 Too Many
+        // Requests" and "stream disconnected before completion". Treating
+        // every `task_complete` as ready hid those failures.
+        for error in [
+            serde_json::json!({
+                "message": "exceeded retry limit, last status: 429 Too Many Requests, request id: 391c865a-3db0-49bb-8bf8-b9efbacb2f6d",
+                "codex_error_info": {"response_too_many_failed_attempts": {"http_status_code": 429}}
+            }),
+            serde_json::json!({
+                "message": "stream disconnected before completion: An error occurred while processing your request.",
+                "codex_error_info": "other"
+            }),
+            serde_json::json!("unexpected status 503 Service Unavailable"),
+        ] {
+            let mut cursor = FileCursor::default();
+            apply_event(
+                &serde_json::json!({"type":"event_msg","payload":{"type":"task_started"}}),
+                "codex",
+                &mut cursor,
+            );
+            apply_event(
+                &serde_json::json!({"type":"event_msg","payload":{
+                    "type":"task_complete",
+                    "turn_id":"t",
+                    "last_agent_message":null,
+                    "error": error
+                }}),
+                "codex",
+                &mut cursor,
+            );
+            apply_pending_priority(&mut cursor);
+            assert_eq!(cursor.facts.state, Some(AgentState::Error));
+        }
+    }
+
+    #[test]
+    fn task_complete_without_error_stays_ready() {
+        let mut cursor = FileCursor::default();
+        for payload in [
+            serde_json::json!({"type":"task_complete"}),
+            serde_json::json!({"type":"task_complete","error":null}),
+            serde_json::json!({"type":"task_complete","last_agent_message":"done"}),
+        ] {
+            cursor.facts.state = Some(AgentState::Working);
+            apply_event(
+                &serde_json::json!({"type":"event_msg","payload": payload}),
+                "codex",
+                &mut cursor,
+            );
+            apply_pending_priority(&mut cursor);
+            assert_eq!(cursor.facts.state, Some(AgentState::Ready));
         }
     }
 
