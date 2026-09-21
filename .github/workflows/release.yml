@@ -165,7 +165,10 @@ jobs:
       - name: Stamp the bundle version from the tag
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          sed -i '' "s|<string>0\.2\.[0-9]*</string>|<string>${VERSION}</string>|g" \
+          # Replace the whole version string (including any -alpha/-beta/-rc
+          # suffix); matching only `0.2.N` would append the suffix twice for
+          # prerelease tags.
+          sed -i '' -E "s#(<string>)[0-9]+\.[0-9]+\.[0-9]+[^<]*(</string>)#\1${VERSION}\2#g" \
             scripts/package-macos-app.sh
       - name: Sign, notarize and staple the app
         env:
