@@ -115,10 +115,22 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -euo pipefail
           printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > ~/.npmrc
           mkdir -p dist
           npm pack --pack-destination dist
-          npm publish ./dist/agent-status-indicator-*.tgz
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Only a stable release may move the `latest` dist-tag. Prereleases
+          # publish under their own identifier (alpha/beta/rc) so a global
+          # "npm install -g" keeps resolving to the newest stable build.
+          if [[ "$VERSION" == *-* ]]; then
+            TAG="${VERSION#*-}"
+            TAG="${TAG%%.*}"
+          else
+            TAG="latest"
+          fi
+          echo "publishing $VERSION under dist-tag $TAG"
+          npm publish ./dist/agent-status-indicator-*.tgz --tag "$TAG"
 
   # Developer ID signing + notarization. Secrets never reach other jobs or any
   # pull-request trigger; they exist only in this tag-only job's environment

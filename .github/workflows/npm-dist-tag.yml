@@ -1,0 +1,40 @@
+name: npm dist-tag
+
+# Maintenance entry point for moving an npm dist-tag without republishing.
+# Typical use: a release published before `--tag` was wired up moved `latest`
+# onto a prerelease, so point `latest` back at the newest stable version:
+#
+#   gh workflow run npm-dist-tag.yml -f version=0.2.26 -f tag=latest
+#   gh workflow run npm-dist-tag.yml -f version=0.2.27-alpha.1 -f tag=alpha
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published version to point the tag at (e.g. 0.2.26)"
+        required: true
+      tag:
+        description: "dist-tag to move (e.g. latest, alpha, beta, rc)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  retag:
+    name: retag agent-status-indicator
+    runs-on: ubuntu-latest
+    steps:
+      - name: Point a dist-tag at a published version
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is not configured" >&2
+            exit 1
+          fi
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > ~/.npmrc
+          npm dist-tag add "agent-status-indicator@$VERSION" "$TAG"
+          npm dist-tag ls agent-status-indicator
