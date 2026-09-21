@@ -246,6 +246,50 @@ fn assign_sessions(live: &[LiveSession], candidates: &[Candidate]) -> Vec<Option
             claims[index] = Some(free.remove(position));
         }
     }
+
+    // 3. `/new` keeps the process alive while it moves to a brand-new session
+    //    file, so the file anchored in step 1 is no longer being written and
+    //    the later file the process created stays unclaimed. Rebind such a
+    //    process to the newest later session it could have created; without
+    //    this the row keeps showing the pre-`/new` model, context and state.
+    //    Newest processes pick first, mirroring the recency pass.
+    let mut order: Vec<usize> = (0..live.len()).collect();
+    order.sort_by_key(|index| std::cmp::Reverse(live[*index].started));
+    for index in order {
+        let Some(previous) = claims[index] else {
+            continue;
+        };
+        let mut best: Option<usize> = None;
+        for (candidate, file) in candidates.iter().enumerate() {
+            if claimed[candidate]
+                || file.created <= candidates[previous].created
+                // The `/new` session is the one now being written, so it must
+                // be at least as fresh as the abandoned startup session.
+                || file.modified <= candidates[previous].modified
+            {
+                continue;
+            }
+            // Only a session that appeared at or after this process started can
+            // be one the process created; a file that clearly predates it
+            // belongs to an earlier run.
+            if unix_seconds(live[index].started).saturating_sub(unix_seconds(file.created))
+                > RECENT_WRITE_TOLERANCE_SECONDS
+            {
+                continue;
+            }
+            if !written_while_alive(file, &live[index]) {
+                continue;
+            }
+            if best.is_none_or(|current| file.created > candidates[current].created) {
+                best = Some(candidate);
+            }
+        }
+        if let Some(candidate) = best {
+            claimed[previous] = false;
+            claims[index] = Some(candidate);
+            claimed[candidate] = true;
+        }
+    }
     claims
 }
 
@@ -813,5 +857,51 @@ mod tests {
         let own = candidate(20, 1);
         let claims = assign_sessions(&[live(15)], &[stale, own]);
         assert_eq!(claims[0], Some(1), "own anchored file wins over stale file");
+    }
+
+    #[test]
+    fn new_command_rebinds_the_process_to_its_later_session() {
+        // Regression: `/new` keeps the same OS process but starts a session
+        // file far outside the startup anchor window. The process must follow
+        // the later file instead of staying pinned to its startup session.
+        let startup = candidate(55 * 60, 23 * 60);
+        let after_new = candidate(16 * 60, 1);
+        let claims = assign_sessions(&[live(55 * 60)], &[startup, after_new]);
+        assert_eq!(claims[0], Some(1), "`/new` session takes over the process");
+    }
+
+    #[test]
+    fn older_unclaimed_files_are_not_adopted_as_a_new_session() {
+        // The rebind only follows files created after the process's current
+        // session; an unclaimed leftover from an earlier run must not be
+        // mistaken for a `/new` session.
+        let startup = candidate(55 * 60, 23 * 60);
+        let earlier = candidate(3 * 86_400, 40 * 60);
+        let claims = assign_sessions(&[live(55 * 60)], &[startup, earlier]);
+        assert_eq!(claims[0], Some(0), "leftover file must not be adopted");
+    }
+
+    #[test]
+    fn a_new_session_does_not_steal_a_claimed_file() {
+        // A process that is still bound to its own live file must not steal a
+        // file another live process anchored to, even though it appeared after
+        // the older process started.
+        let older_own = candidate(200, 150);
+        let newer_own = candidate(30, 1);
+        let sessions = [older_own, newer_own];
+        let claims = assign_sessions(&[live(200), live(30)], &sessions);
+        assert_eq!(claims[0], Some(0), "older process keeps its own file");
+        assert_eq!(claims[1], Some(1), "newer process keeps its own file");
+    }
+
+    #[test]
+    fn dormant_unclaimed_files_are_not_adopted_as_a_new_session() {
+        // An unclaimed file that appeared after the process started but is no
+        // longer being written is not the active `/new` session; only a file
+        // fresher than the current one may take over.
+        let current = candidate(200, 150);
+        let dormant = candidate(100, 180);
+        let claims = assign_sessions(&[live(200)], &[current, dormant]);
+        assert_eq!(claims[0], Some(0), "dormant file must not take over");
     }
 }
