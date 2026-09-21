@@ -132,6 +132,40 @@ jobs:
           echo "publishing $VERSION under dist-tag $TAG"
           npm publish ./dist/agent-status-indicator-*.tgz --tag "$TAG"
 
+  # Spell out which npm dist-tag this tag occupies, so the release page makes
+  # it obvious whether `npm install -g agent-status-indicator` picks it up.
+  # Runs after `build` so the release and its assets already exist.
+  release-notes:
+    name: annotate npm dist-tag
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Append the npm dist-tag note to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            DIST="${VERSION#*-}"
+            DIST="${DIST%%.*}"
+            NOTE="This is a prerelease, published under the \`$DIST\` npm dist-tag. \`latest\` keeps pointing at the newest stable release, so \`npm install -g agent-status-indicator\` is unchanged."
+          else
+            NOTE="This is a stable release: npm \`latest\` now points to \`$VERSION\`, so \`npm install -g agent-status-indicator\` installs it."
+          fi
+          BODY="$(gh release view "$TAG" --json body -q .body)"
+          if [[ "$BODY" == *"## npm"* ]]; then
+            echo "npm note already present; nothing to change"
+            exit 0
+          fi
+          if [[ -n "$BODY" ]]; then
+            printf '%s\n\n## npm\n\n%s\n' "$BODY" "$NOTE" > /tmp/notes.md
+          else
+            printf '## npm\n\n%s\n' "$NOTE" > /tmp/notes.md
+          fi
+          gh release edit "$TAG" --notes-file /tmp/notes.md
+
   # Developer ID signing + notarization. Secrets never reach other jobs or any
   # pull-request trigger; they exist only in this tag-only job's environment
   # and are consumed inside an ephemeral keychain.
