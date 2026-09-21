@@ -1,15 +1,15 @@
 class AgentStatusIndicator < Formula
   desc "Native tray monitor for AI coding agents"
   homepage "https://github.com/DuRunzhe/AgentIndicator"
-  version "0.2.26"
+  version "0.2.27-alpha.1"
   license "Apache-2.0"
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.26/agent-status-indicator-aarch64-apple-darwin.tar.gz"
-      sha256 "f8687671ab11afcf2187b450907823c7f2084f49ee933a5924d358832302a003"
+      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.27-alpha.1/agent-status-indicator-aarch64-apple-darwin.tar.gz"
+      sha256 "REPLACE_ON_RELEASE"
     else
-      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.26/agent-status-indicator-x86_64-apple-darwin.tar.gz"
-      sha256 "2441fc04cd334d3b8245c21c34190b75cfc6c238a9482686ef8ff55bc0a1f4f9"
+      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.27-alpha.1/agent-status-indicator-x86_64-apple-darwin.tar.gz"
+      sha256 "REPLACE_ON_RELEASE"
     end
   end
   def install
