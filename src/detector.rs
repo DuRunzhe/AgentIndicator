@@ -159,6 +159,15 @@ impl Detector {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
+        let _ = self.macos_processes.metadata_for(&tracked_pids);
+        let codex_pids: Vec<_> = roots
+            .iter()
+            .filter(|(_, kind, _)| *kind == "codex")
+            .flat_map(|(root, _, _)| process_tree_pids(root.pid, &processes))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        self.macos_processes.refresh_codex_rollouts(&codex_pids);
         let metadata = self.macos_processes.metadata_for(&tracked_pids);
         let now = SystemTime::now();
         let window = self.conversation_window;

@@ -34,7 +34,16 @@ struct CachedMetadata {
     value: ProcessMetadata,
     checked_at: Instant,
     retry_soon: bool,
+    rollout_checked_at: Option<Instant>,
 }
+
+// Rollout files can be added to an already-running host process when the user
+// opens or resumes a Codex conversation. Keep this at the monitor cadence so
+// those sessions become visible without waiting for the long-lived process
+// metadata cache to expire.
+const METADATA_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const INCOMPLETE_METADATA_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const ROLLOUT_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 impl MacProcessSource {
     pub fn processes(&self) -> Vec<ProcessRecord> {
@@ -79,12 +88,12 @@ impl MacProcessSource {
             .filter(|pid| match self.metadata.get(pid) {
                 // A newly created/resumed process often races its first lsof
                 // read. Retry incomplete bindings at the monitor cadence rather
-                // than leaving a Codex rollout/cwd unavailable for 30 seconds.
+                // than leaving the Codex rollout/cwd unavailable across scans.
                 None => true,
                 Some(cached) if cached.retry_soon => {
-                    cached.checked_at.elapsed() >= Duration::from_secs(2)
+                    cached.checked_at.elapsed() >= INCOMPLETE_METADATA_RETRY_INTERVAL
                 }
-                Some(cached) => cached.checked_at.elapsed() >= Duration::from_secs(30),
+                Some(cached) => cached.checked_at.elapsed() >= METADATA_REFRESH_INTERVAL,
             })
             .collect();
         if !missing.is_empty() {
@@ -105,6 +114,10 @@ impl MacProcessSource {
                         value,
                         checked_at: now,
                         retry_soon,
+                        // The initial metadata read already includes rollout
+                        // handles; schedule the targeted follow-up from the
+                        // next monitor tick instead of issuing two lsof calls.
+                        rollout_checked_at: Some(now),
                     },
                 );
             }
@@ -117,6 +130,39 @@ impl MacProcessSource {
                     .map(|cached| (*pid, cached.value.clone()))
             })
             .collect()
+    }
+
+    /// Refresh only rollout handles for Codex process trees. Codex hosts can
+    /// open a new session while their process stays alive, so this is kept at
+    /// the monitor cadence without making every agent pay for a high-frequency
+    /// lsof call.
+    pub fn refresh_codex_rollouts(&mut self, pids: &[u32]) {
+        let now = Instant::now();
+        let due: Vec<_> = pids
+            .iter()
+            .copied()
+            .filter(|pid| {
+                self.metadata
+                    .get(pid)
+                    .and_then(|cached| cached.rollout_checked_at)
+                    .is_none_or(|at| at.elapsed() >= ROLLOUT_REFRESH_INTERVAL)
+            })
+            .collect();
+        if due.is_empty() {
+            return;
+        }
+        let fresh = read_lsof_metadata(&due);
+        for pid in due {
+            let Some(cached) = self.metadata.get_mut(&pid) else {
+                continue;
+            };
+            // Keep cwd from the slower metadata pass, but replace rollout
+            // handles so sessions opened by a long-lived host appear quickly.
+            if let Some(metadata) = fresh.get(&pid) {
+                cached.value.files = metadata.files.clone();
+            }
+            cached.rollout_checked_at = Some(now);
+        }
     }
 }
 
