@@ -5,6 +5,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Windows reports a contended `LockFileEx` as `ERROR_LOCK_VIOLATION`, which
+/// current Rust categorizes as `Uncategorized` rather than `WouldBlock`; the
+/// raw code means the same thing — someone else already holds the lock.
+const ERROR_LOCK_VIOLATION: i32 = 33;
+
 /// Keeps exactly one tray process active per user. The OS releases this lock
 /// even after a crash, so a stale path can never block a future launch.
 pub fn acquire() -> io::Result<Option<File>> {
@@ -35,7 +40,12 @@ fn acquire_at(path: &Path) -> io::Result<Option<File>> {
             write!(file, "{}\n", std::process::id())?;
             Ok(Some(file))
         }
-        Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(None),
+        Err(error)
+            if error.kind() == ErrorKind::WouldBlock
+                || error.raw_os_error() == Some(ERROR_LOCK_VIOLATION) =>
+        {
+            Ok(None)
+        }
         Err(error) => Err(error),
     }
 }

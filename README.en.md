@@ -334,7 +334,7 @@ These are acceptance targets; the current release workflow does not automate mea
 - [x] Precise Terminal/iTerm tab focus by TTY on macOS
 - [x] Native settings menu, six display options and macOS login-startup settings
 - [x] macOS LaunchAgent, Windows Startup and Linux XDG autostart entries
-- [ ] Precise focus of existing terminal windows on Windows/Linux (currently a safe fallback to launching/activating the terminal)
+- [ ] Precise focus of existing terminal windows on Windows/Linux (implemented: Windows restores and foregrounds the owning terminal window via Win32, Linux locates the terminal emulator window along the process tree; tick after on-device verification)
 
 The current version is a runnable first-stage skeleton, not yet a full feature-parity release; the item above is the hard scope before `v1.0.0`.
 

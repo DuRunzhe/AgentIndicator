@@ -112,3 +112,26 @@ ps -o pid,%cpu,rss,etime,command -p "$(pgrep -x agent-status-indicator)"
 - 当前界面兜底针对 macOS Terminal；没有终端读取权限、其他终端或全新提示布局时，仍依赖会话日志已有信号，不能保证识别所有审批。
 
 确认框保持未处理至少 20 秒（跨越多次 5 秒探测缓存刷新），状态应持续为等待确认，不应重复触发首次通知；1 分钟和 3 分钟的既有提醒仍保留。确认处理后，新日志活动或明确的终端执行信号应解除等待状态。
+
+## 终端聚焦手动验收（Windows / Linux）
+
+托盘菜单点击会话项时，应把承载该 Agent 的既有终端窗口带到前台，而不是新开终端。
+
+### Windows
+
+1. 在 Windows Terminal 中启动任一被监控 Agent（如 Claude Code），多开几个标签页。
+2. 切到其他应用，点击托盘菜单里该会话项：应切回 Windows Terminal 并置前对应窗口。
+3. 把该终端窗口最小化后重复上一步：窗口应先还原再置前。
+4. 用传统 conhost（cmd 窗口）重复第 2 步：应置前对应 conhost 窗口。
+5. 找不到所属窗口时（如宿主无窗口），应安全降级为启动新的 Windows Terminal，且不崩溃。
+
+### Linux（X11）
+
+1. 安装 xdotool（`sudo apt install xdotool`），在 GNOME Terminal / Konsole 等终端中启动被监控 Agent。
+2. 切到其他窗口，点击托盘菜单里该会话项：应置前承载该会话的终端窗口（即使窗口属于终端模拟器进程而非 shell 子进程）。
+3. 最小化后重试：应还原并置前。
+
+### Linux（降级路径）
+
+1. Wayland 会话（`echo $XDG_SESSION_TYPE` 输出 wayland）下点击：跳过 xdotool，直接启动默认终端（Wayland 无通用窗口激活接口，属预期限制）。
+2. X11 会话但未安装 xdotool 时点击：安全降级为启动 x-terminal-emulator / gnome-terminal。

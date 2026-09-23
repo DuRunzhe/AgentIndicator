@@ -1,0 +1,34 @@
+name: ci
+
+# Compile and run the test suite natively on every supported OS. This is the
+# first real compiler coverage for the Windows and Linux cfg branches, which
+# an Apple Silicon host cannot build. For a functional test of the Linux
+# focus path without any Linux machine, see scripts/test-linux-focus.sh.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # Keep build-machine paths out of binaries, mirroring release builds.
+      RUSTFLAGS: "--remap-path-prefix $HOME=~"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev pkg-config libssl-dev
+      - name: Run tests
+        run: cargo test --locked

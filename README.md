@@ -334,7 +334,7 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 - [x] macOS 按 TTY 精确定位 Terminal/iTerm 标签页
 - [x] 原生设置菜单、六项显示配置和 macOS 登录启动设置
 - [x] macOS LaunchAgent、Windows Startup、Linux XDG autostart 登录启动
-- [ ] Windows/Linux 对既有终端窗口的精确聚焦（当前安全降级为启动/激活终端）
+- [ ] Windows/Linux 对既有终端窗口的精确聚焦（实现已合入：Windows 直接走 Win32 还原并置前所属终端窗口，Linux 沿进程树定位终端模拟器窗口；待真机验收后勾选）
 
 当前版本是可运行的第一阶段骨架，尚不能视为完整功能等价版本；上面未完成项是发布 `v1.0.0` 前的硬性范围。
 
