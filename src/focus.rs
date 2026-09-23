@@ -105,8 +105,7 @@ fn find_visible_window(pids: &[u32]) -> Option<isize> {
 #[cfg(target_os = "windows")]
 fn foreground_window(hwnd_address: isize) -> bool {
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Threading::GetCurrentThreadId;
-    use windows::Win32::UI::Input::KeyboardAndMouse::AttachThreadInput;
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowThreadProcessId, IsIconic, SetForegroundWindow, ShowWindow,
         SW_RESTORE,

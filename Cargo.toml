@@ -33,7 +33,7 @@ block2 = "0.6.2"
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62.2", features = ["Foundation", "UI_Notifications", "Data_Xml_Dom", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading"] }
+windows = { version = "0.62.2", features = ["Foundation", "UI_Notifications", "Data_Xml_Dom", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"
