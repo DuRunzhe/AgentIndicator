@@ -1314,6 +1314,7 @@ mod tests {
         assert_eq!(rows[0].kind, "ChatGPT");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn conversation_labels_add_the_thread_title() {
         let cwd = Path::new("/Users/me/code/nita");
