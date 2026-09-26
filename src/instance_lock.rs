@@ -63,7 +63,21 @@ mod tests {
         let first = acquire_at(&path).unwrap().expect("first lock");
         assert!(acquire_at(&path).unwrap().is_none());
         drop(first);
-        assert!(acquire_at(&path).unwrap().is_some());
+        // Closing the descriptor releases the lock, but a child forked by a
+        // parallel test can transiently inherit the open file description
+        // before `exec` closes it. Poll instead of demanding immediate release.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let reacquired = loop {
+            if let Some(lock) = acquire_at(&path).unwrap() {
+                break lock;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lock was not released within 5s"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        drop(reacquired);
         let _ = fs::remove_file(path);
     }
 }
