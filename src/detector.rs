@@ -242,6 +242,7 @@ impl Detector {
                 match kind {
                     "claude" => enrich_claude(&mut instance, &mut self.sessions),
                     "codex" => {
+                        let resumed = codex_resume_session_id_from_command(&process.command);
                         let rollout = enrich_macos_codex(
                             &mut instance,
                             &mut self.sessions,
@@ -249,6 +250,7 @@ impl Detector {
                             codex_rollouts_from_metadata(&group_metadata),
                             &mut self.terminal,
                             host.is_none(),
+                            resumed.as_deref(),
                         );
                         // A hosted session lives inside the application's own
                         // conversation view, so clicking must open that thread
@@ -811,27 +813,52 @@ fn enrich_macos_codex(
     rollouts: Vec<PathBuf>,
     terminal: &mut crate::terminal::TerminalProbe,
     probe_terminal: bool,
+    resumed_session_id: Option<&str>,
 ) -> Option<PathBuf> {
     // Returns the rollout the reported facts came from, so a hosted session can
     // link to that exact conversation.
-    // A newly opened terminal Codex may not have created/opened its rollout yet.
-    // Do not fall back to the newest rollout in the same cwd: that belongs to
-    // another Codex process and would incorrectly mirror its state.
-    if rollouts.is_empty() {
-        instance.state = AgentState::Ready;
-        return None;
-    }
-    let chosen = most_actionable(
-        rollouts
-            .iter()
-            .filter_map(|path| Some((path.clone(), analyzer.analyze_codex_rollout(path)?))),
-        |(_, facts)| (facts.state.unwrap_or(AgentState::Stopped), facts.activity),
-    );
-    let (rollout, facts) = match chosen {
-        Some((path, facts)) => (Some(path), Some(facts)),
-        None => (None, None),
+    let (rollout, facts) = if rollouts.is_empty() {
+        // Newer Codex versions write conversations through a shared app-server
+        // daemon, so the terminal process no longer holds its own rollout open.
+        // Resolve the conversation from the session directory instead: a
+        // resumed session names its thread on the command line, and a fresh
+        // session owns the newest rollout created after the process started.
+        let facts = match instance.cwd.as_deref() {
+            Some(cwd) => match resumed_session_id {
+                Some(session_id) => analyzer.analyze_codex_session(session_id),
+                None => {
+                    // `ps` reports uptime to the second, so allow a few extra
+                    // seconds when deriving the process's start instant.
+                    let started = SystemTime::now()
+                        .checked_sub(instance.uptime + Duration::from_secs(5));
+                    analyzer.analyze_codex_for_cwd_since(cwd, started)
+                }
+            },
+            None => None,
+        };
+        match facts {
+            Some(facts) => (None, facts),
+            // A newly opened terminal Codex may not have created its rollout
+            // yet. Stay ready instead of mirroring another process's session.
+            None => {
+                instance.state = AgentState::Ready;
+                return None;
+            }
+        }
+    } else {
+        let chosen = most_actionable(
+            rollouts
+                .iter()
+                .filter_map(|path| Some((path.clone(), analyzer.analyze_codex_rollout(path)?))),
+            |(_, facts)| (facts.state.unwrap_or(AgentState::Stopped), facts.activity),
+        );
+        let Some((path, facts)) = chosen else {
+            // Leave the process-derived state untouched, matching the lsof path
+            // that a version still holding its own rollout would take.
+            return None;
+        };
+        (Some(path), facts)
     };
-    let facts = facts?;
     if let Some(cwd) = facts.cwd {
         instance.cwd = Some(cwd.clone());
         if let Some(project) = cwd.file_name().and_then(|name| name.to_str()) {
@@ -909,7 +936,15 @@ fn codex_resume_session_id_from_process_command(pid: u32) -> Option<String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "macos")]
+fn codex_resume_session_id_from_command(command: &str) -> Option<String> {
+    let args = command
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    codex_resume_session_id_from_args(&args)
+}
+
 fn codex_resume_session_id_from_args(args: &[String]) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == "resume")
@@ -1430,7 +1465,6 @@ mod tests {
         assert_eq!(display_name("deepseek"), "DeepSeek Harness");
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn extracts_resumed_codex_thread_id() {
         let args = vec![
@@ -1444,7 +1478,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn extracts_resumed_codex_thread_id_from_process_command() {
         let args = "/opt/homebrew/bin/codex resume 01a0103b-98d7-7581-b338-6407764039a9"
@@ -1454,6 +1487,25 @@ mod tests {
         assert_eq!(
             codex_resume_session_id_from_args(&args).as_deref(),
             Some("01a0103b-98d7-7581-b338-6407764039a9")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn extracts_resumed_codex_thread_id_from_the_command_line() {
+        assert_eq!(
+            codex_resume_session_id_from_command(
+                "/opt/homebrew/bin/codex resume 01a0103b-98d7-7581-b338-6407764039a9"
+            )
+            .as_deref(),
+            Some("01a0103b-98d7-7581-b338-6407764039a9")
+        );
+        // A fresh session carries no thread id to resolve.
+        assert!(codex_resume_session_id_from_command("/opt/homebrew/bin/codex").is_none());
+        // Switches such as `--last` are not thread ids.
+        assert!(
+            codex_resume_session_id_from_command("/opt/homebrew/bin/codex resume --last")
+                .is_none()
         );
     }
 

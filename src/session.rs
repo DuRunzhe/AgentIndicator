@@ -66,46 +66,52 @@ impl SessionAnalyzer {
         cwd: &Path,
         resumed_session_id: Option<&str>,
     ) -> Option<SessionFacts> {
-        let stale = self
-            .codex_indexed_at
-            .is_none_or(|at| at.elapsed() >= Duration::from_secs(30));
-        if stale {
-            self.refresh_codex_index();
-        }
         if let Some(session_id) = resumed_session_id {
-            if let Some((path, rollout_cwd)) = self
-                .codex_rollouts
-                .iter()
-                .find(|(path, _)| rollout_has_session_id(path, session_id))
-                .map(|(path, cwd)| (path.clone(), cwd.clone()))
-            {
-                return self.analyze_jsonl(&path, "codex").map(|mut facts| {
-                    facts.cwd = Some(rollout_cwd);
-                    facts
-                });
-            }
-            // A just-created session file can appear between the 30s index refreshes.
-            self.refresh_codex_index();
-            if let Some((path, rollout_cwd)) = self
-                .codex_rollouts
-                .iter()
-                .find(|(path, _)| rollout_has_session_id(path, session_id))
-                .map(|(path, cwd)| (path.clone(), cwd.clone()))
-            {
-                return self.analyze_jsonl(&path, "codex").map(|mut facts| {
-                    facts.cwd = Some(rollout_cwd);
-                    facts
-                });
+            if let Some(facts) = self.analyze_codex_session(session_id) {
+                return Some(facts);
             }
         }
         self.analyze_codex_for_cwd(cwd)
     }
 
-    pub fn analyze_codex_for_cwd(&mut self, cwd: &Path) -> Option<SessionFacts> {
-        let stale = self
+    /// Facts for the rollout named after `session_id`, when the session index
+    /// knows it. This is how a session is resolved once the process itself no
+    /// longer holds the rollout open (newer Codex versions write through a
+    /// shared app-server daemon). A just-created file can appear between the
+    /// 30s index refreshes, so a miss triggers one rescan, throttled so a
+    /// never-matching id cannot rescan the session directory on every tick.
+    pub fn analyze_codex_session(&mut self, session_id: &str) -> Option<SessionFacts> {
+        if self.codex_index_refresh_due() {
+            self.refresh_codex_index();
+        }
+        if let Some(facts) = self.codex_session_facts(session_id) {
+            return Some(facts);
+        }
+        if self
             .codex_indexed_at
-            .is_none_or(|at| at.elapsed() >= Duration::from_secs(30));
-        if stale {
+            .is_some_and(|at| at.elapsed() >= Duration::from_secs(2))
+        {
+            self.refresh_codex_index();
+            return self.codex_session_facts(session_id);
+        }
+        None
+    }
+
+    fn codex_session_facts(&mut self, session_id: &str) -> Option<SessionFacts> {
+        let (path, rollout_cwd) = self
+            .codex_rollouts
+            .iter()
+            .find(|(path, _)| rollout_has_session_id(path, session_id))
+            .map(|(path, cwd)| (path.clone(), cwd.clone()))?;
+        self.analyze_jsonl(&path, "codex").map(|mut facts| {
+            facts.cwd = Some(rollout_cwd);
+            facts
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn analyze_codex_for_cwd(&mut self, cwd: &Path) -> Option<SessionFacts> {
+        if self.codex_index_refresh_due() {
             self.refresh_codex_index();
         }
         let path = self
@@ -116,6 +122,38 @@ impl SessionAnalyzer {
             .max_by_key(|(modified, _)| *modified)
             .map(|(_, path)| path)?;
         self.analyze_jsonl(&path, "codex")
+    }
+
+    /// Facts for the newest rollout in `cwd` whose file was created at or after
+    /// `since`. `since` is the agent process's start time, and it guards against
+    /// mirroring an older conversation: a brand-new Codex process has no rollout
+    /// yet, so the newest file in the project would otherwise belong to a
+    /// previous session. This is only consulted when the process carries no
+    /// resume id, because a resumed session reuses a rollout created long before
+    /// the process started.
+    #[cfg(target_os = "macos")]
+    pub fn analyze_codex_for_cwd_since(
+        &mut self,
+        cwd: &Path,
+        since: Option<SystemTime>,
+    ) -> Option<SessionFacts> {
+        if self.codex_index_refresh_due() {
+            self.refresh_codex_index();
+        }
+        let path = self
+            .codex_rollouts
+            .iter()
+            .filter(|(_, rollout_cwd)| rollout_cwd == cwd)
+            .filter(|(path, _)| rollout_started_after(path, since))
+            .filter_map(|(path, _)| Some((path.metadata().ok()?.modified().ok()?, path.clone())))
+            .max_by_key(|(modified, _)| *modified)
+            .map(|(_, path)| path)?;
+        self.analyze_jsonl(&path, "codex")
+    }
+
+    fn codex_index_refresh_due(&self) -> bool {
+        self.codex_indexed_at
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(30))
     }
 
     pub fn analyze_codex_rollout(&mut self, path: &Path) -> Option<SessionFacts> {
@@ -199,7 +237,6 @@ impl SessionAnalyzer {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn rollout_has_session_id(path: &Path, session_id: &str) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -210,6 +247,20 @@ fn rollout_has_session_id(path: &Path, session_id: &str) -> bool {
                     .strip_suffix(".jsonl")
                     .is_some_and(|base| base.ends_with(session_id))
         })
+}
+
+/// Whether a rollout's file was created at or after `since`. Falls back to the
+/// modification time where birth time is unavailable. `None` accepts any file.
+#[cfg(target_os = "macos")]
+fn rollout_started_after(path: &Path, since: Option<SystemTime>) -> bool {
+    let Some(since) = since else { return true };
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    metadata
+        .created()
+        .or_else(|_| metadata.modified())
+        .is_ok_and(|started| started >= since)
 }
 
 fn collect_rollouts(directory: &Path, output: &mut Vec<(PathBuf, PathBuf)>) {
@@ -915,6 +966,85 @@ mod tests {
             Path::new("rollout-2026-08-21T23-36-17-01a024f7-3c9e-7670-926d-4bd8338eeae6.jsonl"),
             "01a0103b-98d7-7581-b338-6407764039a9"
         ));
+    }
+
+    #[test]
+    fn codex_session_resolves_by_resume_id() {
+        // Newer Codex versions leave the rollout open in a shared app-server
+        // daemon, so the terminal process must be bound by its `resume` id
+        // instead of by a file descriptor it owns.
+        let session_id = "01a0de1c-f66f-7e03-8ea5-9899852756cb";
+        let path = std::env::temp_dir().join(format!(
+            "rollout-2026-09-26T22-27-15-{session_id}.jsonl"
+        ));
+        std::fs::write(
+            &path,
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
+        )
+        .unwrap();
+        let cwd = PathBuf::from("/project/daemon");
+        let mut analyzer = SessionAnalyzer {
+            codex_rollouts: vec![(path.clone(), cwd.clone())],
+            codex_indexed_at: Some(Instant::now()),
+            ..Default::default()
+        };
+        let facts = analyzer.analyze_codex_session(session_id).expect("facts");
+        assert_eq!(facts.state, Some(AgentState::Working));
+        assert_eq!(facts.cwd, Some(cwd));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn codex_cwd_fallback_ignores_rollouts_older_than_the_process() {
+        let path = std::env::temp_dir().join(format!(
+            "agent-status-indicator-since-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
+        )
+        .unwrap();
+        let cwd = PathBuf::from("/project/since");
+        let mut analyzer = SessionAnalyzer {
+            codex_rollouts: vec![(path.clone(), cwd.clone())],
+            codex_indexed_at: Some(Instant::now()),
+            ..Default::default()
+        };
+        // The file exists now, so it belongs to a process that started in the
+        // past but not to one whose start time is still in the future.
+        assert!(analyzer
+            .analyze_codex_for_cwd_since(&cwd, Some(SystemTime::now() - Duration::from_secs(600)))
+            .is_some());
+        assert!(analyzer
+            .analyze_codex_for_cwd_since(&cwd, Some(SystemTime::now() + Duration::from_secs(600)))
+            .is_none());
+        assert!(analyzer.analyze_codex_for_cwd_since(&cwd, None).is_some());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_rollout_headers_stay_user_conversations() {
+        // Codex 0.89 wrote no `thread_source`; the `source` string alone must
+        // keep classifying it as a normal user conversation so the session-dir
+        // fallback can still bind an older session.
+        let path = std::env::temp_dir().join(format!(
+            "agent-status-indicator-legacy-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/project/legacy\",\"id\":\"019bf430-58c3-7a4d-9f1e-2b3c4d5e6f70\",\"cli_version\":\"0.89.0\",\"source\":\"cli\"}}\n",
+        )
+        .unwrap();
+        let header = codex_rollout_header(&path).expect("header");
+        assert!(header.user_thread);
+        assert_eq!(
+            primary_codex_rollout_cwd(&path),
+            Some(PathBuf::from("/project/legacy"))
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
