@@ -154,7 +154,7 @@ jobs:
           else
             NOTE="This is a stable release: npm \`latest\` now points to \`$VERSION\`, so \`npm install -g agent-status-indicator\` installs it."
           fi
-          BODY="$(gh release view "$TAG" --json body -q .body)"
+          BODY="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body)"
           if [[ "$BODY" == *"## npm"* ]]; then
             echo "npm note already present; nothing to change"
             exit 0
@@ -164,7 +164,7 @@ jobs:
           else
             printf '## npm\n\n%s\n' "$NOTE" > /tmp/notes.md
           fi
-          gh release edit "$TAG" --notes-file /tmp/notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file /tmp/notes.md
 
   # Developer ID signing + notarization. Secrets never reach other jobs or any
   # pull-request trigger; they exist only in this tag-only job's environment
