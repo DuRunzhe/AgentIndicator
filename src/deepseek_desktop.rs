@@ -566,6 +566,15 @@ pub fn session_cache_root() -> Option<PathBuf> {
     Some(session_cache_root_for(&default_home()?))
 }
 
+/// `DSH_HOME` when the environment names one.
+///
+/// The diagnostic honours this ahead of a running host's profile: an explicit
+/// environment is a deliberate override, and without it a test fixture could
+/// never be inspected while the app was open.
+pub fn env_home() -> Option<PathBuf> {
+    std::env::var_os("DSH_HOME").map(PathBuf::from)
+}
+
 /// The profile root the desktop app uses when it was not started with an
 /// explicit one.
 fn default_home() -> Option<PathBuf> {

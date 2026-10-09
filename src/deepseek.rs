@@ -249,8 +249,13 @@ pub fn event_role(event_type: &str) -> EventRole {
     match event_type {
         "turn/start" => EventRole::TurnStart,
         "turn/end" => EventRole::TurnEnd,
+        // `assistant/attempt` is deliberately absent: it records that an attempt
+        // was *started*, and the very attempt the retry plugin makes after
+        // spending its budget emits one. Counting it cleared each failure
+        // immediately after recording it, so an offline session still read as
+        // recovered. Progress is substantive evidence instead — content
+        // produced, an action taken, or something the user said.
         "assistant/message"
-        | "assistant/attempt"
         | "assistant/live-chunk"
         | "tool/call"
         | "tool/result"
@@ -437,9 +442,10 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
                     approvals.remove(id);
                 }
             }
-            Some("assistant/attempt") => {
-                timeline.progressed(event["seq"].as_u64().unwrap_or_default());
-            }
+            // An attempt that was started, not one that succeeded: the retry
+            // plugin's final attempt emits this too, so it must not clear a
+            // failure. It is inert for every other purpose as well.
+            Some("assistant/attempt") => {}
             Some("tool/call") => {
                 timeline.progressed(event["seq"].as_u64().unwrap_or_default());
                 if data["name"] == "ask_user_question" {
@@ -610,6 +616,34 @@ mod tests {
         );
         assert_eq!(extended.unknown_events(), 2);
         assert_eq!(baseline.unknown_events(), 0);
+    }
+
+    #[test]
+    fn a_started_attempt_is_not_evidence_of_recovery() {
+        // The exact live shape that defeated the previous rule: the retry
+        // plugin spends its budget, then starts the attempt that fails, and
+        // that attempt emits `assistant/attempt`. Counting it as progress
+        // cleared the failure immediately after recording it.
+        let events = [
+            r#"{"seq":1,"type":"turn/start","data":{}}"#,
+            r#"{"seq":2,"type":"step/start","data":{"turn":1,"step":1}}"#,
+            r#"{"seq":3,"type":"user/message","data":{}}"#,
+            r#"{"seq":4,"type":"assistant/attempt","data":{}}"#,
+            r#"{"seq":5,"type":"llm/retry","data":{"retry":1,"maxRetries":5,"mode":"normal"}}"#,
+            r#"{"seq":6,"type":"assistant/attempt","data":{}}"#,
+            r#"{"seq":7,"type":"llm/retry","data":{"retry":5,"maxRetries":5,"mode":"normal"}}"#,
+            r#"{"seq":8,"type":"assistant/attempt","data":{}}"#,
+            r#"{"seq":9,"type":"step/end","data":{"turn":1,"step":1}}"#,
+            r#"{"seq":10,"type":"turn/end","data":{"turn":1}}"#,
+        ];
+        assert!(
+            timeline_of(&events).failure_current(),
+            "an offline session must stay failed: attempt/step-end/turn-end are not recovery"
+        );
+        // Real content after it is recovery.
+        let mut recovered = events.to_vec();
+        recovered.push(r#"{"seq":11,"type":"assistant/message","data":{}}"#);
+        assert!(!timeline_of(&recovered).failure_current());
     }
 
     #[test]

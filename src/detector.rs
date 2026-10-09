@@ -1304,7 +1304,7 @@ pub fn diagnose_deepseek_desktop() -> Value {
             desktop_roots(&processes)
                 .into_iter()
                 .map(|(process, detected)| {
-                    home = detected.clone();
+                    home = crate::deepseek_desktop::env_home().or_else(|| detected.clone());
                     serde_json::json!({
                         "pid": process.pid,
                         "ppid": process.ppid,
@@ -1324,6 +1324,8 @@ pub fn diagnose_deepseek_desktop() -> Value {
     {
         // The analyzer falls back to `DSH_HOME` (or `~/.dsh`) on its own; only
         // an explicitly discovered home is passed through here.
+        home = None;
+    } else if crate::deepseek_desktop::env_home().is_none() && home.is_none() {
         home = None;
     }
     // The same work the 2-second scan does, timed. `cold` reads every session
