@@ -101,7 +101,12 @@ struct CachedSession {
     modified: SystemTime,
     size: u64,
     checked: Instant,
+    /// The parsed projection. Its `state` is always the projection's own, so a
+    /// signal applied on an earlier scan cannot survive into this one.
     facts: Option<DesktopSession>,
+    /// What this scan reports after applying the event-log signals. Derived from
+    /// `facts` on every read.
+    applied: Option<DesktopSession>,
 }
 
 /// Reads the desktop profile's session projection cache, reusing the previous
@@ -177,6 +182,7 @@ impl DeepSeekDesktopAnalyzer {
                     modified,
                     size: metadata.len(),
                     checked: Instant::now(),
+                    applied: facts.clone(),
                     facts,
                 },
             );
@@ -218,8 +224,13 @@ impl DeepSeekDesktopAnalyzer {
                 let fresh = now_wall
                     .duration_since(session.activity)
                     .is_ok_and(|age| age < FAILURE_OBSERVATION_WINDOW);
-                (session.turn_open || session.state == AgentState::Error || fresh)
-                    .then(|| session.id.clone())
+                // `applied` carries the failure found on an earlier scan; the raw
+                // projection decides the rest.
+                let reported_error = cached
+                    .applied
+                    .as_ref()
+                    .is_some_and(|s| s.state == AgentState::Error);
+                (session.turn_open || reported_error || fresh).then(|| session.id.clone())
             })
             .collect();
         for id in &active {
@@ -259,18 +270,18 @@ impl DeepSeekDesktopAnalyzer {
                     log: signature,
                 },
             );
-            // The projection drives an open step; the event log decides the
-            // rest. A conversation already waiting for the user keeps that
-            // state, and an error outranks a finished step, so a failed turn is
-            // reported as failed instead of ready.
+            // Recompute the reported state from the projection rather than
+            // editing the previous answer: a finished turn must be able to drop
+            // a "working" that was true one scan ago.
             for cached in self.cache.values_mut() {
-                let Some(facts) = cached.facts.as_mut() else {
+                let Some(facts) = cached.facts.as_ref() else {
                     continue;
                 };
                 if &facts.id != id {
                     continue;
                 }
-                facts.state = if facts.turn_open {
+                let projected = facts.state;
+                let state = if facts.turn_open {
                     if signals.approval_asked {
                         AgentState::Waiting
                     } else {
@@ -278,13 +289,13 @@ impl DeepSeekDesktopAnalyzer {
                     }
                 } else if signals.error {
                     AgentState::Error
-                } else if facts.state == AgentState::Waiting
-                    || facts.state == AgentState::WaitingReply
-                {
-                    facts.state
                 } else {
-                    AgentState::Ready
+                    projected
                 };
+                cached.applied = Some(DesktopSession {
+                    state,
+                    ..facts.clone()
+                });
             }
         }
         // A conversation that neither works nor shows a failure needs no signals.
@@ -334,7 +345,7 @@ impl DeepSeekDesktopAnalyzer {
         let mut sessions: Vec<DesktopSession> = self
             .cache
             .values()
-            .filter_map(|cached| cached.facts.clone())
+            .filter_map(|cached| cached.applied.clone())
             .filter(|session| started(session) && worth_showing(session, now, window))
             .collect();
         sessions.sort_by(|left, right| {
@@ -552,6 +563,9 @@ fn parse_session_file(path: &Path, modified: SystemTime) -> Option<DesktopSessio
             .filter(|cwd| !cwd.is_empty())
             .map(PathBuf::from),
         title: title_of(rows),
+        // The projection's own state. Never edited after this: the applied view
+        // lives in `CachedSession::applied`, so a turn that ends can drop the
+        // "working" this state reported while its step was open.
         state: state_of(rows),
         turn_open: turn_open(rows),
         automatic_confirmation_mode: rows["permissions"]["val"]["approval"].as_str()
@@ -1056,6 +1070,52 @@ mod tests {
             "ask",
         )));
         assert!(!asked.automatic_confirmation_mode);
+    }
+
+    #[test]
+    fn a_turn_that_ends_drops_the_working_state() {
+        // Regression: the applied state used to be written back over the
+        // projection's own, so once a scan reported "working" the row kept
+        // reporting it after the turn ended — the cache was reused (size and
+        // modification time unchanged) and the session had dropped out of the
+        // observation set, so nothing ever recomputed it.
+        let home = std::env::temp_dir().join(format!(
+            "asi-desktop-latch-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        let cache = home.join("storages/session_projcache/sessions");
+        std::fs::create_dir_all(&cache).unwrap();
+        let document = |open_step: Value| {
+            serde_json::to_string(&session_document(rows(
+                open_step,
+                json!({}),
+                json!([]),
+                json!("一轮结束后不应还是进行中"),
+            )))
+            .unwrap()
+        };
+        let file = cache.join("session-latch.json");
+        std::fs::write(&file, document(json!({ "turn": 1, "step": 1 }))).unwrap();
+
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&home));
+        assert_eq!(analyzer.sessions(None)[0].state, AgentState::Working);
+
+        // The turn ends: the app rewrites the cache with no open step.
+        std::fs::write(&file, document(json!(null))).unwrap();
+        analyzer.refresh(Some(&home));
+        assert_eq!(
+            analyzer.sessions(None)[0].state,
+            AgentState::Ready,
+            "a finished turn must not keep reporting the working state"
+        );
+
+        // And a session that leaves the observation set entirely still reads the
+        // projection, because the reported state is derived, never latched.
+        let mut fresh = DeepSeekDesktopAnalyzer::default();
+        fresh.refresh(Some(&home));
+        assert_eq!(fresh.sessions(None)[0].state, AgentState::Ready);
     }
 
     #[test]
