@@ -558,6 +558,9 @@ fn desktop_rows(
     let display = display_name("deepseek");
     let pid = host.map_or(0, |(pid, _)| pid);
     let uptime = host.map_or(Duration::ZERO, |(_, uptime)| uptime);
+    // Whether a window exists to bring forward, which decides where a
+    // conversation the CLI is not currently writing navigates.
+    let host_running = host.is_some();
     if sessions.is_empty() {
         // With no conversations in range the application still gets a row, but
         // only while it is running: "ready" describes a window that is open, and
@@ -603,7 +606,7 @@ fn desktop_rows(
             // Where a row navigates follows whoever is driving the conversation:
             // the `dsh web` UI when a CLI owns it, otherwise the desktop window,
             // which has no per-conversation deep link yet.
-            open_url: session_target(session, drivers),
+            open_url: session_target(session, drivers, host.is_some()),
             automatic_confirmation_mode: session.automatic_confirmation_mode,
             informational: false,
         })
@@ -689,18 +692,27 @@ fn desktop_label(session: &crate::deepseek_desktop::DesktopSession) -> String {
 /// Where a conversation row navigates.
 ///
 /// A `dsh` CLI process serves a project's conversations over its own web UI; the
-/// desktop application shows them in its window. The conversation a CLI is writing
-/// is the one it is showing, so that conversation — and only that one — opens the
-/// web UI; every other conversation in the project is the application's and brings
-/// its window forward.
+/// desktop application shows them in its window. Two rules, in order:
+///
+/// 1. The conversation the CLI is writing is the one it is showing, so it opens
+///    the web UI. This holds whether or not the window is open.
+/// 2. Everything else in a project a CLI serves opens the web UI too when the
+///    window is *not* running: the application cannot be activated, so its web UI
+///    is the only destination the conversation has. While the window is open the
+///    same conversations belong to it and bring it forward.
+///
+/// The web UI has no per-conversation route, so a destination is the UI, not one
+/// conversation inside it.
 fn session_target(
     session: &crate::deepseek_desktop::DesktopSession,
     drivers: &[DeepSeekDriver],
+    host_running: bool,
 ) -> Option<String> {
     let cwd = session.cwd.as_deref()?;
     let driver = drivers.iter().find(|driver| driver.project == cwd)?;
-    if driver.driven.as_deref() == Some(session.id.as_str()) {
-        return driver.web_url.clone();
+    let url = driver.web_url.clone()?;
+    if driver.driven.as_deref() == Some(session.id.as_str()) || !host_running {
+        return Some(url);
     }
     None
 }
@@ -2366,24 +2378,38 @@ mod tests {
             web_url: Some("http://127.0.0.1:3080/".into()),
             driven: Some("session-driven".into()),
         }];
+        // The conversation a CLI is writing opens its web UI, window or not.
         assert_eq!(
-            session_target(&session, &drivers).as_deref(),
+            session_target(&session, &drivers, true).as_deref(),
+            Some("http://127.0.0.1:3080/")
+        );
+        assert_eq!(
+            session_target(&session, &drivers, false).as_deref(),
             Some("http://127.0.0.1:3080/")
         );
 
-        // A different conversation in the same project is the application's.
+        // Another conversation in the project belongs to the window while it is
+        // open…
         let other = desktop_session("session-other", AgentState::Ready);
-        assert_eq!(session_target(&other, &drivers), None);
+        assert_eq!(session_target(&other, &drivers, true), None);
+        // …and to the web UI when it is not, because the window cannot be
+        // activated and that UI is the only destination left.
+        assert_eq!(
+            session_target(&other, &drivers, false).as_deref(),
+            Some("http://127.0.0.1:3080/")
+        );
 
-        // No CLI serving that project: nothing to navigate to but the window.
-        assert_eq!(session_target(&session, &[]), None);
+        // No CLI serving that project: the window is the only destination.
+        assert_eq!(session_target(&session, &[], true), None);
+        assert_eq!(session_target(&session, &[], false), None);
         // A CLI with no listening address cannot be navigated to either.
         let silent = [DeepSeekDriver {
             project: PathBuf::from("/Users/me/code/nita"),
             web_url: None,
             driven: Some("session-driven".into()),
         }];
-        assert_eq!(session_target(&session, &silent), None);
+        assert_eq!(session_target(&session, &silent, true), None);
+        assert_eq!(session_target(&session, &silent, false), None);
     }
 
     #[test]
