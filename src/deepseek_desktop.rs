@@ -44,12 +44,20 @@ pub const MAX_DESKTOP_ROWS: usize = 8;
 /// Longest conversation title kept in a row label, matching the Codex rows.
 const TITLE_LIMIT: usize = 24;
 
-/// What a session's event log says beyond the projection cache: whether an
-/// approval prompt is still unanswered, and whether the tail carries a failure.
+/// What a session's event log says beyond the projection cache: whether the user
+/// is being waited on, and whether the tail carries a failure.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct LogSignals {
     /// An `approval/asked` event with no matching `approval/decided` yet.
     approval_asked: bool,
+    /// An `ask_user_question` call whose result has not arrived.
+    ///
+    /// This is the only reliable way to see a question: while one is pending the
+    /// desktop projection reports no open step at all, and its
+    /// `userQuestions.active` row stayed empty in every observation, so the
+    /// pending tool call is what distinguishes "waiting for the user" from
+    /// "working".
+    question_pending: bool,
     /// An error, failed turn or dropped connection in the tail.
     error: bool,
 }
@@ -281,12 +289,12 @@ impl DeepSeekDesktopAnalyzer {
                     continue;
                 }
                 let projected = facts.state;
-                let state = if facts.turn_open {
-                    if signals.approval_asked {
-                        AgentState::Waiting
-                    } else {
-                        AgentState::Working
-                    }
+                let state = if signals.question_pending {
+                    AgentState::WaitingReply
+                } else if signals.approval_asked {
+                    AgentState::Waiting
+                } else if facts.turn_open {
+                    AgentState::Working
                 } else if signals.error {
                     AgentState::Error
                 } else {
@@ -411,15 +419,30 @@ fn log_signature(path: &Path) -> Option<(u64, SystemTime)> {
 fn log_signals(text: &str) -> LogSignals {
     let mut signals = LogSignals::default();
     let mut asked: Vec<String> = Vec::new();
+    let mut question_calls: Vec<String> = Vec::new();
     for line in text.lines() {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        let id = event["data"]["id"].as_str().unwrap_or_default();
+        let data = &event["data"];
+        let id = data["id"].as_str().unwrap_or_default();
         match event["type"].as_str() {
             Some("approval/asked") if !id.is_empty() => asked.push(id.to_owned()),
             Some("approval/decided") if !id.is_empty() => {
                 asked.retain(|candidate| candidate != id);
+            }
+            Some("tool/call") if data["name"] == "ask_user_question" => {
+                if let Some(call_id) = data["callId"].as_str().filter(|id| !id.is_empty()) {
+                    question_calls.push(call_id.to_owned());
+                }
+            }
+            Some("tool/result") => {
+                if let Some(call_id) = data["message"]["source"]["callId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                {
+                    question_calls.retain(|candidate| candidate != call_id);
+                }
             }
             Some("error" | "turn/error" | "turn/failed" | "connection/error") => {
                 signals.error = true;
@@ -428,6 +451,7 @@ fn log_signals(text: &str) -> LogSignals {
         }
     }
     signals.approval_asked = !asked.is_empty();
+    signals.question_pending = !question_calls.is_empty();
     signals
 }
 
@@ -922,6 +946,29 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_question_is_waiting_for_a_reply() {
+        // The desktop projection reports no open step while a question is on
+        // screen, so this pair of events is the only thing that distinguishes
+        // "waiting for the user" from "working".
+        let call = "{\"type\":\"tool/call\",\"data\":{\"callId\":\"q1\",\"name\":\"ask_user_question\"}}\n";
+        let signals = log_signals(call);
+        assert!(signals.question_pending);
+        // A different tool is ordinary work.
+        let work = "{\"type\":\"tool/call\",\"data\":{\"callId\":\"b1\",\"name\":\"bash\"}}\n";
+        assert!(!log_signals(work).question_pending);
+        // The answer arrives as the tool result for that call.
+        let answered = format!(
+            "{call}{{\"type\":\"tool/result\",\"data\":{{\"message\":{{\"source\":{{\"callId\":\"q1\"}}}}}}}}\n"
+        );
+        assert!(!log_signals(&answered).question_pending);
+        // An unrelated result must not clear it.
+        let unrelated = format!(
+            "{call}{{\"type\":\"tool/result\",\"data\":{{\"message\":{{\"source\":{{\"callId\":\"other\"}}}}}}}}\n"
+        );
+        assert!(log_signals(&unrelated).question_pending);
+    }
+
+    #[test]
     fn a_failure_in_the_tail_is_recognized() {
         for event in ["error", "turn/error", "turn/failed", "connection/error"] {
             let line = format!("{{\"type\":\"{event}\",\"data\":{{}}}}\n");
@@ -1070,6 +1117,66 @@ mod tests {
             "ask",
         )));
         assert!(!asked.automatic_confirmation_mode);
+    }
+
+    #[test]
+    fn a_live_pending_question_reads_as_waiting_for_a_reply() {
+        if !zstd_available() {
+            return;
+        }
+        // The exact live shape: no open step, one pending call in the projection,
+        // and the log holding the unanswered `ask_user_question` call.
+        let id = "session-live-question";
+        let home = std::env::temp_dir().join(format!(
+            "asi-desktop-question-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        let cache = home.join("storages/session_projcache/sessions");
+        std::fs::create_dir_all(&cache).unwrap();
+        let rows = rows_plain(
+            json!(null),
+            json!({ "q1": { "name": "ask_user_question" } }),
+            json!([]),
+            json!("等你回答"),
+        );
+        std::fs::write(
+            cache.join(format!("{id}.json")),
+            serde_json::to_string(&session_document(rows)).unwrap(),
+        )
+        .unwrap();
+        let log = home
+            .join("sessions")
+            .join("--Users-me-code-app--")
+            .join(id)
+            .join("session.v4.jsonl.zstd");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        compress(
+            "{\"type\":\"tool/call\",\"data\":{\"callId\":\"q1\",\"name\":\"ask_user_question\"}}\n",
+            &log,
+        );
+
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&home));
+        let sessions = analyzer.sessions(None);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].state, AgentState::WaitingReply);
+        assert!(needs_attention(sessions[0].state));
+
+        // Answering it settles the call in both places: the app rewrites the
+        // projection without the pending call and appends the tool result.
+        let settled = rows_plain(json!(null), json!({}), json!([]), json!("等你回答"));
+        std::fs::write(
+            cache.join(format!("{id}.json")),
+            serde_json::to_string(&session_document(settled)).unwrap(),
+        )
+        .unwrap();
+        compress(
+            "{\"type\":\"tool/call\",\"data\":{\"callId\":\"q1\",\"name\":\"ask_user_question\"}}\n{\"type\":\"tool/result\",\"data\":{\"message\":{\"source\":{\"callId\":\"q1\"}}}}\n",
+            &log,
+        );
+        analyzer.refresh(Some(&home));
+        assert_eq!(analyzer.sessions(None)[0].state, AgentState::Ready);
     }
 
     #[test]
