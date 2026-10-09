@@ -198,21 +198,12 @@ impl Detector {
             .collect();
         // The desktop application hosts every conversation it has open in one
         // process, so its rows come from the profile's session cache instead of
-        // from the process tree.
-        for (process, home) in desktop_hosts {
-            instances.retain(|instance| instance.pid != process.pid);
-            let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
-            instances.extend(desktop_rows(
-                Some((process.pid, process.uptime)),
-                &sessions,
-                &drivers,
-            ));
-            instances.extend(desktop_overflow_row(process.pid, hidden));
-            instances.extend(desktop_alert_row(process.pid, alert));
-        }
-        if let Ok(mut snapshot) = DRIVERS_SNAPSHOT.lock() {
-            *snapshot = drivers.clone();
-        }
+        // from the process tree. The conversations are listed whether or not the
+        // application is running, because the CLI shares the profile they live in.
+        let (sessions, hidden, alert) = self.deepseek_desktop_overview(None);
+        instances.extend(desktop_rows(None, &sessions, &[]));
+        instances.extend(desktop_overflow_row(0, hidden));
+        instances.extend(desktop_alert_row(0, alert));
         enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
             if !instances
@@ -1624,7 +1615,10 @@ pub fn diagnose_deepseek_desktop() -> Value {
         "processes": [],
         "sessions": [],
     });
-    // The DeepSeek CLI's process chain, to explain a missing driver.
+    // The DeepSeek CLI's process chain, to explain a missing driver. The macOS
+    // process source is the only one that reports `comm` and the full command
+    // line together, so the probe is macOS-only.
+    #[cfg(target_os = "macos")]
     {
         let source = crate::macos_process::MacProcessSource::default();
         let processes = source.processes();
