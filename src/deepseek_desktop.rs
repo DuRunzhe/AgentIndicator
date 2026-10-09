@@ -77,6 +77,9 @@ struct LogSignals {
     /// undecidable. Counted because a renamed field would otherwise look like a
     /// normal, healthy retry.
     retry_unjudged: u32,
+    /// How long the conversation's current (or last) run has lasted, from the
+    /// turn boundaries in the log. `None` when the tail held no turn.
+    run: Option<Duration>,
 }
 
 /// Cached log signals with the evidence they came from: when they were read and
@@ -108,8 +111,13 @@ pub struct DesktopSession {
     /// the conversation. Only a conversation that never recorded a prompt falls
     /// back to its file's timestamp.
     pub activity: SystemTime,
-    /// Creation time of the conversation, used as the row's age.
-    pub created: Option<SystemTime>,
+    /// When the newest prompt arrived, from the projection. A run whose start
+    /// has scrolled out of the event-log tail still has this anchor.
+    pub last_prompt: Option<SystemTime>,
+    /// How long the conversation's current run has lasted, measured from the
+    /// log's turn boundaries. `None` when no log was read, in which case the
+    /// row falls back to the application's own uptime.
+    pub run: Option<Duration>,
     /// Whether a turn or step is still in flight. Unlike `state` this stays true
     /// while the conversation waits for an approval prompt, which is what the
     /// event-log pass keys on.
@@ -470,6 +478,19 @@ impl DeepSeekDesktopAnalyzer {
                 };
                 cached.applied = Some(DesktopSession {
                     state,
+                    // The run length comes from the log's turn boundaries, and
+                    // falls back to the current prompt's arrival when the tail
+                    // no longer reaches back that far: a long conversation
+                    // scrolls its `turn/start` out of the window, and the prompt
+                    // time is the same moment without being truncated.
+                    run: signals.run.or_else(|| {
+                        facts.turn_open.then(|| {
+                            facts
+                                .last_prompt
+                                .and_then(|prompt| SystemTime::now().duration_since(prompt).ok())
+                                .unwrap_or_default()
+                        })
+                    }),
                     ..facts.clone()
                 });
             }
@@ -570,6 +591,11 @@ impl DeepSeekDesktopAnalyzer {
             "logSignature": read.and_then(|state| state.log).map(|(size, _)| size),
             "readAgoSecs": read.map(|state| state.checked.elapsed().as_secs_f64()),
             "inObservation": signals.is_some(),
+            // How long the current run has lasted, as the row would show it.
+            "runSecs": cached
+                .and_then(|cached| cached.applied.as_ref())
+                .and_then(|session| session.run)
+                .map(|run| run.as_secs()),
         })
     }
 
@@ -629,6 +655,10 @@ fn log_signals(text: &str) -> LogSignals {
     let mut timeline = crate::deepseek::Timeline::default();
     for event in crate::deepseek::session_events(text) {
         use crate::deepseek::EventRole;
+        // Stamp the event's own wall clock before its role is dispatched: the
+        // turn boundaries it carries are the only record of when the current
+        // run began.
+        timeline.at(event["time"].as_u64());
         let data = &event["data"];
         let seq = event["seq"].as_u64().unwrap_or_default();
         let id = data["id"].as_str().unwrap_or_default();
@@ -667,6 +697,7 @@ fn log_signals(text: &str) -> LogSignals {
     signals.error = timeline.failure_current();
     signals.unknown_events = timeline.unknown_events();
     signals.retry_unjudged = timeline.unjudged_retries();
+    signals.run = timeline.run_duration(now_millis());
     signals
 }
 
@@ -849,8 +880,20 @@ fn parse_session_file(path: &Path, modified: SystemTime) -> Option<DesktopSessio
             .map(str::to_owned),
         context: context_of(&rows["contextPressure"]["val"]),
         activity: millis(&rows["sessionListMetadata"]["val"]["lastPromptAt"]).unwrap_or(modified),
-        created: millis(&record["identity"]["createdAt"]),
+        last_prompt: millis(&rows["sessionListMetadata"]["val"]["lastPromptAt"]),
+        // Filled from the event log, which is the only place a turn's start is
+        // recorded. A conversation without a readable log keeps `None` and the
+        // row falls back to the application's uptime.
+        run: None,
     })
+}
+
+/// The current wall clock in the unit the log's `time` field uses.
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 /// Which of the rows this build depends on are absent. A missing row is not
@@ -1827,7 +1870,8 @@ mod tests {
                 context: None,
                 // Older as the index grows, so index 0 is the newest.
                 activity: now - Duration::from_secs(index),
-                created: None,
+                last_prompt: None,
+                run: None,
                 turn_open: false,
                 automatic_confirmation_mode: false,
                 missing_rows: 0,
@@ -1869,7 +1913,8 @@ mod tests {
             model: None,
             context: None,
             activity: now - Duration::from_secs(age_secs),
-            created: None,
+            last_prompt: None,
+            run: None,
             turn_open: false,
             automatic_confirmation_mode: false,
             missing_rows: 0,

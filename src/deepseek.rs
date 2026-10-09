@@ -352,6 +352,18 @@ pub struct Timeline {
     /// Retry records whose budget was unreadable, so whether they were spent
     /// could not be decided.
     unjudged: u32,
+    /// The timestamp of the event currently being applied.
+    pending_time: Option<u64>,
+    /// Wall-clock start of the turn currently in flight, from the event's own
+    /// `time`. This is what a row's duration measures: how long the current
+    /// *run* has been going, not how old the conversation is.
+    turn_started_at: Option<u64>,
+    /// Wall-clock end of the most recent turn that closed, so a finished
+    /// conversation can report how long its last run took instead of showing
+    /// nothing.
+    turn_ended_at: Option<u64>,
+    /// Wall-clock start of the most recent turn that closed.
+    last_turn_started_at: Option<u64>,
 }
 
 /// The events of a log tail, in order, for the state machine to consume.
@@ -363,6 +375,7 @@ pub fn session_events(text: &str) -> impl Iterator<Item = Value> + '_ {
 impl Timeline {
     /// A turn opened; a failure recorded in an earlier turn cannot be current.
     pub fn turn_started(&mut self) {
+        self.turn_started_at = self.pending_time;
         self.turn_open = true;
         self.failed_at = None;
     }
@@ -370,7 +383,30 @@ impl Timeline {
     /// A turn closed on its own. Deliberately *not* recovery: a failed turn
     /// closes itself, which is the shape an offline session leaves behind.
     pub fn turn_ended(&mut self) {
+        if self.turn_open {
+            self.last_turn_started_at = self.turn_started_at;
+            self.turn_ended_at = self.pending_time;
+        }
         self.turn_open = false;
+    }
+
+    /// The event's own timestamp, set before each role is dispatched. Events
+    /// carry `time` in milliseconds; the log is the only place a turn's start
+    /// is recorded.
+    pub fn at(&mut self, millis: Option<u64>) {
+        self.pending_time = millis;
+    }
+
+    /// How long the current run has lasted, or `None` when the log showed no
+    /// turn at all. An open turn measures up to `now`; a closed one reports the
+    /// span it actually took.
+    pub fn run_duration(&self, now_millis: u64) -> Option<Duration> {
+        if self.turn_open {
+            let started = self.turn_started_at?;
+            return Some(Duration::from_millis(now_millis.saturating_sub(started)));
+        }
+        let (started, ended) = (self.last_turn_started_at?, self.turn_ended_at?);
+        Some(Duration::from_millis(ended.saturating_sub(started)))
     }
 
     /// The conversation moved on.

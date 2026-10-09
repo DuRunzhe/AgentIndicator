@@ -433,10 +433,15 @@ fn desktop_rows(
             pid,
             cwd: session.cwd.clone(),
             state: session.state,
-            uptime: session
-                .created
-                .and_then(|created| SystemTime::now().duration_since(created).ok())
-                .unwrap_or(uptime),
+            // How long this run has lasted, not how old the conversation is: a
+            // conversation created months ago and used today is minutes old.
+            //
+            // No measured run means *no duration*, not the application's uptime:
+            // the app runs for weeks, so borrowing its uptime is what produced
+            // absurd values like "1337h" on conversations the tray had not read.
+            // The value is display-only (ordering uses the state), so silence is
+            // better than a wrong number.
+            uptime: session.run.unwrap_or(Duration::ZERO),
             model: session.model.clone(),
             context: session.context.clone(),
             // The desktop app has no per-conversation deep link yet, so clicking
@@ -1970,7 +1975,8 @@ mod tests {
                 window_tokens: 1_000_000,
             }),
             activity: SystemTime::now(),
-            created: Some(SystemTime::now() - Duration::from_secs(600)),
+            last_prompt: Some(SystemTime::now() - Duration::from_secs(600)),
+            run: None,
             turn_open: true,
             automatic_confirmation_mode: false,
             missing_rows: 0,
@@ -1979,11 +1985,8 @@ mod tests {
 
     #[test]
     fn desktop_conversations_own_their_rows() {
-        let created = SystemTime::now() - Duration::from_secs(600);
-        let mut session = desktop_session("session-0c3f162a", AgentState::Working);
-        session.created = Some(created);
-        let mut waiting = desktop_session("session-106ec104", AgentState::WaitingReply);
-        waiting.created = Some(created);
+        let session = desktop_session("session-0c3f162a", AgentState::Working);
+        let waiting = desktop_session("session-106ec104", AgentState::WaitingReply);
         let rows = desktop_rows(43958, Duration::from_secs(417), &[session, waiting]);
         assert_eq!(rows.len(), 2);
         assert_ne!(rows[0].key, rows[1].key, "each conversation owns its row");
@@ -2001,11 +2004,15 @@ mod tests {
         assert_eq!(rows[0].state, AgentState::Working);
         assert_eq!(rows[1].state, AgentState::WaitingReply);
         assert_eq!(rows[0].context.as_ref().unwrap().used_tokens, 152_082);
-        let uptime = rows[0].uptime.as_secs();
-        assert!(
-            (599..=601).contains(&uptime),
-            "the row ages from the conversation's creation, not the app's: {uptime}s"
-        );
+        // With no measured run the row shows no duration at all, rather than
+        // borrowing the application's uptime (which is what produced "1337h").
+        assert_eq!(rows[0].uptime, Duration::ZERO);
+
+        // The measured run wins when the log provided one.
+        let mut measured = desktop_session("session-measured", AgentState::Working);
+        measured.run = Some(Duration::from_secs(125));
+        let measured_rows = desktop_rows(43958, Duration::from_secs(417), &[measured]);
+        assert_eq!(measured_rows[0].uptime, Duration::from_secs(125));
     }
 
     #[test]
