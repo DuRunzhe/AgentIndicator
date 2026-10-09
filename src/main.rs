@@ -125,6 +125,9 @@ fn main() -> Result<()> {
             match refresh_rx.recv_timeout(Duration::from_secs(2)) {
                 // A restart rebuilds every analyzer and re-reads the config.
                 Ok(WorkerCommand::Restart) => detector = Detector::new(),
+                Ok(WorkerCommand::DeepSeekDesktopWindow(window)) => {
+                    detector.set_deepseek_desktop_window(window);
+                }
                 Ok(WorkerCommand::ConversationWindow(window)) => {
                     detector.set_conversation_window(window);
                 }
@@ -179,6 +182,7 @@ enum WorkerCommand {
     Refresh,
     Restart,
     ConversationWindow(Option<Duration>),
+    DeepSeekDesktopWindow(Option<Duration>),
 }
 
 enum ActionResult {
@@ -455,6 +459,9 @@ impl App {
             None,
         );
         let _ = settings.append(&claude_statusline);
+        // Two independent ranges: the hosted (ChatGPT) conversations and the
+        // DeepSeek Harness desktop conversations have different lifetimes, so
+        // one setting cannot serve both.
         let conversation_menu = Submenu::new(i18n::menu("chatgpt_window"), true);
         for (key, _) in config::CONVERSATION_WINDOWS {
             let _ = conversation_menu.append(&IconMenuItem::with_id(
@@ -466,6 +473,17 @@ impl App {
             ));
         }
         let _ = settings.append(&conversation_menu);
+        let deepseek_menu = Submenu::new(i18n::menu("deepseek_window"), true);
+        for (key, _) in config::CONVERSATION_WINDOWS {
+            let _ = deepseek_menu.append(&IconMenuItem::with_id(
+                format!("deepseek_window:{key}"),
+                i18n::conversation_window_label(key),
+                true,
+                menu_toggle_icon(self.config.deepseek_desktop_window == key),
+                None,
+            ));
+        }
+        let _ = settings.append(&deepseek_menu);
         let language_menu = Submenu::new(i18n::menu("language"), true);
         for value in i18n::LANGUAGES {
             let selected = self.config.locale == value;
@@ -777,6 +795,16 @@ impl ApplicationHandler<UserEvent> for App {
                 let _ = self.refresh_tx.try_send(WorkerCommand::ConversationWindow(
                     self.config.conversation_window_duration(),
                 ));
+                self.menu = None;
+                self.rebuild();
+            } else if let Some(key) = id.strip_prefix("deepseek_window:") {
+                self.config.deepseek_desktop_window = key.into();
+                self.config.save();
+                let _ = self
+                    .refresh_tx
+                    .try_send(WorkerCommand::DeepSeekDesktopWindow(
+                        self.config.deepseek_desktop_window_duration(),
+                    ));
                 self.menu = None;
                 self.rebuild();
             } else if let Some(locale) = id.strip_prefix("locale:") {

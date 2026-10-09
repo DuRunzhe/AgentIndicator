@@ -274,6 +274,17 @@ pub fn failure_undecidable() -> &'static str {
     text("failure_undecidable")
 }
 
+/// How a DeepSeek Harness row identifies which form it reports. The terminal
+/// (`dsh` per project) and the desktop application (one process hosting every
+/// conversation) are different things to the user and must not look identical.
+pub fn deepseek_form(desktop: bool) -> &'static str {
+    text(if desktop {
+        "desktop_form"
+    } else {
+        "terminal_form"
+    })
+}
+
 /// Row label reporting conversations the menu cap left out.
 pub fn hidden_sessions(count: usize) -> String {
     let suffix = text("hidden_sessions");
@@ -494,6 +505,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("en", "browser") => "Browser tabs",
         ("en", "display") => "Display options",
         ("en", "chatgpt_window") => "Hosted conversation range",
+        ("en", "deepseek_window") => "DeepSeek Harness conversation range",
         ("en", "refresh") => "Refresh now",
         ("en", "about") => "About",
         ("en", "quit") => "Quit",
@@ -510,6 +522,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("zh-Hant", "browser") => "瀏覽器分頁",
         ("zh-Hant", "display") => "顯示設定",
         ("zh-Hant", "chatgpt_window") => "託管會話顯示範圍",
+        ("zh-Hant", "deepseek_window") => "DeepSeek Harness 會話顯示範圍",
         ("zh-Hant", "refresh") => "立即重新整理",
         ("zh-Hant", "about") => "關於",
         ("zh-Hant", "quit") => "結束",
@@ -526,6 +539,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("ja", "browser") => "ブラウザタブ",
         ("ja", "display") => "表示オプション",
         ("ja", "chatgpt_window") => "ホスト会話の表示範囲",
+        ("ja", "deepseek_window") => "DeepSeek Harness 会話の表示範囲",
         ("ja", "refresh") => "今すぐ更新",
         ("ja", "about") => "このアプリについて",
         ("ja", "quit") => "終了",
@@ -542,6 +556,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("ko", "browser") => "브라우저 탭",
         ("ko", "display") => "표시 옵션",
         ("ko", "chatgpt_window") => "호스트 대화 표시 범위",
+        ("ko", "deepseek_window") => "DeepSeek Harness 대화 표시 범위",
         ("ko", "refresh") => "지금 새로 고침",
         ("ko", "about") => "정보",
         ("ko", "quit") => "종료",
@@ -558,6 +573,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("id", "browser") => "Tab browser",
         ("id", "display") => "Opsi tampilan",
         ("id", "chatgpt_window") => "Rentang percakapan terkelola",
+        ("id", "deepseek_window") => "Rentang percakapan DeepSeek Harness",
         ("id", "refresh") => "Segarkan sekarang",
         ("id", "about") => "Tentang",
         ("id", "quit") => "Keluar",
@@ -574,6 +590,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("ms", "browser") => "Tab pelayar",
         ("ms", "display") => "Pilihan paparan",
         ("ms", "chatgpt_window") => "Julat perbualan dihoskan",
+        ("ms", "deepseek_window") => "Julat perbualan DeepSeek Harness",
         ("ms", "refresh") => "Muat semula sekarang",
         ("ms", "about") => "Perihal",
         ("ms", "quit") => "Keluar",
@@ -590,6 +607,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("vi", "browser") => "Tab trình duyệt",
         ("vi", "display") => "Tùy chọn hiển thị",
         ("vi", "chatgpt_window") => "Phạm vi hội thoại được host",
+        ("vi", "deepseek_window") => "Phạm vi hội thoại DeepSeek Harness",
         ("vi", "refresh") => "Làm mới ngay",
         ("vi", "about") => "Giới thiệu",
         ("vi", "quit") => "Thoát",
@@ -606,6 +624,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("es", "browser") => "Pestañas del navegador",
         ("es", "display") => "Opciones de visualización",
         ("es", "chatgpt_window") => "Rango de conversaciones alojadas",
+        ("es", "deepseek_window") => "Rango de conversaciones de DeepSeek Harness",
         ("es", "refresh") => "Actualizar ahora",
         ("es", "about") => "Acerca de",
         ("es", "quit") => "Salir",
@@ -622,6 +641,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("fr", "browser") => "Onglets du navigateur",
         ("fr", "display") => "Options d'affichage",
         ("fr", "chatgpt_window") => "Plage de conversations hébergées",
+        ("fr", "deepseek_window") => "Plage de conversations DeepSeek Harness",
         ("fr", "refresh") => "Actualiser maintenant",
         ("fr", "about") => "À propos",
         ("fr", "quit") => "Quitter",
@@ -638,6 +658,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("it", "browser") => "Schede del browser",
         ("it", "display") => "Opzioni di visualizzazione",
         ("it", "chatgpt_window") => "Intervallo conversazioni ospitate",
+        ("it", "deepseek_window") => "Intervallo conversazioni DeepSeek Harness",
         ("it", "refresh") => "Aggiorna ora",
         ("it", "about") => "Informazioni",
         ("it", "quit") => "Esci",
@@ -654,6 +675,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("de", "browser") => "Browser-Tabs",
         ("de", "display") => "Anzeigeoptionen",
         ("de", "chatgpt_window") => "Bereich gehosteter Konversationen",
+        ("de", "deepseek_window") => "Konversationsbereich für DeepSeek Harness",
         ("de", "refresh") => "Jetzt aktualisieren",
         ("de", "about") => "Über",
         ("de", "quit") => "Beenden",
@@ -670,6 +692,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("ru", "browser") => "Вкладки браузера",
         ("ru", "display") => "Параметры отображения",
         ("ru", "chatgpt_window") => "Диапазон размещённых бесед",
+        ("ru", "deepseek_window") => "Диапазон разговоров DeepSeek Harness",
         ("ru", "refresh") => "Обновить сейчас",
         ("ru", "about") => "О программе",
         ("ru", "quit") => "Выйти",
@@ -686,6 +709,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         ("tr", "browser") => "Tarayıcı sekmeleri",
         ("tr", "display") => "Görüntüleme seçenekleri",
         ("tr", "chatgpt_window") => "Barındırılan konuşma aralığı",
+        ("tr", "deepseek_window") => "DeepSeek Harness konuşma aralığı",
         ("tr", "refresh") => "Şimdi yenile",
         ("tr", "about") => "Hakkında",
         ("tr", "quit") => "Çık",
@@ -702,6 +726,7 @@ fn menu_for(locale: &str, key: &str) -> &'static str {
         (_, "browser") => "浏览器标签页",
         (_, "display") => "显示配置",
         (_, "chatgpt_window") => "托管会话显示范围",
+        (_, "deepseek_window") => "DeepSeek Harness 会话显示范围",
         (_, "refresh") => "立即刷新",
         (_, "about") => "关于",
         (_, "quit") => "退出",
@@ -1849,6 +1874,34 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         (_, "install") => "安装",
         (_, "uninstall") => "卸载",
         (_, "hidden_sessions") => "個會話未顯示",
+        ("en", "terminal_form") => "Terminal",
+        ("en", "desktop_form") => "Desktop app",
+        ("zh-Hant", "terminal_form") => "終端",
+        ("zh-Hant", "desktop_form") => "桌面端",
+        ("ja", "terminal_form") => "ターミナル",
+        ("ja", "desktop_form") => "デスクトップ",
+        ("ko", "terminal_form") => "터미널",
+        ("ko", "desktop_form") => "데스크톱 앱",
+        ("id", "terminal_form") => "Terminal",
+        ("id", "desktop_form") => "Aplikasi desktop",
+        ("ms", "terminal_form") => "Terminal",
+        ("ms", "desktop_form") => "Aplikasi desktop",
+        ("vi", "terminal_form") => "Terminal",
+        ("vi", "desktop_form") => "Ứng dụng máy tính",
+        ("es", "terminal_form") => "Terminal",
+        ("es", "desktop_form") => "Aplicación de escritorio",
+        ("fr", "terminal_form") => "Terminal",
+        ("fr", "desktop_form") => "Application de bureau",
+        ("it", "terminal_form") => "Terminal",
+        ("it", "desktop_form") => "App desktop",
+        ("de", "terminal_form") => "Terminal",
+        ("de", "desktop_form") => "Desktop-App",
+        ("ru", "terminal_form") => "Терминал",
+        ("ru", "desktop_form") => "Приложение",
+        ("tr", "terminal_form") => "Terminal",
+        ("tr", "desktop_form") => "Masaüstü uygulaması",
+        (_, "terminal_form") => "终端",
+        (_, "desktop_form") => "桌面端",
         (_, "profile_format_changed") => "DeepSeek Harness 設定檔格式已變更",
         (_, "profile_missing") => "找不到 DeepSeek Harness 設定檔",
         (_, "failure_undecidable") => "部分失敗無法判定",
@@ -1899,7 +1952,7 @@ mod tests {
     /// Simplified Chinese, so the fallback check below must not flag them.
     const SHARED_WITH_CHINESE: [(&str, &str); 1] = [("ja", "notifications")];
 
-    const MENU_KEYS: [&str; 16] = [
+    const MENU_KEYS: [&str; 17] = [
         "settings",
         "startup",
         "notifications",
@@ -1907,6 +1960,7 @@ mod tests {
         "browser",
         "display",
         "chatgpt_window",
+        "deepseek_window",
         "refresh",
         "about",
         "quit",
@@ -1918,7 +1972,7 @@ mod tests {
         "automation",
     ];
 
-    const TEXT_KEYS: [&str; 81] = [
+    const TEXT_KEYS: [&str; 83] = [
         "disable_notifications",
         "enable_notifications",
         "disable_startup",
@@ -1944,6 +1998,8 @@ mod tests {
         "window_24h",
         "window_all",
         "hidden_sessions",
+        "terminal_form",
+        "desktop_form",
         "profile_format_changed",
         "profile_missing",
         "failure_undecidable",

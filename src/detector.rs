@@ -25,9 +25,14 @@ pub struct Detector {
     opencode: crate::opencode::OpenCodeAnalyzer,
     pi: crate::pi::PiAnalyzer,
     terminal: crate::terminal::TerminalProbe,
-    /// How long a finished hosted conversation keeps its row; `None` keeps it
-    /// forever. Set from the config and updated when the menu changes it.
+    /// How long a finished hosted (ChatGPT) conversation keeps its row; `None`
+    /// keeps it forever. Set from the config and updated when the menu changes
+    /// it.
     conversation_window: Option<Duration>,
+    /// How long a finished DeepSeek Harness desktop conversation keeps its row.
+    /// A separate setting: a desktop conversation and a hosted one have
+    /// different lifetimes, so the two ranges are configured independently.
+    deepseek_desktop_window: Option<Duration>,
     #[cfg(target_os = "macos")]
     codex_titles: CodexTitles,
     #[cfg(target_os = "macos")]
@@ -50,6 +55,8 @@ impl Detector {
             // Read the saved setting so a restart (and `--diagnose`) reports the
             // same window the menu shows.
             conversation_window: crate::config::Config::load().conversation_window_duration(),
+            deepseek_desktop_window: crate::config::Config::load()
+                .deepseek_desktop_window_duration(),
             #[cfg(target_os = "macos")]
             codex_titles: CodexTitles::default(),
             #[cfg(target_os = "macos")]
@@ -59,6 +66,11 @@ impl Detector {
 
     pub fn set_conversation_window(&mut self, window: Option<Duration>) {
         self.conversation_window = window;
+    }
+
+    /// Set the DeepSeek Harness desktop range independently of the hosted one.
+    pub fn set_deepseek_desktop_window(&mut self, window: Option<Duration>) {
+        self.deepseek_desktop_window = window;
     }
 
     /// The live conversations of the DeepSeek Harness desktop application, most
@@ -79,7 +91,8 @@ impl Detector {
         let from_env = crate::deepseek_desktop::env_home();
         let home = from_env.as_deref().or(home);
         self.deepseek_desktop.refresh(home);
-        let (sessions, hidden) = self.deepseek_desktop.overview(self.conversation_window);
+        // The desktop range, not the hosted one: see `deepseek_desktop_window`.
+        let (sessions, hidden) = self.deepseek_desktop.overview(self.deepseek_desktop_window);
         (sessions, hidden, self.deepseek_desktop.alert())
     }
 
@@ -288,8 +301,15 @@ impl Detector {
                         .as_ref()
                         .and_then(|path| path.file_name())
                         .and_then(|name| name.to_str())
-                        .map(|project| format!("{display} ({project})"))
-                        .unwrap_or_else(|| display.into()),
+                        .map(|project| {
+                            format!(
+                                "{display} · {} ({project})",
+                                crate::i18n::deepseek_form(false)
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            format!("{display} · {}", crate::i18n::deepseek_form(false))
+                        }),
                     pid: process.pid,
                     cwd,
                     state: if active {
@@ -486,18 +506,22 @@ fn desktop_alert_row(
     })
 }
 
-/// `DeepSeek Harness · <title>`, falling back to the project name and then to
+/// `DeepSeek Harness · <form> · <title>`, falling back to the project name and then to
 /// the application name. The title already carries the project in practice, so
 /// repeating both would only shorten the useful part of the row.
 fn desktop_label(session: &crate::deepseek_desktop::DesktopSession) -> String {
     let display = display_name("deepseek");
+    // The desktop application and the terminal are different things to the user:
+    // one hosts every conversation in a single process, the other is one process
+    // per project. Without a marker the two forms read as the same row.
+    let form = crate::i18n::deepseek_form(true);
     let detail = session
         .title
         .as_deref()
         .or_else(|| session.cwd.as_deref().and_then(Path::file_name)?.to_str());
     match detail {
-        Some(detail) => format!("{display} · {detail}"),
-        None => display.into(),
+        Some(detail) => format!("{display} · {form} · {detail}"),
+        None => format!("{display} · {form}"),
     }
 }
 
@@ -1964,7 +1988,15 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_ne!(rows[0].key, rows[1].key, "each conversation owns its row");
         assert_eq!(rows[0].kind, "DeepSeek Harness");
-        assert_eq!(rows[0].label, "DeepSeek Harness · 同步代码");
+        // The form is named, so a desktop row cannot be mistaken for a terminal
+        // one: the two report the same agent through different machinery.
+        assert_eq!(rows[0].label, "DeepSeek Harness · 桌面端 · 同步代码");
+        assert!(rows[0].label.contains(crate::i18n::deepseek_form(true)));
+        assert_ne!(
+            crate::i18n::deepseek_form(true),
+            crate::i18n::deepseek_form(false),
+            "the two forms must not read the same"
+        );
         assert_eq!(rows[0].pid, 43958, "clicking brings the app forward");
         assert_eq!(rows[0].state, AgentState::Working);
         assert_eq!(rows[1].state, AgentState::WaitingReply);

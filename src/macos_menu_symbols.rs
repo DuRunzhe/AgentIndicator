@@ -29,6 +29,13 @@ struct SymbolKey {
     color: Option<[u8; 3]>,
 }
 
+/// One menu entry, identified by the submenu that owns it and its title.
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct SymbolTarget {
+    owner: String,
+    item: String,
+}
+
 #[derive(Debug, PartialEq)]
 struct SettingsSignature {
     notifications_enabled: bool,
@@ -43,6 +50,7 @@ struct SettingsSignature {
     show_stopped_agents: bool,
     locale: String,
     conversation_window: String,
+    deepseek_desktop_window: String,
 }
 
 impl SymbolCache {
@@ -52,7 +60,7 @@ impl SymbolCache {
         // menu owns this pointer for its full lifetime, and all calls happen on
         // winit's main thread as required by AppKit.
         let native_menu = unsafe { &*(menu.ns_menu().cast::<NSMenu>()) };
-        self.apply_to_menu(native_menu, &symbols);
+        self.apply_to_menu(native_menu, "", &symbols);
         self.last_settings = Some(SettingsSignature::new(config));
     }
 
@@ -65,14 +73,30 @@ impl SymbolCache {
         }
     }
 
-    fn apply_to_menu(&mut self, menu: &NSMenu, symbols: &HashMap<String, SymbolKey>) {
+    fn apply_to_menu(
+        &mut self,
+        menu: &NSMenu,
+        owner: &str,
+        symbols: &HashMap<SymbolTarget, SymbolKey>,
+    ) {
         for item in menu.itemArray().iter() {
             let title = item.title().to_string();
-            if let Some(symbol) = symbols.get(&title) {
+            // The owner (the enclosing submenu's title) is part of the lookup
+            // key: the hosted and DeepSeek ranges offer the same five labels, so
+            // matching on the title alone made the two groups share one check
+            // mark and the last one written won.
+            let target = SymbolTarget {
+                owner: owner.to_owned(),
+                item: title,
+            };
+            if let Some(symbol) = symbols.get(&target) {
                 item.setImage(Some(self.image(symbol)));
             }
+            // AppKit's own submenu, so the recursion stays in one object model
+            // and can name the owner of the entries it is about to visit.
             if let Some(submenu) = item.submenu() {
-                self.apply_to_menu(&submenu, symbols);
+                let name = submenu.title().to_string();
+                self.apply_to_menu(&submenu, &name, symbols);
             }
         }
     }
@@ -99,6 +123,7 @@ impl SettingsSignature {
             show_stopped_agents: config.show_stopped_agents,
             locale: config.locale.clone(),
             conversation_window: config.conversation_window.clone(),
+            deepseek_desktop_window: config.deepseek_desktop_window.clone(),
         }
     }
 }
@@ -124,23 +149,72 @@ fn make_symbol(key: &SymbolKey) -> Retained<NSImage> {
         .unwrap_or(image)
 }
 
-fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
-    let mut symbols = HashMap::new();
-    let mut add = |title: String, name, color| {
-        symbols.insert(title, SymbolKey { name, color });
-    };
+fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
+    let mut symbols: HashMap<SymbolTarget, SymbolKey> = HashMap::new();
+    // A top-level item has no owning submenu.
+    fn add(
+        symbols: &mut HashMap<SymbolTarget, SymbolKey>,
+        title: String,
+        name: &'static str,
+        color: Option<[u8; 3]>,
+    ) {
+        symbols.insert(
+            SymbolTarget {
+                owner: String::new(),
+                item: title,
+            },
+            SymbolKey { name, color },
+        );
+    }
+    // Ranges share their five labels, so they are keyed by owning submenu.
+    fn add_owned(
+        symbols: &mut HashMap<SymbolTarget, SymbolKey>,
+        owner: &'static str,
+        title: &'static str,
+        name: &'static str,
+        color: Option<[u8; 3]>,
+    ) {
+        symbols.insert(
+            SymbolTarget {
+                owner: owner.to_owned(),
+                item: title.to_owned(),
+            },
+            SymbolKey { name, color },
+        );
+    }
 
-    add(i18n::menu("settings").into(), "gearshape", None);
-    add(i18n::menu("startup").into(), "power", None);
-    add(i18n::menu("notifications").into(), "bell", None);
-    add(i18n::menu("browser").into(), "rectangle.on.rectangle", None);
-    add(i18n::menu("language").into(), "globe", None);
     add(
+        &mut symbols,
+        i18n::menu("settings").into(),
+        "gearshape",
+        None,
+    );
+    add(&mut symbols, i18n::menu("startup").into(), "power", None);
+    add(
+        &mut symbols,
+        i18n::menu("notifications").into(),
+        "bell",
+        None,
+    );
+    add(
+        &mut symbols,
+        i18n::menu("browser").into(),
+        "rectangle.on.rectangle",
+        None,
+    );
+    add(&mut symbols, i18n::menu("language").into(), "globe", None);
+    add(
+        &mut symbols,
         i18n::menu("chatgpt_window").into(),
         "clock.arrow.circlepath",
         None,
     );
-    add(i18n::menu("display").into(), "slider.horizontal.3", None);
+    add(
+        &mut symbols,
+        i18n::menu("display").into(),
+        "slider.horizontal.3",
+        None,
+    );
 
     let toggle_symbol = |enabled| {
         if enabled {
@@ -151,7 +225,12 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
     };
     let startup_enabled = startup::is_enabled();
     let (name, color) = toggle_symbol(startup_enabled);
-    add(startup_action_label(startup_enabled).into(), name, color);
+    add(
+        &mut symbols,
+        startup_action_label(startup_enabled).into(),
+        name,
+        color,
+    );
 
     let (name, color) = if config.notifications_enabled {
         ("bell.fill", Some([52, 199, 89]))
@@ -159,31 +238,59 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
         ("bell.slash", Some([142, 142, 147]))
     };
     add(
+        &mut symbols,
         notification_action_label(config.notifications_enabled).into(),
         name,
         color,
     );
     add(
+        &mut symbols,
         i18n::menu("test_notification").into(),
         "bell.badge",
         Some([0, 122, 255]),
     );
-    add(i18n::text("open_notifications").into(), "gearshape", None);
-    add(i18n::text("notification_app").into(), "app.badge", None);
+    add(
+        &mut symbols,
+        i18n::text("open_notifications").into(),
+        "gearshape",
+        None,
+    );
+    add(
+        &mut symbols,
+        i18n::text("notification_app").into(),
+        "app.badge",
+        None,
+    );
 
     let (name, color) = toggle_symbol(config.browser_tab_reuse);
     add(
+        &mut symbols,
         browser_tab_action_label(config.browser_tab_reuse).into(),
         name,
         color,
     );
-    add(i18n::menu("automation").into(), "gearshape", None);
-    add(i18n::menu("permission").into(), "lock.shield", None);
+    add(
+        &mut symbols,
+        i18n::menu("automation").into(),
+        "gearshape",
+        None,
+    );
+    add(
+        &mut symbols,
+        i18n::menu("permission").into(),
+        "lock.shield",
+        None,
+    );
     // The row flips between install and uninstall, so its symbol tracks the
     // live collector state and is refreshed whenever that state changes.
     let claude_installed = claude_statusline::is_installed();
     let (name, color) = toggle_symbol(claude_installed);
-    add(claude_action_label(claude_installed).into(), name, color);
+    add(
+        &mut symbols,
+        claude_action_label(claude_installed).into(),
+        name,
+        color,
+    );
 
     for (key, label) in display_settings() {
         let enabled = match key {
@@ -196,20 +303,38 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
             _ => false,
         };
         let (name, color) = toggle_symbol(enabled);
-        add(toggle_label(enabled, label), name, color);
+        add(&mut symbols, toggle_label(enabled, label), name, color);
     }
     for (_, label, enabled) in notification_preferences(config) {
         let (name, color) = toggle_symbol(enabled);
-        add(toggle_label(enabled, label), name, color);
+        add(&mut symbols, toggle_label(enabled, label), name, color);
     }
     for value in i18n::LANGUAGES {
         let selected = config.locale == value;
         let (name, color) = toggle_symbol(selected);
-        add(i18n::language_name(value), name, color);
+        add(&mut symbols, i18n::language_name(value), name, color);
     }
+    let hosted_owner = i18n::menu("chatgpt_window");
     for (key, _) in CONVERSATION_WINDOWS {
         let (name, color) = toggle_symbol(config.conversation_window == key);
-        add(i18n::conversation_window_label(key).into(), name, color);
+        add_owned(
+            &mut symbols,
+            hosted_owner,
+            i18n::conversation_window_label(key),
+            name,
+            color,
+        );
+    }
+    let deepseek_owner = i18n::menu("deepseek_window");
+    for (key, _) in CONVERSATION_WINDOWS {
+        let (name, color) = toggle_symbol(config.deepseek_desktop_window == key);
+        add_owned(
+            &mut symbols,
+            deepseek_owner,
+            i18n::conversation_window_label(key),
+            name,
+            color,
+        );
     }
     symbols
 }
@@ -218,33 +343,63 @@ fn menu_symbols(config: &Config) -> HashMap<String, SymbolKey> {
 mod tests {
     use super::*;
 
+    /// The symbol recorded for one entry of one range submenu.
+    fn range_symbol(config: &Config, owner: &str, key: &str) -> Option<&'static str> {
+        menu_symbols(config)
+            .get(&SymbolTarget {
+                owner: owner.to_owned(),
+                item: i18n::conversation_window_label(key).to_owned(),
+            })
+            .map(|symbol| symbol.name)
+    }
+
     #[test]
-    fn only_the_selected_conversation_window_is_checked() {
+    fn each_range_submenu_checks_its_own_selection() {
         let mut config = Config {
             conversation_window: "12h".into(),
+            deepseek_desktop_window: "15m".into(),
             ..Default::default()
         };
-        // The global locale is left untouched: labels are looked up through
-        // i18n in whatever language the rest of the test run uses.
+        let hosted = i18n::menu("chatgpt_window");
+        let deepseek = i18n::menu("deepseek_window");
         for (key, _) in CONVERSATION_WINDOWS {
-            let symbol = menu_symbols(&config)
-                .get(i18n::conversation_window_label(key))
-                .map(|symbol| symbol.name)
-                .unwrap_or_default();
-            if key == "12h" {
-                assert_eq!(symbol, "checkmark.circle.fill", "{key}");
-            } else {
-                assert_eq!(symbol, "circle", "{key}");
-            }
+            assert_eq!(
+                range_symbol(&config, hosted, key),
+                Some(if key == "12h" {
+                    "checkmark.circle.fill"
+                } else {
+                    "circle"
+                }),
+                "hosted {key}"
+            );
+            assert_eq!(
+                range_symbol(&config, deepseek, key),
+                Some(if key == "15m" {
+                    "checkmark.circle.fill"
+                } else {
+                    "circle"
+                }),
+                "deepseek {key}"
+            );
         }
+        // The two ranges must be able to differ: with a shared lookup key the
+        // second group overwrote the first and both showed the same check.
+        assert_ne!(
+            range_symbol(&config, hosted, "15m"),
+            range_symbol(&config, deepseek, "15m")
+        );
 
-        // Moving the selection moves the check mark.
+        // Moving one selection moves only that range's check mark.
         config.conversation_window = "all".into();
         assert_eq!(
-            menu_symbols(&config)
-                .get(i18n::conversation_window_label("all"))
-                .map(|symbol| symbol.name),
+            range_symbol(&config, hosted, "all"),
             Some("checkmark.circle.fill")
+        );
+        assert_eq!(range_symbol(&config, hosted, "12h"), Some("circle"));
+        assert_eq!(
+            range_symbol(&config, deepseek, "15m"),
+            Some("checkmark.circle.fill"),
+            "the DeepSeek range must not follow the hosted one"
         );
     }
 

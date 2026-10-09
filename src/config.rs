@@ -2,8 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf, time::Duration};
 
 /// Conversation display windows, in menu order. Each entry is the key stored in
-/// the config and how long a finished ChatGPT conversation keeps its row;
-/// `None` keeps every conversation.
+/// the config and how long a finished conversation keeps its row; `None` keeps
+/// every conversation.
+///
+/// The same keys drive two independent settings: the hosted (ChatGPT) range and
+/// the DeepSeek Harness range. A desktop conversation and a hosted one have
+/// different lifetimes, so one range cannot serve both.
 pub const CONVERSATION_WINDOWS: [(&str, Option<u64>); 5] = [
     ("15m", Some(15 * 60)),
     ("1h", Some(60 * 60)),
@@ -30,8 +34,13 @@ pub struct Config {
     pub show_stopped_agents: bool,
     pub browser_tab_reuse: bool,
     pub locale: String,
-    /// Which [`CONVERSATION_WINDOWS`] key applies to ChatGPT conversations.
+    /// Which [`CONVERSATION_WINDOWS`] key applies to hosted (ChatGPT)
+    /// conversations.
     pub conversation_window: String,
+    /// Which [`CONVERSATION_WINDOWS`] key applies to the DeepSeek Harness
+    /// desktop application's conversations. Independent of
+    /// [`Self::conversation_window`]: the two are configured separately.
+    pub deepseek_desktop_window: String,
 }
 
 impl Default for Config {
@@ -51,6 +60,7 @@ impl Default for Config {
             browser_tab_reuse: false,
             locale: "auto".into(),
             conversation_window: DEFAULT_CONVERSATION_WINDOW.into(),
+            deepseek_desktop_window: DEFAULT_CONVERSATION_WINDOW.into(),
         }
     }
 }
@@ -60,15 +70,13 @@ impl Config {
     /// forever ("all"). An unknown value, such as one written by an older
     /// version, falls back to the default window.
     pub fn conversation_window_duration(&self) -> Option<Duration> {
-        let key = CONVERSATION_WINDOWS
-            .iter()
-            .map(|(key, _)| *key)
-            .find(|key| *key == self.conversation_window)
-            .unwrap_or(DEFAULT_CONVERSATION_WINDOW);
-        CONVERSATION_WINDOWS
-            .iter()
-            .find(|(candidate, _)| *candidate == key)
-            .and_then(|(_, seconds)| seconds.map(Duration::from_secs))
+        window_duration(&self.conversation_window)
+    }
+
+    /// How long a finished DeepSeek Harness desktop conversation keeps its row.
+    /// Independent of [`Self::conversation_window_duration`].
+    pub fn deepseek_desktop_window_duration(&self) -> Option<Duration> {
+        window_duration(&self.deepseek_desktop_window)
     }
 
     pub fn load() -> Self {
@@ -94,6 +102,21 @@ impl Config {
     }
 }
 
+/// Resolve a [`CONVERSATION_WINDOWS`] key to a duration, falling back to the
+/// default for a key this build does not know (such as one written by an older
+/// version).
+fn window_duration(key: &str) -> Option<Duration> {
+    let known = CONVERSATION_WINDOWS
+        .iter()
+        .map(|(candidate, _)| *candidate)
+        .find(|candidate| *candidate == key)
+        .unwrap_or(DEFAULT_CONVERSATION_WINDOW);
+    CONVERSATION_WINDOWS
+        .iter()
+        .find(|(candidate, _)| *candidate == known)
+        .and_then(|(_, seconds)| seconds.map(Duration::from_secs))
+}
+
 fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|root| root.join("agent-status-indicator/config.json"))
 }
@@ -117,6 +140,38 @@ mod tests {
         assert!(config.show_context_total);
         assert!(config.show_stopped_agents);
         assert_eq!(config.conversation_window, DEFAULT_CONVERSATION_WINDOW);
+    }
+
+    #[test]
+    fn the_two_conversation_ranges_are_independent() {
+        // The whole point of the separate setting: changing one must not move
+        // the other. They share the key vocabulary, not the value.
+        let mut config = Config::default();
+        config.conversation_window = "1h".into();
+        config.deepseek_desktop_window = "all".into();
+        assert_eq!(
+            config.conversation_window_duration(),
+            Some(Duration::from_secs(60 * 60))
+        );
+        assert_eq!(config.deepseek_desktop_window_duration(), None);
+
+        config.deepseek_desktop_window = "15m".into();
+        assert_eq!(
+            config.conversation_window_duration(),
+            Some(Duration::from_secs(60 * 60)),
+            "the hosted range must not follow the DeepSeek one"
+        );
+        assert_eq!(
+            config.deepseek_desktop_window_duration(),
+            Some(Duration::from_secs(15 * 60))
+        );
+
+        // An older config file has no DeepSeek key: it gets the default, and the
+        // hosted value it did carry is preserved.
+        let old: Config =
+            serde_json::from_str(r#"{"conversation_window":"12h"}"#).expect("an older config");
+        assert_eq!(old.conversation_window, "12h");
+        assert_eq!(old.deepseek_desktop_window, DEFAULT_CONVERSATION_WINDOW);
     }
 
     #[test]
