@@ -59,6 +59,11 @@ pub struct AgentInstance {
     pub open_url: Option<String>,
     #[serde(default)]
     pub automatic_confirmation_mode: bool,
+    /// A row that only reports something (for example how many conversations
+    /// the menu left out). It has no session to focus, so it is rendered as
+    /// plain text and excluded from the summary and from notifications.
+    #[serde(default)]
+    pub informational: bool,
 }
 
 impl fmt::Display for AgentInstance {

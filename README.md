@@ -4,11 +4,13 @@
 
 原生 AI Coding Agent 托盘监控器（macOS 优先，支持 Windows/Linux）。监控 Claude Code、Codex CLI、OpenCode、DeepSeek Harness 与 Pi 等 Coding Agent 的运行状态：进程存活时按项目区分多个会话，在系统托盘汇总展示「等待确认、等待回复、进行中、就绪、异常、已停止」六态；可识别 error、failed、aborted 及断连信号，点击菜单项跳回对应终端或浏览器会话，并在需要人工介入时触发原生系统通知。
 
+**DeepSeek Harness 桌面端**：桌面应用（Electron）用一个进程承载所有已打开的会话，因此托盘直接读取该进程所用 profile 的会话投影缓存，把每个活跃会话单独列成一行（标题、项目、模型、上下文占用）。投影缓存不携带的两类信号从会话事件日志补齐：**未决的确认提示**判为等待确认、**失败/断连**判为异常；`approval: never` 的会话识别为自动确认模式，不再重复提醒。等待确认/异常的会话始终优先展示，超过 8 行时末尾以灰色「… N 个会话未显示」说明被省略的数量。点击任意一行把桌面端窗口带到前台：走应用注册的 `dsh://open`（可还原最小化窗口、重建被关闭的窗口），再退回普通应用激活。桌面端目前**没有会话级深链接**——其 shell 只认 `dsh://open` 自身，前端也不把当前会话写进 URL，因此无法直接跳到某个会话。沿用「会话显示范围」设置控制已结束会话保留多久。
+
 源码与发布：<https://github.com/DuRunzhe/AgentIndicator>
 
 ## 安装
 
-当前已发布 **v0.2.28**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
+当前已发布 **v0.2.29-alpha.1**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
 
 ### curl（macOS / Linux）
 
@@ -25,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.28 sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.29-alpha.1 sh
 ```
 
 指定安装目录：
@@ -210,16 +212,18 @@ winget upgrade --id DuRunzhe.AgentStatusIndicator
 ```bash
 agent-status-indicator
 agent-status-indicator --diagnose
+agent-status-indicator --diagnose-deepseek-desktop
 agent-status-indicator --debug-ui
 agent-status-indicator --check-update
 ```
 
 - `--diagnose`：打印当前探测到的 Agent、会话与状态，不启动托盘。
+- `--diagnose-deepseek-desktop`：只诊断 DeepSeek Harness 桌面端：识别到的宿主进程、所用 `DSH_HOME`、读到的会话，以及一次会话缓存扫描（冷读/稳态）的耗时，不启动托盘。
 - `--debug-ui`：调试模式，把托盘 UI 状态写入 `~/.agent-status-indicator-ui.json`。
 - `--check-update`：向 GitHub 查询最新版本并打印结果，不启动托盘。
-- 单击托盘图标展开菜单：实例按“等待确认 → 等待回复 → 进行中 → 就绪”显示模型、上下文与时长；点击存活实例可跳回对应终端或浏览器会话。
+- 单击托盘图标展开菜单：实例按“等待确认 → 等待回复 → 进行中 → 就绪”显示模型、上下文与时长；点击存活实例可跳回对应终端、浏览器会话或把 DeepSeek Harness 桌面端窗口带到前台。
 - 系统通知默认关闭，可在“设置”中开启，并调整等待确认、等待回复及自动确认模式下的通知。
-- “设置”提供六项显示选项、语言、开机自启及 DeepSeek 浏览器标签页复用。ChatGPT 托管的 Codex 会话支持 15 分钟、1 小时、12 小时、24 小时（默认）或全部的会话显示范围。
+- “设置”提供六项显示选项、语言、开机自启及 DeepSeek 浏览器标签页复用。ChatGPT 托管的 Codex 会话与 DeepSeek Harness 桌面端会话共用“会话显示范围”，支持 15 分钟、1 小时、12 小时、24 小时（默认）或全部；进行中、等待确认/回复或异常的会话始终保留。
 - 点击“设置”中的 Claude 上下文采集菜单项可安装或卸载采集器。安装会配置 Claude 的 `statusLine`，保留并转发原有命令；卸载会还原原配置。
 - “关于”面板每次打开都会检查 GitHub 最新版本；有新版本时按钮变为“更新到 x.y.z”，点击后显示进度并在下载完成后自动安装、重启。
 - 已按上文加入系统应用后，也可以直接从图形启动器启动。
@@ -285,10 +289,13 @@ rm -f ~/Library/LaunchAgents/com.agentstatusindicator.app.plist
 Claude session ───┤
 Codex rollout ────┼─> 2 秒增量采集器 ─> 状态优先级引擎 ─> 原生托盘菜单
 OpenCode SQLite ──┤                              ├─> 原生系统通知
-DeepSeek 进程 ────┘                              └─> 终端/浏览器聚焦
+DeepSeek 进程 ────┤                              └─> 终端/浏览器/桌面端聚焦
+DeepSeek 桌面缓存 ┘
 ```
 
 状态优先级：等待确认 → 等待回复 → 进行中 → 就绪 → 已停止。工具调用必须按 ID 配对，只有未完成的 `request_user_input` / `AskUserQuestion` 判为等待回复，显式提权或完整终端确认提示判为等待确认。
+
+DeepSeek Harness 终端会话与桌面端走两条路径：终端 `dsh` 进程按项目读取 `~/.dsh/sessions` 日志；桌面应用（Electron，`DeepSeek Harness.app`）由一个进程承载全部会话，托盘改为读取该进程 `DSH_HOME` 下 `storages/session_projcache/sessions` 的每会话投影缓存——未完成的 `openStep`/`pendingCalls` 判为进行中，`userQuestions.active` 判为等待回复，其余为就绪。每条会话一行，`open_url` 为空时点击回到桌面端窗口。
 
 ### 依赖
 
@@ -316,6 +323,8 @@ Linux 运行时需桌面环境提供 AppIndicator/StatusNotifier 支持；Window
 | 托盘菜单打开 P95 | ≤ 50 ms | UI 不等待采集与磁盘读取 |
 | 稳态磁盘写入 | 0 B/s | 状态保存在内存，仅配置落盘 |
 | 长日志每轮读取 | 仅新增字节 | offset + inode/mtime 增量缓存 |
+| 桌面端会话扫描 | ≤ 3 ms | 未变化时只 stat；实测 0.03–0.10 ms，无文件变化时 0 次解析 |
+| 桌面端单会话变化 | ≤ 15 ms | 投影缓存整篇重写，单篇 2–25 KB，实测约 11 ms 解析 |
 | 安装体积 | ≤ 15 MB（压缩后） | 单个 strip + LTO 二进制 |
 
 CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描耗时和菜单更新时间；超过预算即阻止发布。
@@ -326,6 +335,8 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 - [x] Claude/Codex/OpenCode/DeepSeek 多实例进程发现
 - [x] 进程树任务活跃判定、2 秒异步刷新、六态数据模型（含异常）
 - [x] DeepSeek projection/session 状态、等待信号、模型与上下文解析
+- [x] DeepSeek Harness 桌面端：宿主进程识别、按会话投影缓存读取多会话状态、会话事件日志补齐等待确认与异常、自动确认模式识别、按会话显示范围过滤、溢出计数行、点击聚焦应用窗口（`dsh://open` + 应用激活回退）
+- [ ] DeepSeek Harness 桌面端会话级深链接（依赖上游：shell 目前只处理 `dsh://open`，前端无 URL 路由）
 - [x] Codex Terminal 确认界面与后台任务正向状态纠正
 - [x] 原生动态菜单、汇总图标、npm/Homebrew 发布骨架
 - [x] 逐字节增量解析 Claude/Codex transcript，工具 ID 配对、模型与上下文

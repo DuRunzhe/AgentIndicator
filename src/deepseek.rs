@@ -141,7 +141,9 @@ fn encode_project_key(cwd: &Path) -> String {
     format!("--{}--", if key.is_empty() { "root" } else { &key })
 }
 
-fn read_session_tail(path: &Path) -> Option<String> {
+/// The last [`TAIL_BYTES`] of a session log, whatever encoding it uses. Shared
+/// with the desktop app's session reader, which reads the same log shape.
+pub fn read_session_tail(path: &Path) -> Option<String> {
     if path.extension().and_then(|v| v.to_str()) == Some("zstd") {
         return read_zstd_tail(path);
     }
@@ -154,6 +156,9 @@ fn read_session_tail(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// The tail of a zstd-compressed log, decompressed as a stream so only the tail
+/// is retained; a missing `zstd` binary makes this return `None` rather than
+/// failing the scan.
 fn read_zstd_tail(path: &Path) -> Option<String> {
     for command in ["zstd", "/opt/homebrew/bin/zstd", "/usr/local/bin/zstd"] {
         let Ok(mut child) = Command::new(command)

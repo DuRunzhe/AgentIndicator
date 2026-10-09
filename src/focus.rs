@@ -1,5 +1,8 @@
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
+use std::path::Path;
+
 pub fn focus(pid: u32) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -242,9 +245,42 @@ fn focus_macos(pid: u32) -> bool {
     let ancestry = process_ancestry(pid);
     // A GUI application that hosts an agent (ChatGPT drives its own Codex)
     // owns the session, so activating the application is the focus action.
-    detect_host_application(&ancestry)
-        .or_else(|| detect_terminal_app(&ancestry))
-        .is_some_and(activate_application)
+    match detect_host_application(&ancestry) {
+        Some(host) if host == DEEPSEEK_DESKTOP_APP => focus_deepseek_desktop(),
+        Some(host) => activate_application(host),
+        None => detect_terminal_app(&ancestry).is_some_and(activate_application),
+    }
+}
+
+/// The DeepSeek Harness desktop application, as named to `open -a`.
+#[cfg(target_os = "macos")]
+const DEEPSEEK_DESKTOP_APP: &str = "DeepSeek Harness";
+
+/// Brings the DeepSeek Harness desktop application forward.
+///
+/// The app registers the `dsh` URL scheme and its shell answers exactly one
+/// route, `dsh://open`, with "focus the primary window": it restores a
+/// minimized window, and recreates one the user closed while the app stays
+/// resident. That is strictly better than `open -a`, which only activates a
+/// running process and cannot bring back a closed window.
+///
+/// There is no session-level route to use instead: the shell ignores every URL
+/// but `dsh://open` itself, and the frontend behind it keeps the open
+/// conversation in memory with no URL of its own, so a row can only be focused
+/// to the application.
+#[cfg(target_os = "macos")]
+fn focus_deepseek_desktop() -> bool {
+    let installed = Path::new("/Applications").join(crate::deepseek_desktop::APP_BUNDLE);
+    if !installed.exists() {
+        // Installed elsewhere: the protocol handler is still registered, but
+        // fall back to the plain activation this app's ancestry can also serve.
+        return activate_application(DEEPSEEK_DESKTOP_APP);
+    }
+    Command::new("/usr/bin/open")
+        .arg(crate::deepseek_desktop::OPEN_URL)
+        .status()
+        .is_ok_and(|status| status.success())
+        || activate_application(DEEPSEEK_DESKTOP_APP)
 }
 
 #[cfg(target_os = "macos")]
@@ -259,7 +295,12 @@ fn activate_application(app: &str) -> bool {
 /// application name for `open -a`. Mirrors the detector's host applications.
 #[cfg(target_os = "macos")]
 fn detect_host_application(ancestry: &str) -> Option<&'static str> {
-    const HOST_APPLICATIONS: [(&str, &str); 1] = [("ChatGPT.app/", "ChatGPT")];
+    const HOST_APPLICATIONS: [(&str, &str); 2] = [
+        ("ChatGPT.app/", "ChatGPT"),
+        // The DeepSeek Harness desktop app hosts the `dsh` runtime itself,
+        // through a bundled Node-mode process.
+        ("DeepSeek Harness.app/", "DeepSeek Harness"),
+    ];
     HOST_APPLICATIONS
         .iter()
         .find_map(|(needle, app)| ancestry.contains(needle).then_some(*app))
@@ -381,7 +422,32 @@ mod tests {
             ),
             Some("ChatGPT")
         );
+        // The desktop app's Node-mode host process has the application itself in
+        // its ancestry, which is what clicking a desktop row must activate.
+        assert_eq!(
+            detect_host_application(
+                "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness --expose-internals /Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js"
+            ),
+            Some("DeepSeek Harness")
+        );
         assert_eq!(detect_host_application("/opt/homebrew/bin/codex"), None);
+        // A terminal `dsh` session is not the desktop application.
+        assert_eq!(detect_host_application("/bin/zsh -lc dsh tui"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_deepseek_desktop_row_focuses_the_application() {
+        // The only route the desktop shell serves; a session-level URL would be
+        // silently ignored, so the tray must not pretend to have one.
+        assert_eq!(crate::deepseek_desktop::OPEN_URL, "dsh://open");
+        assert_eq!(
+            detect_host_application(&format!(
+                "/Applications/{}/Contents/MacOS/DeepSeek Harness --expose-internals dsh-desktop-host",
+                crate::deepseek_desktop::APP_BUNDLE
+            )),
+            Some(DEEPSEEK_DESKTOP_APP)
+        );
     }
 
     #[cfg(target_os = "macos")]

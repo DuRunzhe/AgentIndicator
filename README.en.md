@@ -2,13 +2,15 @@
 
 **English** | [中文](README.md)
 
-A native tray monitor for AI coding agents (macOS first, with Windows/Linux support). It watches coding agents such as Claude Code, Codex CLI, OpenCode, DeepSeek Harness and Pi: while a process is alive, sessions are grouped by project, and the tray shows a six-state summary — *waiting for confirmation, waiting for reply, working, ready, error, stopped*. Error, failed, aborted and disconnect signals are surfaced as the error state. Clicking a menu item jumps back to the matching terminal or browser session, and native system notifications fire whenever human attention is needed.
+A native tray monitor for AI coding agents (macOS first, with Windows/Linux support). It watches coding agents such as Claude Code, Codex CLI, OpenCode, DeepSeek Harness and Pi: while a process is alive, sessions are grouped by project, and the tray shows a six-state summary — *waiting for confirmation, waiting for reply, working, ready, error, stopped*. Error, failed, aborted and disconnect signals are surfaced as the error state. Clicking a menu item jumps back to the matching terminal, browser or desktop-application session, and native system notifications fire whenever human attention is needed.
+
+**DeepSeek Harness desktop**: the Electron app hosts every conversation it has open in a single process, so the tray reads the session projection cache of the profile that process runs and lists each live conversation as its own row (title, project, model, context usage). The two signals the projection cache does not carry are read from the session event log: an unanswered confirmation prompt counts as *waiting for confirmation*, and a failed or disconnected turn as *error*; a session with `approval: never` is recognized as auto-confirmation mode and stops repeating its reminders. Waiting and failed conversations are listed first, and beyond eight rows a grey “… N more sessions” row states how many were left out. Clicking any row brings the desktop window forward through the app's registered `dsh://open` route — which restores a minimized window and recreates a closed one — falling back to plain application activation. The desktop app has **no session-level deep link**: its shell answers only `dsh://open` itself, and the frontend keeps the open conversation in memory without addressing it in the URL. The shared “conversation range” setting decides how long finished conversations keep their row.
 
 Source and releases: <https://github.com/DuRunzhe/AgentIndicator>
 
 ## Installation
 
-The current release is **v0.2.28** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
+The current release is **v0.2.29-alpha.1** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
 
 ### curl (macOS / Linux)
 
@@ -25,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 Pin a version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.28 sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.29-alpha.1 sh
 ```
 
 Install elsewhere:
@@ -210,16 +212,18 @@ Note: the `tar.gz` / `zip` assets contain the CLI binary by default; the notariz
 ```bash
 agent-status-indicator
 agent-status-indicator --diagnose
+agent-status-indicator --diagnose-deepseek-desktop
 agent-status-indicator --debug-ui
 agent-status-indicator --check-update
 ```
 
 - `--diagnose`: prints the detected agents, sessions and states without starting the tray.
+- `--diagnose-deepseek-desktop`: diagnoses only the DeepSeek Harness desktop app — the host process it was recognized as, the `DSH_HOME` in use, the conversations read, and what one scan of that cache costs (cold and steady state) — without starting the tray.
 - `--debug-ui`: debug mode; writes the tray UI state to `~/.agent-status-indicator-ui.json`.
 - `--check-update`: asks GitHub for the newest release and prints the result without starting the tray.
-- Click the tray icon to open the menu: instances are shown with model, context and uptime in the “waiting for confirmation → waiting for reply → working → ready” order; clicking a live instance jumps to its terminal or browser session.
+- Click the tray icon to open the menu: instances are shown with model, context and uptime in the “waiting for confirmation → waiting for reply → working → ready” order; clicking a live instance jumps to its terminal, browser session or DeepSeek Harness desktop window.
 - Notifications are disabled by default. Enable them in Settings and choose whether to notify for confirmation, reply and automatic confirmation mode.
-- Settings includes six display options, language, start-at-login and DeepSeek browser tab reuse. ChatGPT-hosted Codex conversations support 15 minutes, 1 hour, 12 hours, 24 hours (default) or all conversations.
+- Settings includes six display options, language, start-at-login and DeepSeek browser tab reuse. ChatGPT-hosted Codex conversations and DeepSeek Harness desktop conversations share the “conversation range” setting: 15 minutes, 1 hour, 12 hours, 24 hours (default) or all conversations. A conversation that is working, waiting for the user or failed always keeps its row.
 - Click the Claude context collector row in Settings to install or uninstall it. Installation configures Claude's `statusLine`, preserving and forwarding an existing command; uninstalling restores the previous configuration.
 - The About panel checks GitHub for a newer release every time it opens; when one exists the button becomes “Update to x.y.z”, and installing shows a progress window before the app restarts itself.
 - If you added it to your applications as above, you can also launch it from the graphical launcher.
@@ -281,14 +285,17 @@ Rationale: the tray is a lightweight native control — a WebView would add a re
 ### Architecture
 
 ```text
-system process table ──┐
-Claude session ────────┤
-Codex rollout ─────────┼─> 2s incremental collector ─> state priority engine ─> native tray menu
-OpenCode SQLite ───────┤                                          ├─> native system notifications
-DeepSeek processes ────┘                                          └─> terminal/browser focus
+system process table ────┐
+Claude session ──────────┤
+Codex rollout ───────────┼─> 2s incremental collector ─> state priority engine ─> native tray menu
+OpenCode SQLite ─────────┤                                          ├─> native system notifications
+DeepSeek processes ──────┤                                          └─> terminal/browser/desktop focus
+DeepSeek desktop cache ──┘
 ```
 
 State priority: *waiting for confirmation → waiting for reply → working → ready → stopped*. Tool calls are paired by ID; only an unanswered `request_user_input` / `AskUserQuestion` counts as *waiting for reply*, while an explicit escalation or a complete terminal confirmation prompt counts as *waiting for confirmation*.
+
+DeepSeek Harness takes two paths. A terminal `dsh` process is read per project from the `~/.dsh/sessions` logs. The desktop app (Electron, `DeepSeek Harness.app`) hosts every conversation in one process, so the tray reads the per-session projection cache under that process's `DSH_HOME` (`storages/session_projcache/sessions`) instead: an unfinished `openStep`/`pendingCalls` is *working*, `userQuestions.active` is *waiting for reply*, anything else is *ready*. Each conversation owns a row, and with no deep link available a click brings the application window forward.
 
 ### Dependencies
 
@@ -316,6 +323,8 @@ Measured with a release build, 10 active agents and ~1 GB of cumulative session 
 | P95 tray-menu open | ≤ 50 ms | UI never waits on collection or disk reads |
 | Steady-state disk writes | 0 B/s | state kept in memory; only config hits disk |
 | Long-log per-round reads | appended bytes only | offset + inode/mtime incremental cache |
+| Desktop session scan | ≤ 3 ms | stat-only when unchanged; measured 0.03–0.10 ms, zero parses in steady state |
+| Desktop per-conversation change | ≤ 15 ms | the projection cache is rewritten whole, 2–25 KB per session; measured ≈11 ms to parse |
 | Install size | ≤ 15 MB (compressed) | single stripped + LTO binary |
 
 These are acceptance targets; the current release workflow does not automate measurements or block releases that exceed them.
@@ -326,6 +335,8 @@ These are acceptance targets; the current release workflow does not automate mea
 - [x] Multi-instance process discovery for Claude/Codex/OpenCode/DeepSeek
 - [x] Process-tree activity detection, 2s async refresh, six-state model with error detection
 - [x] DeepSeek projection/session state, waiting signals, model and context parsing
+- [x] DeepSeek Harness desktop: host-process recognition, per-conversation state from the projection cache plus waiting/failed signals from the session event log, auto-confirmation-mode recognition, conversation-range filtering, an overflow count row, click-to-focus the application window (`dsh://open` with an activation fallback)
+- [ ] DeepSeek Harness desktop session-level deep links (blocked upstream: the shell handles only `dsh://open`, and the frontend has no URL routing)
 - [x] Codex terminal confirmation screen and positive correction of background tasks
 - [x] Native dynamic menu, summary icon, npm/Homebrew release skeleton
 - [x] Byte-level incremental Claude/Codex transcript parsing, tool-ID pairing, model and context

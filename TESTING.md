@@ -5,7 +5,7 @@
 ### npm 本地安装
 
 ```bash
-npm install -g ./agent-status-indicator-0.2.28.tgz
+npm install -g ./agent-status-indicator-0.2.29-alpha.1.tgz
 agent-status-indicator
 ```
 
@@ -20,7 +20,7 @@ npm uninstall -g agent-status-indicator
 ### 独立二进制
 
 ```bash
-tar -xzf agent-status-indicator-0.2.28-aarch64-apple-darwin.tar.gz
+tar -xzf agent-status-indicator-0.2.29-alpha.1-aarch64-apple-darwin.tar.gz
 ./agent-status-indicator
 ```
 
@@ -50,6 +50,45 @@ tar -xzf agent-status-indicator-0.2.28-aarch64-apple-darwin.tar.gz
 11. 开启“设置 → 开机自启”，确认 `~/Library/LaunchAgents/com.agentstatusindicator.app.plist` 已生成；再次关闭后应删除。
 12. 使用 `codex resume <thread-id>` 恢复旧会话：菜单应读取该 thread 对应 rollout 的状态、模型和上下文，而非同一目录下最近创建的其他 rollout；随后执行任务和完成任务时，状态应在约 1 秒内依次同步为“进行中”和“就绪”。
 13. 同时存在等待回复、进行中和就绪实例时，顶部应显示三种状态的数量；已停止项不参与顶部汇总。
+14. 打开 DeepSeek Harness 桌面端并开始一个会话：菜单里应出现 `DeepSeek Harness · <会话标题>` 一行，状态在一次采集周期（约 2 秒）内变为“进行中”并显示模型与上下文；再开一个会话应新增一行，两行点击都回到桌面端窗口。
+15. 在桌面端触发需要人工确认/选择（提问、审批）：对应行应显示“等待回复”或“等待确认”；继续生成后回到“进行中”，一轮结束后变为“就绪”。
+15b. 让一个会话跑失败（例如在沙箱内触发一次失败命令，或断开网络让请求出错）：该行应变为红色“异常”并触发异常通知；随后在该会话里继续对话，新的事件写入日志后应恢复为“进行中/就绪”。
+15c. 把某会话的 `permissions.approval` 设为 `never`（自动确认）：关闭“自动确认模式仍通知”后，该会话进入等待态时不应再发通知。
+16. 关闭桌面端：所有桌面端会话行应消失，只剩“已停止”的灰色占位项。
+
+## DeepSeek Harness 桌面端验收
+
+桌面端是单个 Electron 应用进程，托盘按会话展开，读的是该进程所用 profile 的会话投影缓存。
+
+```bash
+agent-status-indicator --diagnose-deepseek-desktop
+```
+
+输出中的关键字段：
+
+- `hosts`：识别到的桌面端宿主进程（`pid` 应为 Electron 主进程）与解析出的 `home`；`hosts` 为空说明进程识别失败，`home` 为 `null` 说明只能回退到 `~/.dsh`。
+- `processes`：所有路径/命令行含 `deepseek` 的进程及其 `kind`/`host` 判定，用于确认助手进程（Helper、Renderer）没有被当成独立会话。
+- `sessions`：读到的会话及其状态、标题、模型；`state` 与桌面端窗口里该会话是否在生成一致。
+- `timing`：`refreshColdMs`（首次读全部会话）、`refreshWarmMs`（无变化时）、`refreshWarmParsed`（无变化时应为 0）、`sessionsMs`。稳态 `refreshWarmMs` 应在 3 ms 以内，`refreshWarmParsed` 应为 0（不重复解析未变化文件）。
+
+非默认 `DSH_HOME` 启动的桌面端：`hosts[].home` 应指向该目录，`sessions` 应来自其 profile，而不是 `~/.dsh`。
+
+会话显示范围：把“设置 → 会话显示范围”切到 15 分钟，长时间未使用的已结束会话应从菜单消失，进行中/等待中的会话必须保留。
+
+点击行为：点击任意桌面端会话行应把应用窗口带到前台。手动把窗口最小化后点击应还原；用窗口关闭按钮关掉窗口（应用仍驻留）后点击应重建窗口。已实现的路由就是 `dsh://open`：
+
+```bash
+open dsh://open     # 等价于点击一行时的动作
+```
+
+会话级深链接目前不可用，这是上游限制，不是本项目的遗漏：
+
+- 桌面端 shell 的 `open-url` 处理器只处理 `dsh://open` 与 `dsh://open/`，其它 `dsh://` URL 一律忽略（`open` 命令仍返回 0，不会报错，因此“能打开”不代表被识别）。
+- 前端（`dsh-web-frontend`）没有任何 URL 路由：bundle 里不存在 `location.search`/`location.hash`/`pushState`，当前会话只存在于内存状态中。
+- 官方文档同样确认没有该类锚点：`dsh-client-ui-trajectory` 的 README 写明 “no anchor deep links”，`dsh-client-ui-workspace` 写明 “no fuzzy content search or event deep links”；`dsh-api-session-controller` 说明导航属于 UI 消费方职责。
+- 探测复现：`open "dsh://open/session/<id>"` 与 `open "dsh://open?session=<id>"` 都会静默走同一条 `dsh://open` 分支之外的空路径，不产生会话切换。
+
+若上游后续支持（例如 shell 转发带会话参数的 `dsh://` URL，或前端引入 URL 路由），只需给 `desktop_rows` 填上 `open_url` 即可，焦点链路已经支持按行取 URL。
 
 ## 性能检查
 

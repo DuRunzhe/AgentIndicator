@@ -4,6 +4,7 @@ mod claude_statusline;
 mod codex_state;
 mod config;
 mod deepseek;
+mod deepseek_desktop;
 mod detector;
 mod dialog;
 mod focus;
@@ -64,6 +65,19 @@ fn main() -> Result<()> {
     if arguments.iter().any(|argument| argument == "--diagnose") {
         let mut detector = Detector::new();
         println!("{}", serde_json::to_string_pretty(&detector.scan())?);
+        return Ok(());
+    }
+    // Why the DeepSeek Harness desktop application is or is not being reported:
+    // the process it was recognized as, the profile it points at, and the
+    // conversations read from that profile's projection cache.
+    if arguments
+        .iter()
+        .any(|argument| argument == "--diagnose-deepseek-desktop")
+    {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&detector::diagnose_deepseek_desktop())?
+        );
         return Ok(());
     }
     if arguments
@@ -285,7 +299,7 @@ impl App {
                 .zip(visible_instances(&self.current, &self.config))
             {
                 item.set_text(format_instance(instance, &self.config));
-                item.set_enabled(instance.state != AgentState::Stopped);
+                item.set_enabled(!instance.informational && instance.state != AgentState::Stopped);
             }
             menu.notifications
                 .set_text(notification_action_label(self.config.notifications_enabled));
@@ -347,7 +361,7 @@ impl App {
             let item = MenuItem::with_id(
                 id,
                 format_instance(instance, &self.config),
-                instance.state != AgentState::Stopped,
+                !instance.informational && instance.state != AgentState::Stopped,
                 None,
             );
             let _ = menu.append(&item);
@@ -1136,7 +1150,7 @@ fn short_tokens(value: u64) -> String {
 fn summary_state(items: &[AgentInstance]) -> AgentState {
     items
         .iter()
-        .filter(|item| item.state != AgentState::Stopped)
+        .filter(|item| !item.informational && item.state != AgentState::Stopped)
         .map(|i| i.state)
         .max()
         .unwrap_or(AgentState::Stopped)
@@ -1144,7 +1158,7 @@ fn summary_state(items: &[AgentInstance]) -> AgentState {
 fn summary(items: &[AgentInstance]) -> String {
     let active: Vec<_> = items
         .iter()
-        .filter(|item| item.state != AgentState::Stopped)
+        .filter(|item| !item.informational && item.state != AgentState::Stopped)
         .collect();
     if active.is_empty() {
         i18n::no_activity().into()
@@ -1522,6 +1536,7 @@ mod summary_tests {
             context: None,
             open_url: None,
             automatic_confirmation_mode: false,
+            informational: false,
         }
     }
 
@@ -1532,6 +1547,52 @@ mod summary_tests {
             summary_state(&[instance(AgentState::Stopped)]),
             AgentState::Stopped
         );
+    }
+
+    #[test]
+    fn informational_rows_stay_out_of_the_summary() {
+        let mut instance = AgentInstance {
+            key: "desktop:host:more".into(),
+            kind: "DeepSeek Harness".into(),
+            label: "… 3 more sessions".into(),
+            pid: 43958,
+            cwd: None,
+            state: AgentState::Ready,
+            uptime: Duration::ZERO,
+            model: None,
+            context: None,
+            open_url: None,
+            automatic_confirmation_mode: false,
+            informational: true,
+        };
+        assert_eq!(summary_state(&[instance.clone()]), AgentState::Stopped);
+        assert_eq!(summary(&[instance.clone()]), i18n::no_activity());
+        // A real row beside it still drives the summary.
+        instance.informational = false;
+        instance.state = AgentState::Working;
+        assert_eq!(summary_state(&[instance]), AgentState::Working);
+    }
+
+    #[test]
+    fn informational_rows_are_never_notified() {
+        let config = Config::default();
+        let mut instance = AgentInstance {
+            key: "desktop:host:more".into(),
+            kind: "DeepSeek Harness".into(),
+            label: "… 3 more sessions".into(),
+            pid: 43958,
+            cwd: None,
+            state: AgentState::Waiting,
+            uptime: Duration::ZERO,
+            model: None,
+            context: None,
+            open_url: None,
+            automatic_confirmation_mode: false,
+            informational: true,
+        };
+        assert!(!notifications::should_notify(&instance, &config));
+        instance.informational = false;
+        assert!(notifications::should_notify(&instance, &config));
     }
 
     #[test]
@@ -1565,6 +1626,7 @@ mod stopped_visibility_tests {
             context: None,
             open_url: None,
             automatic_confirmation_mode: false,
+            informational: false,
         }
     }
 

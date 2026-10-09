@@ -69,7 +69,10 @@ impl NotificationTracker {
     }
 }
 
-fn should_notify(instance: &AgentInstance, config: &crate::config::Config) -> bool {
+pub fn should_notify(instance: &AgentInstance, config: &crate::config::Config) -> bool {
+    if instance.informational {
+        return false;
+    }
     match instance.state {
         AgentState::Error => config.notify_error,
         AgentState::WaitingReply => config.notify_waiting_reply,
@@ -158,6 +161,7 @@ mod tests {
             context: None,
             open_url: None,
             automatic_confirmation_mode: false,
+            informational: false,
         };
         assert!(should_notify(&instance(AgentState::Waiting), &config));
         assert!(should_notify(&instance(AgentState::WaitingReply), &config));
@@ -190,6 +194,7 @@ mod tests {
                 context: None,
                 open_url: Some("http://127.0.0.1:3000".into()),
                 automatic_confirmation_mode: false,
+                informational: false,
             },
             0,
         )
@@ -218,6 +223,7 @@ mod tests {
             context: None,
             open_url: None,
             automatic_confirmation_mode: false,
+            informational: false,
         };
         let mut config = crate::config::Config::default();
         config.notifications_enabled = true;
@@ -245,6 +251,7 @@ mod tests {
             context: None,
             open_url: None,
             automatic_confirmation_mode: true,
+            informational: false,
         };
         assert!(!should_notify(&waiting, &config));
         let reply = AgentInstance {

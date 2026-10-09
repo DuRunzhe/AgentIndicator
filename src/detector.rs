@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 #[cfg(not(target_os = "macos"))]
 use sysinfo::ProcessesToUpdate;
@@ -21,6 +21,7 @@ pub struct Detector {
     macos_processes: MacProcessSource,
     sessions: SessionAnalyzer,
     deepseek: crate::deepseek::DeepSeekAnalyzer,
+    deepseek_desktop: crate::deepseek_desktop::DeepSeekDesktopAnalyzer,
     opencode: crate::opencode::OpenCodeAnalyzer,
     pi: crate::pi::PiAnalyzer,
     terminal: crate::terminal::TerminalProbe,
@@ -42,6 +43,7 @@ impl Detector {
             macos_processes: MacProcessSource::default(),
             sessions: SessionAnalyzer::default(),
             deepseek: crate::deepseek::DeepSeekAnalyzer::default(),
+            deepseek_desktop: crate::deepseek_desktop::DeepSeekDesktopAnalyzer::default(),
             opencode: crate::opencode::OpenCodeAnalyzer::default(),
             pi: crate::pi::PiAnalyzer::default(),
             terminal: crate::terminal::TerminalProbe::default(),
@@ -57,6 +59,19 @@ impl Detector {
 
     pub fn set_conversation_window(&mut self, window: Option<Duration>) {
         self.conversation_window = window;
+    }
+
+    /// The live conversations of the DeepSeek Harness desktop application, most
+    /// actionable first, plus how many the row cap left out.
+    ///
+    /// `home` is the profile the running desktop host reported, so a
+    /// non-default `DSH_HOME` reads the same profile the window shows.
+    pub fn deepseek_desktop_overview(
+        &mut self,
+        home: Option<&Path>,
+    ) -> (Vec<crate::deepseek_desktop::DesktopSession>, usize) {
+        self.deepseek_desktop.refresh(home);
+        self.deepseek_desktop.overview(self.conversation_window)
     }
 
     pub fn scan(&mut self) -> Vec<AgentInstance> {
@@ -106,6 +121,7 @@ impl Detector {
                     context: None,
                     open_url: None,
                     automatic_confirmation_mode: false,
+                    informational: false,
                 };
                 if kind == "claude" {
                     enrich_claude(&mut instance, &mut self.sessions);
@@ -125,6 +141,34 @@ impl Detector {
                 instance
             })
             .collect();
+        // The desktop application hosts every conversation it has open in one
+        // process, so its rows come from the profile's session cache instead of
+        // from the process tree.
+        let desktop: Vec<_> = roots
+            .iter()
+            .filter(|(_, _, kind)| *kind == "deepseek")
+            .filter_map(|(_, process, _)| {
+                let command = process
+                    .cmd()
+                    .iter()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                is_desktop_host(process).then(|| {
+                    (
+                        process.pid().as_u32(),
+                        Duration::from_secs(process.run_time()),
+                        crate::deepseek_desktop::home_from_command(&command),
+                    )
+                })
+            })
+            .collect();
+        for (pid, uptime, home) in desktop {
+            instances.retain(|instance| instance.pid != pid);
+            let (sessions, hidden) = self.deepseek_desktop_overview(home.as_deref());
+            instances.extend(desktop_rows(pid, uptime, &sessions));
+            instances.extend(desktop_overflow_row(pid, hidden));
+        }
         enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
             if !instances
@@ -141,6 +185,15 @@ impl Detector {
     #[cfg(target_os = "macos")]
     fn scan_macos(&mut self) -> Vec<AgentInstance> {
         let processes = self.macos_processes.processes();
+        // The desktop application is one process tree that owns every
+        // conversation it has open, so it is detected first and reported from
+        // the profile's session cache rather than from the process tree: one
+        // row per live conversation, all pointing at the application window.
+        let desktop_hosts = desktop_roots(&processes);
+        let desktop_groups: Vec<Vec<u32>> = desktop_hosts
+            .iter()
+            .map(|(process, _)| process_tree_pids(process.pid, &processes))
+            .collect();
         let roots: Vec<_> = processes
             .iter()
             .filter_map(|process| {
@@ -152,6 +205,11 @@ impl Detector {
                 Some((process, kind, host))
             })
             .filter(|(process, kind, _)| !has_process_agent_parent(process, kind, &processes))
+            .filter(|(process, _, _)| {
+                !desktop_groups
+                    .iter()
+                    .any(|group| group.contains(&process.pid))
+            })
             .collect();
         let tracked_pids: Vec<_> = roots
             .iter()
@@ -238,6 +296,7 @@ impl Detector {
                         None
                     },
                     automatic_confirmation_mode: false,
+                    informational: false,
                 };
                 match kind {
                     "claude" => enrich_claude(&mut instance, &mut self.sessions),
@@ -259,6 +318,9 @@ impl Detector {
                             instance.open_url = rollout.as_deref().and_then(codex_thread_url);
                         }
                     }
+                    // The desktop application's whole process tree is excluded
+                    // from `roots`, so a deepseek row here is always a terminal
+                    // session bound to its project's session logs.
                     "deepseek" => enrich_deepseek(&mut instance, &mut self.deepseek),
                     "opencode" => enrich_opencode(&mut instance, &mut self.opencode),
                     _ => {}
@@ -266,6 +328,11 @@ impl Detector {
                 vec![instance]
             })
             .collect();
+        for (process, home) in desktop_hosts {
+            let (sessions, hidden) = self.deepseek_desktop_overview(home.as_deref());
+            instances.extend(desktop_rows(process.pid, process.uptime, &sessions));
+            instances.extend(desktop_overflow_row(process.pid, hidden));
+        }
         enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
             if !instances
@@ -293,7 +360,178 @@ fn stopped_instance(kind: &str) -> AgentInstance {
         context: None,
         open_url: None,
         automatic_confirmation_mode: false,
+        informational: false,
     }
+}
+
+/// One row per conversation the DeepSeek Harness desktop application has open,
+/// taken from the profile's session cache. Every row carries the host's pid, so
+/// clicking it activates the application window; the conversation id keeps the
+/// rows (and their notification state) apart.
+///
+/// With no conversation inside the configured range the application still gets
+/// a row: the user has the window open, and "ready" is the truth about it.
+fn desktop_rows(
+    pid: u32,
+    uptime: Duration,
+    sessions: &[crate::deepseek_desktop::DesktopSession],
+) -> Vec<AgentInstance> {
+    let display = display_name("deepseek");
+    if sessions.is_empty() {
+        return vec![AgentInstance {
+            key: format!("desktop:{pid}"),
+            kind: display.into(),
+            label: display.into(),
+            pid,
+            cwd: None,
+            state: AgentState::Ready,
+            uptime,
+            model: None,
+            context: None,
+            open_url: None,
+            automatic_confirmation_mode: false,
+            informational: false,
+        }];
+    }
+    sessions
+        .iter()
+        .map(|session| AgentInstance {
+            key: format!("desktop:{}", session.id),
+            kind: display.into(),
+            label: desktop_label(session),
+            pid,
+            cwd: session.cwd.clone(),
+            state: session.state,
+            uptime: session
+                .created
+                .and_then(|created| SystemTime::now().duration_since(created).ok())
+                .unwrap_or(uptime),
+            model: session.model.clone(),
+            context: session.context.clone(),
+            // The desktop app has no per-conversation deep link yet, so clicking
+            // a row brings its window forward.
+            open_url: None,
+            automatic_confirmation_mode: session.automatic_confirmation_mode,
+            informational: false,
+        })
+        .collect()
+}
+
+/// A plain-text row reporting the conversations the row cap left out.
+///
+/// Without it the cap would silently hide work: the list ends at
+/// [`crate::deepseek_desktop::MAX_DESKTOP_ROWS`] with no hint that more
+/// conversations are live, so a user watching a session that fell off the end
+/// would see nothing. It is not clickable and carries no session, which is why
+/// it is marked informational and skipped by the summary and notifications.
+fn desktop_overflow_row(pid: u32, hidden: usize) -> Option<AgentInstance> {
+    (hidden > 0).then(|| AgentInstance {
+        key: format!("desktop:{pid}:more"),
+        kind: display_name("deepseek").into(),
+        label: crate::i18n::hidden_sessions(hidden),
+        pid,
+        cwd: None,
+        state: AgentState::Ready,
+        uptime: Duration::ZERO,
+        model: None,
+        context: None,
+        open_url: None,
+        automatic_confirmation_mode: false,
+        informational: true,
+    })
+}
+
+/// `DeepSeek Harness · <title>`, falling back to the project name and then to
+/// the application name. The title already carries the project in practice, so
+/// repeating both would only shorten the useful part of the row.
+fn desktop_label(session: &crate::deepseek_desktop::DesktopSession) -> String {
+    let display = display_name("deepseek");
+    let detail = session
+        .title
+        .as_deref()
+        .or_else(|| session.cwd.as_deref().and_then(Path::file_name)?.to_str());
+    match detail {
+        Some(detail) => format!("{display} · {detail}"),
+        None => display.into(),
+    }
+}
+
+/// Whether a process is the DeepSeek Harness desktop host, whose rows come from
+/// the profile's session cache rather than from a per-conversation process.
+#[cfg(target_os = "macos")]
+fn is_desktop_host(process: &ProcessRecord) -> bool {
+    crate::deepseek_desktop::is_desktop_process(&process.executable, &process.command)
+}
+
+/// The DeepSeek Harness desktop application's root processes: the Electron
+/// application (pid, uptime) and the `DSH_HOME` its host runs with.
+///
+/// The app is one tree — the Electron main process, its helpers, and the
+/// Node-mode host that runs the `dsh` runtime — so only the topmost process of
+/// the tree is reported, and the whole tree is excluded from the generic scan
+/// to avoid reporting the same application once per helper.
+#[cfg(target_os = "macos")]
+fn desktop_roots(processes: &[ProcessRecord]) -> Vec<(&ProcessRecord, Option<PathBuf>)> {
+    let by_pid: HashMap<_, _> = processes
+        .iter()
+        .map(|process| (process.pid, process))
+        .collect();
+    processes
+        .iter()
+        .filter(|process| {
+            crate::deepseek_desktop::is_desktop_process(&process.executable, &process.command)
+        })
+        .filter(|process| {
+            // The Node-mode host runs the same executable with the runtime
+            // bootstrap on its command line; it is a child of the application,
+            // which is the process the tray reports.
+            !process.command.contains("dsh-desktop-host")
+        })
+        .filter(|process| {
+            let mut parent = process.ppid;
+            let mut seen = HashSet::new();
+            while parent != 0 && seen.insert(parent) {
+                let Some(candidate) = by_pid.get(&parent) else {
+                    break;
+                };
+                if crate::deepseek_desktop::is_desktop_process(
+                    &candidate.executable,
+                    &candidate.command,
+                ) {
+                    return false;
+                }
+                parent = candidate.ppid;
+            }
+            true
+        })
+        .map(|process| {
+            let tree = process_tree_pids(process.pid, processes);
+            let home = processes
+                .iter()
+                .filter(|candidate| {
+                    tree.contains(&candidate.pid) && candidate.command.contains("dsh-desktop-host")
+                })
+                .find_map(|candidate| {
+                    crate::deepseek_desktop::home_from_command(&candidate.command)
+                });
+            (process, home)
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_desktop_host(process: &Process) -> bool {
+    let command = process
+        .cmd()
+        .iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let path = process
+        .exe()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| executable(process));
+    crate::deepseek_desktop::is_desktop_process(&path, &command)
 }
 
 fn supported_kinds() -> [&'static str; 5] {
@@ -368,8 +606,15 @@ fn host_application_for(
 /// The executed program's basename, matched against the known agent binaries.
 /// Only the executable is considered: command lines routinely mention agent
 /// names (`which pi`) without being that agent.
+///
+/// The DeepSeek Harness desktop application is matched by its bundle directory
+/// instead: its executable is the product name with a space, which no CLI
+/// binary is ever called.
 #[cfg(target_os = "macos")]
 fn agent_kind_from_executable(executable: &str) -> Option<&'static str> {
+    if executable.contains(crate::deepseek_desktop::APP_BUNDLE) {
+        return Some("deepseek");
+    }
     let name = Path::new(executable)
         .file_name()?
         .to_str()?
@@ -562,6 +807,7 @@ fn hosted_application_instance(process: &ProcessRecord, display: &str) -> AgentI
         context: None,
         open_url: None,
         automatic_confirmation_mode: false,
+        informational: false,
     }
 }
 
@@ -623,6 +869,7 @@ fn hosted_codex_instances(
                 context: facts.context.clone(),
                 open_url: codex_thread_url(&rollout),
                 automatic_confirmation_mode: facts.automatic_confirmation_mode,
+                informational: false,
             }
         })
         .collect()
@@ -829,8 +1076,8 @@ fn enrich_macos_codex(
                 None => {
                     // `ps` reports uptime to the second, so allow a few extra
                     // seconds when deriving the process's start instant.
-                    let started = SystemTime::now()
-                        .checked_sub(instance.uptime + Duration::from_secs(5));
+                    let started =
+                        SystemTime::now().checked_sub(instance.uptime + Duration::from_secs(5));
                     analyzer.analyze_codex_for_cwd_since(cwd, started)
                 }
             },
@@ -1017,6 +1264,94 @@ fn enrich_claude(instance: &mut AgentInstance, analyzer: &mut SessionAnalyzer) {
 
 fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_reader(std::fs::File::open(path).ok()?).ok()
+}
+
+/// Why the DeepSeek Harness desktop application is or is not being reported.
+/// Meant for `--diagnose-deepseek-desktop`: it names the process the application
+/// was recognized as, the profile it points at, the conversations read from that
+/// profile's projection cache, and what one scan of that cache costs.
+pub fn diagnose_deepseek_desktop() -> Value {
+    let mut result = serde_json::json!({
+        "sessionCacheRoot": crate::deepseek_desktop::session_cache_root()
+            .map(|path| path.display().to_string()),
+        "hosts": [],
+        "processes": [],
+        "sessions": [],
+    });
+    let mut home: Option<PathBuf> = None;
+    #[cfg(target_os = "macos")]
+    {
+        let source = crate::macos_process::MacProcessSource::default();
+        let processes = source.processes();
+        result["processes"] = Value::Array(
+            processes
+                .iter()
+                .filter(|process| {
+                    process.executable.to_ascii_lowercase().contains("deepseek")
+                        || process.command.to_ascii_lowercase().contains("deepseek")
+                })
+                .map(|process| {
+                    serde_json::json!({
+                        "pid": process.pid,
+                        "kind": agent_kind_from_executable(&process.executable),
+                        "executable": process.executable,
+                        "host": is_desktop_host(process),
+                    })
+                })
+                .collect(),
+        );
+        result["hosts"] = Value::Array(
+            desktop_roots(&processes)
+                .into_iter()
+                .map(|(process, detected)| {
+                    home = detected.clone();
+                    serde_json::json!({
+                        "pid": process.pid,
+                        "ppid": process.ppid,
+                        "executable": process.executable,
+                        "home": detected.map(|path| path.display().to_string()),
+                    })
+                })
+                .collect(),
+        );
+    }
+    // The same work the 2-second scan does, timed. `cold` reads every session
+    // document, `warm` is the steady state where nothing moved since the last
+    // scan, and `sessions` builds the rows the menu consumes.
+    let mut analyzer = crate::deepseek_desktop::DeepSeekDesktopAnalyzer::default();
+    let cold = Instant::now();
+    let cold_parsed = analyzer.refresh(home.as_deref());
+    let cold_ms = cold.elapsed().as_secs_f64() * 1_000.0;
+    let warm = Instant::now();
+    let warm_parsed = analyzer.refresh(home.as_deref());
+    let warm_ms = warm.elapsed().as_secs_f64() * 1_000.0;
+    // A second steady-state scan is where an approval prompt is re-read (the
+    // pass is rate-limited), so this is the worst case of the 2-second cycle.
+    let repeat = Instant::now();
+    analyzer.refresh(home.as_deref());
+    let repeat_ms = repeat.elapsed().as_secs_f64() * 1_000.0;
+    let read = Instant::now();
+    let sessions = analyzer.sessions(None);
+    let sessions_ms = read.elapsed().as_secs_f64() * 1_000.0;
+    result["timing"] = serde_json::json!({
+        "refreshColdMs": cold_ms,
+        "refreshColdParsed": cold_parsed,
+        "refreshWarmMs": warm_ms,
+        "refreshWarmParsed": warm_parsed,
+        "refreshRepeatMs": repeat_ms,
+        "sessionsMs": sessions_ms,
+    });
+    result["sessions"] = serde_json::json!(sessions
+        .into_iter()
+        .map(|session| serde_json::json!({
+            "id": session.id,
+            "cwd": session.cwd.map(|path| path.display().to_string()),
+            "title": session.title,
+            "state": session.state,
+            "model": session.model,
+        }))
+        .collect::<Vec<_>>());
+    result
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1504,8 +1839,7 @@ mod tests {
         assert!(codex_resume_session_id_from_command("/opt/homebrew/bin/codex").is_none());
         // Switches such as `--last` are not thread ids.
         assert!(
-            codex_resume_session_id_from_command("/opt/homebrew/bin/codex resume --last")
-                .is_none()
+            codex_resume_session_id_from_command("/opt/homebrew/bin/codex resume --last").is_none()
         );
     }
 
@@ -1515,5 +1849,108 @@ mod tests {
         assert_eq!(instance.kind, "OpenCode");
         assert_eq!(instance.state, AgentState::Stopped);
         assert_eq!(instance.pid, 0);
+    }
+
+    fn desktop_session(id: &str, state: AgentState) -> crate::deepseek_desktop::DesktopSession {
+        crate::deepseek_desktop::DesktopSession {
+            id: id.into(),
+            cwd: Some(PathBuf::from("/Users/me/code/nita")),
+            title: Some("同步代码".into()),
+            state,
+            model: Some("deepseek-flash".into()),
+            context: Some(crate::model::ContextUsage {
+                used_tokens: 152_082,
+                window_tokens: 1_000_000,
+            }),
+            activity: SystemTime::now(),
+            created: Some(SystemTime::now() - Duration::from_secs(600)),
+            turn_open: true,
+            automatic_confirmation_mode: false,
+        }
+    }
+
+    #[test]
+    fn desktop_conversations_own_their_rows() {
+        let created = SystemTime::now() - Duration::from_secs(600);
+        let mut session = desktop_session("session-0c3f162a", AgentState::Working);
+        session.created = Some(created);
+        let mut waiting = desktop_session("session-106ec104", AgentState::WaitingReply);
+        waiting.created = Some(created);
+        let rows = desktop_rows(43958, Duration::from_secs(417), &[session, waiting]);
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].key, rows[1].key, "each conversation owns its row");
+        assert_eq!(rows[0].kind, "DeepSeek Harness");
+        assert_eq!(rows[0].label, "DeepSeek Harness · 同步代码");
+        assert_eq!(rows[0].pid, 43958, "clicking brings the app forward");
+        assert_eq!(rows[0].state, AgentState::Working);
+        assert_eq!(rows[1].state, AgentState::WaitingReply);
+        assert_eq!(rows[0].context.as_ref().unwrap().used_tokens, 152_082);
+        let uptime = rows[0].uptime.as_secs();
+        assert!(
+            (599..=601).contains(&uptime),
+            "the row ages from the conversation's creation, not the app's: {uptime}s"
+        );
+    }
+
+    #[test]
+    fn descriptor_rows_carry_the_auto_confirmation_mode() {
+        let mut session = desktop_session("session-auto", AgentState::Ready);
+        session.automatic_confirmation_mode = true;
+        let rows = desktop_rows(43958, Duration::from_secs(30), &[session]);
+        assert!(rows[0].automatic_confirmation_mode);
+        assert!(!rows[0].informational);
+    }
+
+    #[test]
+    fn the_overflow_row_reports_hidden_conversations() {
+        // Nothing hidden: no extra row at all.
+        assert!(desktop_overflow_row(43958, 0).is_none());
+        let row = desktop_overflow_row(43958, 3).expect("an overflow row");
+        assert!(row.informational, "it reports, it is not a session");
+        assert_eq!(row.pid, 43958);
+        assert_eq!(row.key, "desktop:43958:more");
+        assert!(
+            row.label.contains('3'),
+            "the count must be in the label: {}",
+            row.label
+        );
+        // The key cannot collide with a conversation row.
+        assert_ne!(row.key, "desktop:session-x");
+    }
+
+    #[test]
+    fn a_desktop_app_without_conversations_still_gets_a_row() {
+        let rows = desktop_rows(43958, Duration::from_secs(30), &[]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "desktop:43958");
+        assert_eq!(rows[0].label, "DeepSeek Harness");
+        assert_eq!(rows[0].state, AgentState::Ready);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_desktop_app_is_not_a_terminal_deepseek_session() {
+        let electron = record(
+            43958,
+            1,
+            "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness",
+            "",
+        );
+        assert!(is_desktop_host(&electron));
+        // Its Node-mode host runs the same executable, named only by the command.
+        let host = record(
+            44814,
+            43958,
+            "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness",
+            "--expose-internals /Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js /Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh ~/.dsh/profiles/desktop",
+        );
+        assert!(is_desktop_host(&host));
+        // A terminal session is enriched from the CLI session logs instead.
+        assert!(!is_desktop_host(&record(
+            500,
+            1,
+            "/opt/homebrew/bin/dsh",
+            ""
+        )));
     }
 }
