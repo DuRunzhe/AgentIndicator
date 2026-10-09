@@ -22,7 +22,6 @@ pub struct DeepSeekFacts {
 struct Cached {
     modified: SystemTime,
     size: u64,
-    checked: Instant,
     facts: DeepSeekFacts,
     last_access: Instant,
 }
@@ -40,9 +39,11 @@ impl DeepSeekAnalyzer {
         let modified = metadata.modified().ok()?;
         if let Some(cached) = self.cache.get_mut(&session) {
             cached.last_access = Instant::now();
-            if (cached.modified == modified && cached.size == metadata.len())
-                || cached.checked.elapsed() < Duration::from_secs(2)
-            {
+            // Size and modification time alone decide whether the cache is
+            // current. An extra "checked recently" window here used to win over
+            // them, so an approval written just after the previous scan kept its
+            // stale answer until the window expired.
+            if cached.modified == modified && cached.size == metadata.len() {
                 return Some(cached.facts.clone());
             }
         }
@@ -60,7 +61,6 @@ impl DeepSeekAnalyzer {
             Cached {
                 modified,
                 size: metadata.len(),
-                checked: Instant::now(),
                 facts: facts.clone(),
                 last_access: Instant::now(),
             },

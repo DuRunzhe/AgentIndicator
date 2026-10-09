@@ -248,18 +248,27 @@ impl DeepSeekDesktopAnalyzer {
             // did move may have gained or lost a prompt or a failure, so its
             // changed signature always wins over the read rate limit: the limit
             // bounds the zstd pass, it does not delay an answer on disk.
+            // A changed signature always re-reads, exactly as the body-state
+            // cache does: the log moving is the only evidence that an approval
+            // was answered or a turn failed, and waiting out the interval on it
+            // left the row stuck on "waiting for confirmation" until some later
+            // event happened to refresh it.
+            //
+            // A session that is currently showing a wait is re-read at every
+            // scan, because its log can stop moving while the prompt is still on
+            // screen. For anything else the rate limit applies, so a session in
+            // the failure window costs one decompression per interval rather
+            // than one per scan.
             let seen = self.signals.get(id).and_then(|state| state.log);
-            // A log that is still moving is read every scan: an approval prompt
-            // or a failure can be the very event that moved it. Once it stops, a
-            // cached answer — including "no failure" — is reused for the interval
-            // so an idle session costs one decompression per interval, not one
-            // per scan.
-            let moved = seen != signature
+            let reported_wait = self.signals.get(id).and_then(|_| self.reported_wait(id));
+            let reuse = reported_wait.is_none()
+                && seen.is_some()
+                && seen == signature
                 && self
                     .signals
                     .get(id)
-                    .is_none_or(|state| state.checked.elapsed() < SIGNAL_CHECK_INTERVAL);
-            let signals = if !moved {
+                    .is_some_and(|state| state.checked.elapsed() < SIGNAL_CHECK_INTERVAL);
+            let signals = if reuse {
                 self.signals.get(id).map(|state| state.signals)
             } else {
                 None
@@ -308,6 +317,22 @@ impl DeepSeekDesktopAnalyzer {
         }
         // A conversation that neither works nor shows a failure needs no signals.
         self.signals.retain(|id, _| active.contains(id));
+    }
+
+    /// Whether the applied view currently reports a wait or a failure, i.e. a
+    /// state driven by the event log rather than by the projection.
+    fn reported_wait(&self, id: &str) -> Option<()> {
+        self.cache
+            .values()
+            .filter_map(|cached| cached.applied.as_ref())
+            .find(|session| session.id == id)
+            .filter(|session| {
+                matches!(
+                    session.state,
+                    AgentState::Error | AgentState::Waiting | AgentState::WaitingReply
+                )
+            })
+            .map(|_| ())
     }
 
     /// The session's event log, looked up once per session. The desktop app
@@ -1117,6 +1142,43 @@ mod tests {
             "ask",
         )));
         assert!(!asked.automatic_confirmation_mode);
+    }
+
+    #[test]
+    fn an_answered_approval_clears_inside_the_rate_limit() {
+        if !zstd_available() {
+            return;
+        }
+        // Regression for the approval row that stayed on "waiting for
+        // confirmation" after the user submitted the prompt: the decision moves
+        // the log, but it lands within the read interval, and the interval used
+        // to win — the cached "asked" answer was reused until something else
+        // happened to refresh the row.
+        let id = "session-approval-timing";
+        let home = fake_profile(
+            id,
+            "{\"type\":\"approval/asked\",\"data\":{\"id\":\"a\"}}\n",
+        );
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&home));
+        assert_eq!(analyzer.sessions(None)[0].state, AgentState::Waiting);
+
+        let log = home
+            .join("sessions")
+            .join("--Users-me-code-app--")
+            .join(id)
+            .join("session.v4.jsonl.zstd");
+        // Answered immediately: the second scan happens well inside the interval.
+        compress(
+            "{\"type\":\"approval/asked\",\"data\":{\"id\":\"a\"}}\n{\"type\":\"approval/decided\",\"data\":{\"id\":\"a\",\"outcome\":\"allowed-once\"}}\n",
+            &log,
+        );
+        analyzer.refresh(Some(&home));
+        assert_eq!(
+            analyzer.sessions(None)[0].state,
+            AgentState::Working,
+            "the decision must clear the wait on the next scan, not after the interval"
+        );
     }
 
     #[test]
