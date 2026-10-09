@@ -194,10 +194,30 @@ fn read_zstd_tail(path: &Path) -> Option<String> {
     None
 }
 
+/// Whether an `llm/retry` record reports a spent retry budget.
+///
+/// The plugin retries a failed step automatically (`mode: "normal"` carries
+/// `retry` and `maxRetries`); once the attempt count reaches the budget the step
+/// cannot recover on its own, which is the failure the tray reports. A retry
+/// below the budget is transient, and `step/start` / `turn/end` clear the
+/// projection, so a recovered session stops reporting it.
+pub fn retries_exhausted(data: &Value) -> bool {
+    let Some(retry) = data["retry"].as_u64() else {
+        return false;
+    };
+    let Some(max) = data["maxRetries"].as_u64() else {
+        // `mode: "always"` has no budget: its retries never stop on their own.
+        return false;
+    };
+    max > 0 && retry >= max
+}
+
 fn parse_signals(text: &str) -> DeepSeekFacts {
     let mut facts = DeepSeekFacts::default();
     let mut approvals = HashSet::new();
     let mut questions = HashSet::new();
+    let mut turn_open = false;
+    let mut failed = false;
     let mut reply_requested = false;
     let mut last_text: Option<String> = None;
     let lines: Vec<_> = text.lines().rev().take(TAIL_LINES).collect();
@@ -217,7 +237,15 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
                     facts.model = Some(model.trim().into());
                 }
             }
+            Some("turn/start") => {
+                turn_open = true;
+            }
             Some("turn/end") => {
+                // The turn is closed, so a failure recorded inside it has been
+                // contained: an exhausted retry only means "still broken" while
+                // the turn that hit it is open.
+                turn_open = false;
+                failed = false;
                 reply_requested = last_text
                     .take()
                     .is_some_and(|text| ends_with_question(&text));
@@ -242,16 +270,26 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
                     questions.remove(id);
                 }
             }
-            Some("error" | "turn/error" | "turn/failed" | "connection/error") => {
-                facts.state = Some(AgentState::Error);
+            Some("llm/retry") if retries_exhausted(&data) => {
+                // The session log carries no error event: `agent/error` is a
+                // live-bus signal that is never written to it. A failed step
+                // reaches the log only as an `llm/retry` record, so an exhausted
+                // retry budget is what a failure looks like here. The final
+                // precedence below decides whether it is reported, exactly as the
+                // waiting states are decided.
+                failed = turn_open;
             }
             _ => {}
         }
     }
+    // Waiting states outrank a failure, matching the tray's own ordering: a
+    // prompt that needs the user is actionable even if the step also failed.
     facts.state = if !questions.is_empty() || reply_requested {
         Some(AgentState::WaitingReply)
     } else if !approvals.is_empty() {
         Some(AgentState::Waiting)
+    } else if failed {
+        Some(AgentState::Error)
     } else {
         None
     };
@@ -346,6 +384,32 @@ mod tests {
         let facts = parse_signals("{\"type\":\"approval/asked\",\"data\":{\"id\":\"a\"}}\n");
         assert_eq!(facts.state, Some(AgentState::Waiting));
     }
+    #[test]
+    fn a_spent_retry_budget_is_a_failure_in_the_cli_log_too() {
+        // Both readers share this rule; the CLI log has no error event either.
+        // A retry is only ever appended inside an open turn.
+        let line = |retry: u64, max: &str| {
+            format!(
+                "{{\"type\":\"turn/start\",\"data\":{{\"turn\":1}}}}\n{{\"type\":\"step/start\",\"data\":{{\"turn\":1,\"step\":2}}}}\n{{\"type\":\"llm/retry\",\"data\":{{\"turn\":1,\"step\":2,\"mode\":\"normal\",\"retry\":{retry},\"maxRetries\":{max},\"failure\":{{\"message\":\"boom\"}}}}}}\n"
+            )
+        };
+        assert_eq!(parse_signals(&line(1, "5")).state, None);
+        assert_eq!(parse_signals(&line(5, "5")).state, Some(AgentState::Error));
+        // Once the turn closes, the failure is contained.
+        let closed = format!(
+            "{} {{\"type\":\"turn/end\",\"data\":{{\"turn\":1}}}}\n",
+            line(5, "5")
+        );
+        assert_eq!(parse_signals(&closed).state, None);
+        // No budget to spend: not a terminal failure.
+        let always = "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}\n{\"type\":\"llm/retry\",\"data\":{\"mode\":\"always\",\"retry\":9}}\n";
+        assert_eq!(parse_signals(always).state, None);
+        assert!(retries_exhausted(
+            &serde_json::json!({ "retry": 5, "maxRetries": 5 })
+        ));
+        assert!(!retries_exhausted(&serde_json::json!({ "retry": 5 })));
+    }
+
     #[test]
     fn detects_question_at_turn_end() {
         let text = "{\"type\":\"assistant/message\",\"data\":{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Continue?\"}],\"source\":{\"model\":\"deepseek-v3\"}}}}\n{\"type\":\"turn/end\",\"data\":{}}\n";

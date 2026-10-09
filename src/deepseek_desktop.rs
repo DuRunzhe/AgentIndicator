@@ -32,10 +32,16 @@ const CACHE_VERSION: u8 = 5;
 /// changed log, and no more often than this per conversation.
 const SIGNAL_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 /// How long after its last activity a conversation is still examined for a
-/// failure. A failure typically ends the turn, so the row that must show it
-/// looks finished; only a log that moved this recently can be the failure we
-/// have not read yet.
-const FAILURE_OBSERVATION_WINDOW: Duration = Duration::from_secs(30);
+/// failure.
+///
+/// A failure can close its turn quickly (the retry budget is spent inside the
+/// turn, but the turn is closed as soon as the driver unwinds), and a closed
+/// turn reports no failure — so the row that must show "error" can already look
+/// finished by the time the scan runs. Anything active this recently is read
+/// once per scan; the cost is one zstd pass over a log that is about to stop
+/// moving anyway. A failure the user moved on from is deleted from the log, so
+/// this window is the only thing keeping it visible, not a latch.
+const FAILURE_OBSERVATION_WINDOW: Duration = Duration::from_secs(300);
 const CACHE_CAPACITY: usize = 200;
 /// Upper bound on the conversation rows a single scan adds to the menu. A
 /// conversation waiting for the user or failed is listed before this cap
@@ -297,6 +303,10 @@ impl DeepSeekDesktopAnalyzer {
                 if &facts.id != id {
                     continue;
                 }
+                // Same precedence as the CLI reader: a prompt that needs the
+                // user outranks a failure, and a still-open step outranks a
+                // spent retry — the step may still recover or be retried by the
+                // user, while the projection is the authority on it.
                 let projected = facts.state;
                 let state = if signals.question_pending {
                     AgentState::WaitingReply
@@ -392,6 +402,26 @@ impl DeepSeekDesktopAnalyzer {
         (sessions, hidden)
     }
 
+    /// The event-log signals read for one session, for `--diagnose-deepseek-desktop`.
+    pub fn signal_report(&self, id: &str) -> serde_json::Value {
+        let cached = self.cache.values().find(|cached| {
+            cached
+                .facts
+                .as_ref()
+                .is_some_and(|session| session.id == id)
+        });
+        let signals = cached.and_then(|cached| cached.applied.as_ref().map(|_| cached));
+        let read = self.signals.get(id);
+        serde_json::json!({
+            "approvalAsked": read.is_some_and(|state| state.signals.approval_asked),
+            "questionPending": read.is_some_and(|state| state.signals.question_pending),
+            "error": read.is_some_and(|state| state.signals.error),
+            "logSignature": read.and_then(|state| state.log).map(|(size, _)| size),
+            "readAgoSecs": read.map(|state| state.checked.elapsed().as_secs_f64()),
+            "inObservation": signals.is_some(),
+        })
+    }
+
     /// The rows a scan would show, without the overflow count.
     pub fn sessions(&self, window: Option<Duration>) -> Vec<DesktopSession> {
         self.overview(window).0
@@ -438,13 +468,14 @@ fn log_signature(path: &Path) -> Option<(u64, SystemTime)> {
 ///
 /// The events are the same ones the CLI sessions write, so the rules are shared
 /// with the terminal reader: every `approval/asked` id must have a later
-/// `approval/decided`, and an error, failed turn or dropped connection is a
-/// failure. Only the tail is read, so a failure scrolls out of the window once
-/// the conversation moves on — which is what makes recovery visible.
+/// `approval/decided`, and a failure is an `llm/retry` record that spent its
+/// retry budget. Only the tail is read, so a failure scrolls out of the window
+/// once the conversation moves on — which is what makes recovery visible.
 fn log_signals(text: &str) -> LogSignals {
     let mut signals = LogSignals::default();
     let mut asked: Vec<String> = Vec::new();
     let mut question_calls: Vec<String> = Vec::new();
+    let mut turn_open = false;
     for line in text.lines() {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -469,7 +500,16 @@ fn log_signals(text: &str) -> LogSignals {
                     question_calls.retain(|candidate| candidate != call_id);
                 }
             }
-            Some("error" | "turn/error" | "turn/failed" | "connection/error") => {
+            // An exhausted retry only means "still broken" while the turn that
+            // hit it is open: the retry plugin appends inside an open turn, and a
+            // closed turn has already contained the failure. Without this a
+            // failure the user moved on from would keep reporting an error.
+            Some("turn/start") => turn_open = true,
+            Some("turn/end") => {
+                turn_open = false;
+                signals.error = false;
+            }
+            Some("llm/retry") if turn_open && crate::deepseek::retries_exhausted(data) => {
                 signals.error = true;
             }
             _ => {}
@@ -994,14 +1034,44 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_in_the_tail_is_recognized() {
-        for event in ["error", "turn/error", "turn/failed", "connection/error"] {
-            let line = format!("{{\"type\":\"{event}\",\"data\":{{}}}}\n");
-            assert!(log_signals(&line).error, "{event} must read as a failure");
-        }
-        assert!(!log_signals("{\"type\":\"step/end\",\"data\":{}}\n").error);
+    fn only_a_spent_retry_budget_is_a_failure() {
+        // The session log has no error event; `agent/error` is live-bus only. A
+        // failed step appears as `llm/retry`, which is also what a *recovering*
+        // step writes, so only a spent retry budget counts.
+        let retry = |retry: u64, max: Value| {
+            format!(
+                "{{\"type\":\"turn/start\",\"data\":{{\"turn\":1}}}}\n{{\"type\":\"llm/retry\",\"data\":{{\"turn\":1,\"step\":2,\"provider\":\"deepseek-official\",\"mode\":\"normal\",\"retry\":{retry},\"maxRetries\":{max},\"delayMs\":500,\"failure\":{{\"message\":\"boom\"}}}}}}\n"
+            )
+        };
+        // Inside the budget the plugin is retrying the step, not failing it.
+        assert!(!log_signals(&retry(1, json!(5))).error);
+        assert!(!log_signals(&retry(4, json!(5))).error);
+        // The last attempt has been spent.
+        assert!(log_signals(&retry(5, json!(5))).error);
+        // A closed turn contains the failure it recorded.
+        let contained = format!(
+            "{}{{\"type\":\"turn/end\",\"data\":{{\"turn\":1}}}}\n",
+            retry(5, json!(5))
+        );
+        assert!(!log_signals(&contained).error);
+        // `mode: "always"` carries no budget and never stops on its own.
+        let always = "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}\n{\"type\":\"llm/retry\",\"data\":{\"mode\":\"always\",\"retry\":9,\"failure\":{\"message\":\"boom\"}}}\n";
+        assert!(!log_signals(always).error);
+        // A record without a retry count is not evidence either.
+        assert!(
+            !log_signals(
+                "{\"type\":\"turn/start\",\"data\":{}}\n{\"type\":\"llm/retry\",\"data\":{}}\n"
+            )
+            .error
+        );
+        assert!(
+            !log_signals(
+                "{\"type\":\"turn/start\",\"data\":{}}\n{\"type\":\"step/end\",\"data\":{}}\n"
+            )
+            .error
+        );
         // A failure and a pending prompt can coexist in one tail.
-        let both = format!("{ASKED}{{\"type\":\"turn/failed\",\"data\":{{}}}}\n");
+        let both = format!("{ASKED}{}", retry(5, json!(5)));
         let signals = log_signals(&both);
         assert!(signals.error && signals.approval_asked);
     }
@@ -1333,7 +1403,10 @@ mod tests {
             .join(id)
             .join("session.v4.jsonl.zstd");
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
-        compress("{\"type\":\"turn/failed\",\"data\":{}}\n", &log);
+        compress(
+            "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}\n{\"type\":\"step/start\",\"data\":{\"turn\":1,\"step\":1}}\n{\"type\":\"step/end\",\"data\":{\"turn\":1,\"step\":1}}\n{\"type\":\"llm/retry\",\"data\":{\"turn\":1,\"step\":1,\"mode\":\"normal\",\"retry\":5,\"maxRetries\":5,\"failure\":{\"message\":\"boom\"}}}\n",
+            &log,
+        );
         analyzer.refresh(Some(&home));
         assert_eq!(analyzer.sessions(None)[0].state, AgentState::Error);
         assert!(needs_attention(AgentState::Error));

@@ -1315,6 +1315,17 @@ pub fn diagnose_deepseek_desktop() -> Value {
                 .collect(),
         );
     }
+    // A host that is not running still has a profile worth reading: without this
+    // the diagnostic reported nothing at all whenever the app was closed, which
+    // is exactly when it is consulted for a state mismatch.
+    if result["hosts"]
+        .as_array()
+        .is_some_and(|hosts| hosts.is_empty())
+    {
+        // The analyzer falls back to `DSH_HOME` (or `~/.dsh`) on its own; only
+        // an explicitly discovered home is passed through here.
+        home = None;
+    }
     // The same work the 2-second scan does, timed. `cold` reads every session
     // document, `warm` is the steady state where nothing moved since the last
     // scan, and `sessions` builds the rows the menu consumes.
@@ -1343,13 +1354,17 @@ pub fn diagnose_deepseek_desktop() -> Value {
     });
     result["sessions"] = serde_json::json!(sessions
         .into_iter()
-        .map(|session| serde_json::json!({
-            "id": session.id,
-            "cwd": session.cwd.map(|path| path.display().to_string()),
-            "title": session.title,
-            "state": session.state,
-            "model": session.model,
-        }))
+        .map(|session| {
+            let signals = analyzer.signal_report(&session.id);
+            serde_json::json!({
+                "id": session.id,
+                "cwd": session.cwd.map(|path| path.display().to_string()),
+                "title": session.title,
+                "state": session.state,
+                "model": session.model,
+                "signals": signals,
+            })
+        })
         .collect::<Vec<_>>());
     result
 }
