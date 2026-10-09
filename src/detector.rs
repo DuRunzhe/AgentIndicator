@@ -161,12 +161,7 @@ impl Detector {
                     } else {
                         display_name(kind).into()
                     },
-                    label: cwd
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .and_then(|s| s.to_str())
-                        .map(|p| format!("{} ({p})", display_name(kind)))
-                        .unwrap_or_else(|| display_name(kind).into()),
+                    label: terminal_label(kind, display_name(kind), cwd.as_deref()),
                     pid: pid.as_u32(),
                     cwd,
                     state: if active {
@@ -337,19 +332,7 @@ impl Detector {
                     } else {
                         display.into()
                     },
-                    label: cwd
-                        .as_ref()
-                        .and_then(|path| path.file_name())
-                        .and_then(|name| name.to_str())
-                        .map(|project| {
-                            format!(
-                                "{display} · {} ({project})",
-                                crate::i18n::deepseek_form(false)
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            format!("{display} · {}", crate::i18n::deepseek_form(false))
-                        }),
+                    label: terminal_label(kind, display, cwd.as_deref()),
                     pid: process.pid,
                     cwd,
                     state: if active {
@@ -1753,6 +1736,32 @@ fn display_name(kind: &str) -> &str {
     }
 }
 
+/// A terminal agent's row label: the agent, its form, and the project it runs in.
+///
+/// A DeepSeek Harness terminal row also names the conversation it is driving, so
+/// the terminal and desktop forms show which conversation each of them reports
+/// rather than looking like two rows for the same thing.
+fn terminal_label(kind: &str, display: &str, cwd: Option<&Path>) -> String {
+    let project = cwd
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty());
+    if kind != "deepseek" {
+        return match project {
+            Some(project) => format!("{display} ({project})"),
+            None => display.to_owned(),
+        };
+    }
+    let form = crate::i18n::deepseek_form(false);
+    let title = cwd.and_then(crate::deepseek::session_title_for);
+    match (project, title.as_deref()) {
+        (Some(project), Some(title)) => format!("{display} · {form} ({project}) · {title}"),
+        (Some(project), None) => format!("{display} · {form} ({project})"),
+        (None, Some(title)) => format!("{display} · {form} · {title}"),
+        (None, None) => format!("{display} · {form}"),
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn has_agent_parent(process: &Process, kind: &str, system: &System) -> bool {
     let mut parent = process.parent();
@@ -2195,6 +2204,31 @@ mod tests {
         assert!(
             codex_resume_session_id_from_command("/opt/homebrew/bin/codex resume --last").is_none()
         );
+    }
+
+    #[test]
+    fn a_terminal_row_names_its_project_and_conversation() {
+        let path = Path::new("/Users/me/code/AgentIndicator");
+        // Non-DeepSeek agents keep their long-standing shape.
+        assert_eq!(
+            terminal_label("pi", "Pi", Some(path)),
+            "Pi (AgentIndicator)"
+        );
+        assert_eq!(terminal_label("claude", "Claude", None), "Claude");
+        // DeepSeek names the form, then the project. The conversation comes from
+        // the log of this project, so it is asserted separately.
+        let label = terminal_label("deepseek", "DeepSeek Harness", Some(path));
+        assert!(
+            label.starts_with(&format!(
+                "DeepSeek Harness · {} (AgentIndicator)",
+                crate::i18n::deepseek_form(false)
+            )),
+            "{label}"
+        );
+        // With no project there is still a form, never a bare duplicate.
+        let bare = terminal_label("deepseek", "DeepSeek Harness", None);
+        assert!(bare.contains(crate::i18n::deepseek_form(false)));
+        assert_ne!(bare, crate::i18n::deepseek_form(false));
     }
 
     #[test]

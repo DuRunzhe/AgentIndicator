@@ -87,6 +87,83 @@ fn prune_cache(cache: &mut HashMap<PathBuf, Cached>) {
     }
 }
 
+/// The title of the newest session this project has on disk, if any.
+///
+/// The `dsh` CLI writes its conversations into the same `$DSH_HOME/sessions`
+/// tree the desktop application uses, keyed by project directory. A terminal row
+/// can therefore name the conversation it is driving instead of showing only the
+/// project, which is what makes the terminal and desktop forms tell apart which
+/// conversation each one reports.
+///
+/// The newest session is the one the CLI is driving: a `dsh web` process
+/// reattaches to its project's latest conversation rather than starting a new
+/// one each run.
+pub fn session_title_for(cwd: &Path) -> Option<String> {
+    let home = dirs::home_dir()?.join(".dsh");
+    // Which session the CLI drives is the one being *written*, so the newest log
+    // decides. A session directory's own mtime only moves when a conversation is
+    // created (a `dsh web` process reattaches to an existing one), so directories
+    // are ranked by their newest log file instead.
+    let (_, session) = newest_logged_session(&home.join("sessions").join(encode_project_key(cwd)))
+        .or_else(|| newest_logged_session(&home.join("sessions")))?;
+    let session_id = session.file_name()?.to_str()?;
+    // The title is written once, near the start of a conversation, and a long
+    // conversation's log tail no longer reaches it (a live one here decompresses
+    // to 15 MB against a 256 KB window). The projection cache holds the title for
+    // every session and is small, so it is read instead of the log.
+    let projection = crate::deepseek_desktop::session_cache_root()
+        .unwrap_or_else(|| home.join("storages/session_projcache/sessions"))
+        .join(format!("{session_id}.json"));
+    let file = File::open(projection).ok()?;
+    let root: Value = serde_json::from_reader(file).ok()?;
+    let title = root["record"]["rows"]["title"]["val"].as_str()?.trim();
+    if title.is_empty() {
+        return None;
+    }
+    Some(title.chars().take(24).collect())
+}
+
+/// The session directory whose log file was written most recently.
+///
+/// The file names are the session-format ones this build already reads elsewhere;
+/// `collect_sessions` recognises only the older `session.jsonl` names, which is
+/// why this walks the directories itself.
+fn newest_logged_session(root: &Path) -> Option<(SystemTime, PathBuf)> {
+    let mut newest: Option<(SystemTime, PathBuf)> = None;
+    let projects = std::fs::read_dir(root).ok()?;
+    for project in projects.flatten() {
+        let Ok(sessions) = std::fs::read_dir(project.path()) else {
+            continue;
+        };
+        for session in sessions.flatten() {
+            let directory = session.path();
+            if !directory.is_dir() {
+                continue;
+            }
+            for name in [
+                "session.v4.jsonl.zstd",
+                "session.jsonl.zstd",
+                "session.jsonl",
+            ] {
+                let log = directory.join(name);
+                if !log.is_file() {
+                    continue;
+                }
+                if let Ok(modified) = log.metadata().and_then(|meta| meta.modified()) {
+                    if newest
+                        .as_ref()
+                        .is_none_or(|(current, _)| modified > *current)
+                    {
+                        newest = Some((modified, directory.clone()));
+                    }
+                }
+                break;
+            }
+        }
+    }
+    newest
+}
+
 fn latest_session(cwd: &Path, home: &Path) -> Option<PathBuf> {
     let preferred = home.join("sessions").join(encode_project_key(cwd));
     newest_session_under(&preferred).or_else(|| newest_session_under(&home.join("sessions")))
