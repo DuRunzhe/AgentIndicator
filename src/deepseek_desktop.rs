@@ -114,6 +114,13 @@ pub struct DesktopSession {
     /// When the newest prompt arrived, from the projection. A run whose start
     /// has scrolled out of the event-log tail still has this anchor.
     pub last_prompt: Option<SystemTime>,
+    /// The projection's own format version, from `identity.formatVersion`.
+    ///
+    /// `None` marks a document written before the current session format, which
+    /// the runtime itself does not serve: the desktop app's workspace list leaves
+    /// those sessions out. Reading them anyway listed conversations the user
+    /// could not see anywhere in the app, duplicates included.
+    pub format_version: Option<u64>,
     /// How long the conversation's current run has lasted, measured from the
     /// log's turn boundaries. `None` when no log was read, in which case the
     /// row falls back to the application's own uptime.
@@ -166,6 +173,13 @@ pub struct ProfileHealth {
     pub retry_unjudged: u32,
     /// Whether the profile directory exists at all.
     pub root_present: bool,
+    /// Projections written before the current session format. The runtime does
+    /// not serve them, so they are skipped rather than listed.
+    ///
+    /// Deliberately not part of [`Self::is_intact`]: a superseded projection is
+    /// normal history, not a format this build failed to understand, and
+    /// treating it as damage would raise an alert on a healthy profile.
+    pub stale_format: usize,
 }
 
 impl ProfileHealth {
@@ -319,6 +333,9 @@ impl DeepSeekDesktopAnalyzer {
                     health.parsed += 1;
                     if facts.missing_rows > 0 {
                         health.incomplete += 1;
+                    }
+                    if facts.format_version.is_none() {
+                        health.stale_format += 1;
                     }
                 }
                 None => {
@@ -555,13 +572,14 @@ impl DeepSeekDesktopAnalyzer {
     /// listed before one that is merely working, and both before a finished one,
     /// so the cap can only drop conversations that need no attention.
     pub fn overview(&self, window: Option<Duration>) -> (Vec<DesktopSession>, usize) {
-        let now = SystemTime::now();
-        let mut sessions: Vec<DesktopSession> = self
-            .cache
-            .values()
-            .filter_map(|cached| cached.applied.clone())
-            .filter(|session| started(session) && worth_showing(session, now, window))
-            .collect();
+        let mut sessions: Vec<DesktopSession> = listed_sessions(
+            &self
+                .cache
+                .values()
+                .filter_map(|cached| cached.applied.clone())
+                .collect::<Vec<_>>(),
+            window,
+        );
         sessions.sort_by(|left, right| {
             attention_rank(left.state)
                 .cmp(&attention_rank(right.state))
@@ -699,6 +717,32 @@ fn log_signals(text: &str) -> LogSignals {
     signals.retry_unjudged = timeline.unjudged_retries();
     signals.run = timeline.run_duration(now_millis());
     signals
+}
+
+/// The conversations a scan lists, from everything the cache holds.
+///
+/// A projection the runtime no longer serves is not a conversation the user has:
+/// the desktop app's own workspace list leaves those sessions out, so listing
+/// them invented rows — duplicate titles among them — that existed nowhere in the
+/// UI. `identity.formatVersion` is the runtime's own marker for a document of the
+/// current session format, so its absence is what is filtered, not a heuristic on
+/// row names.
+///
+/// This complements, rather than duplicates, the row-presence check in
+/// [`parse_session_file`]: a superseded document is already refused there when it
+/// also lost the rows this build reads (which is the case on the profile measured
+/// here), while the version marker still catches one that happens to carry them.
+fn listed_sessions(sessions: &[DesktopSession], window: Option<Duration>) -> Vec<DesktopSession> {
+    let now = SystemTime::now();
+    sessions
+        .iter()
+        .filter(|session| {
+            session.format_version.is_some()
+                && started(session)
+                && worth_showing(session, now, window)
+        })
+        .cloned()
+        .collect()
 }
 
 /// A conversation earns a row while it is mid-turn (working or waiting for the
@@ -881,6 +925,7 @@ fn parse_session_file(path: &Path, modified: SystemTime) -> Option<DesktopSessio
         context: context_of(&rows["contextPressure"]["val"]),
         activity: millis(&rows["sessionListMetadata"]["val"]["lastPromptAt"]).unwrap_or(modified),
         last_prompt: millis(&rows["sessionListMetadata"]["val"]["lastPromptAt"]),
+        format_version: record["identity"]["formatVersion"].as_u64(),
         // Filled from the event log, which is the only place a turn's start is
         // recorded. A conversation without a readable log keeps `None` and the
         // row falls back to the application's uptime.
@@ -1053,6 +1098,7 @@ mod tests {
     /// One projection-cache document with the rows this module reads.
     fn session_document(rows: Value) -> Value {
         json!({ "version": 7, "record": { "identity": {
+            "formatVersion": 4,
             "createdAt": 1_791_500_000_000u64,
             "cwd": "/Users/me/code/app",
         }, "rows": rows } })
@@ -1644,6 +1690,42 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_projection_is_not_listed() {
+        // Measured on this profile: two projection files carry no
+        // `identity.formatVersion` and 13 rows instead of 24, and the desktop
+        // app's workspace list omits them. Listing them invented rows — two of
+        // them sharing a title — that existed nowhere in the UI.
+        // Built from the real document shape, so the flag is exercised where it
+        // is actually set.
+        let current = parse_temp(&session_document(rows(
+            json!(null),
+            json!({}),
+            json!([]),
+            json!("当前格式"),
+        )));
+        assert_eq!(current.format_version, Some(4));
+        let mut legacy = current.clone();
+        legacy.id = "session-legacy".into();
+        legacy.format_version = None;
+
+        let listed = listed_sessions(&[legacy, current], None);
+        assert_eq!(listed.len(), 1, "the stale projection must not be listed");
+        assert_ne!(listed[0].format_version, None);
+
+        // Reported, but not as damage: a superseded projection is normal
+        // history, so it must not raise the profile alert.
+        let health = ProfileHealth {
+            root_present: true,
+            parsed: 2,
+            stale_format: 1,
+            ..ProfileHealth::default()
+        };
+        assert_eq!(health.stale_format, 1);
+        assert!(health.is_intact());
+        assert!(health.alert().is_none());
+    }
+
+    #[test]
     fn the_health_report_explains_a_shape_change() {
         // A renamed row must not read as "everything is fine, there are simply
         // no sessions" — that is the silent failure this accounting exists for.
@@ -1871,6 +1953,7 @@ mod tests {
                 // Older as the index grows, so index 0 is the newest.
                 activity: now - Duration::from_secs(index),
                 last_prompt: None,
+                format_version: Some(4),
                 run: None,
                 turn_open: false,
                 automatic_confirmation_mode: false,
@@ -1914,6 +1997,7 @@ mod tests {
             context: None,
             activity: now - Duration::from_secs(age_secs),
             last_prompt: None,
+            format_version: Some(4),
             run: None,
             turn_open: false,
             automatic_confirmation_mode: false,

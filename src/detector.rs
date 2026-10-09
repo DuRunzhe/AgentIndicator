@@ -1529,6 +1529,7 @@ pub fn diagnose_deepseek_desktop() -> Value {
         "unreadable": analyzer.health().unreadable,
         "incomplete": analyzer.health().incomplete,
         "retryUnjudged": analyzer.health().retry_unjudged,
+        "staleFormat": analyzer.health().stale_format,
         "intact": analyzer.health().is_intact(),
     });
     result["timing"] = serde_json::json!({
@@ -2078,6 +2079,7 @@ mod tests {
             }),
             activity: SystemTime::now(),
             last_prompt: Some(SystemTime::now() - Duration::from_secs(600)),
+            format_version: Some(4),
             run: None,
             turn_open: true,
             automatic_confirmation_mode: false,
