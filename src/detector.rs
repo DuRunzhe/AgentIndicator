@@ -2593,6 +2593,9 @@ mod tests {
         ));
     }
 
+    // Classification runs through the macOS-only executable matcher, so the
+    // test is gated with it; `is_dsh_cli` itself is covered cross-platform above.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_real_cli_command_line_is_recognized() {
         // Captured from `ps -axo command=` for a running `dsh web` on this
