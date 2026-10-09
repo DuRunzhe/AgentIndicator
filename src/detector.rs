@@ -73,6 +73,17 @@ impl Detector {
         self.deepseek_desktop_window = window;
     }
 
+    /// The hosted (ChatGPT) range currently in effect. Read by the tests that
+    /// pin the two ranges as independent *data*, not merely two menu groups.
+    pub fn conversation_window(&self) -> Option<Duration> {
+        self.conversation_window
+    }
+
+    /// The DeepSeek Harness desktop range currently in effect.
+    pub fn deepseek_desktop_window(&self) -> Option<Duration> {
+        self.deepseek_desktop_window
+    }
+
     /// The live conversations of the DeepSeek Harness desktop application, most
     /// actionable first, plus how many the row cap left out.
     ///
@@ -2049,6 +2060,45 @@ mod tests {
             "/Applications/Other App.app/Contents/MacOS/Other App",
             "/Applications/Other App.app/Contents/MacOS/Other App"
         ));
+    }
+
+    #[test]
+    fn the_two_ranges_are_independent_in_the_detector() {
+        // The menu is only the surface. What matters is that the two settings
+        // are separate pieces of state feeding separate readers, so changing one
+        // cannot move the other.
+        let mut detector = Detector::new();
+        let hosted = Some(Duration::from_secs(60 * 60));
+        let desktop = Some(Duration::from_secs(12 * 60 * 60));
+        detector.set_conversation_window(hosted);
+        detector.set_deepseek_desktop_window(desktop);
+        assert_eq!(detector.conversation_window(), hosted);
+        assert_eq!(detector.deepseek_desktop_window(), desktop);
+
+        // Moving one leaves the other exactly where it was, including to "all"
+        // (the `None` that keeps every conversation).
+        detector.set_deepseek_desktop_window(None);
+        assert_eq!(
+            detector.conversation_window(),
+            hosted,
+            "the hosted range must not follow the desktop one"
+        );
+        assert_eq!(detector.deepseek_desktop_window(), None);
+
+        detector.set_conversation_window(None);
+        assert_eq!(detector.deepseek_desktop_window(), None);
+        assert_eq!(detector.conversation_window(), None);
+
+        // And back the other way.
+        detector.set_conversation_window(desktop);
+        detector.set_deepseek_desktop_window(hosted);
+        assert_eq!(detector.conversation_window(), desktop);
+        assert_eq!(detector.deepseek_desktop_window(), hosted);
+        assert_ne!(
+            detector.conversation_window(),
+            detector.deepseek_desktop_window(),
+            "the two readers hold their own values"
+        );
     }
 
     #[test]

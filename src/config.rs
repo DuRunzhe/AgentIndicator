@@ -175,6 +175,24 @@ mod tests {
     }
 
     #[test]
+    fn the_two_ranges_round_trip_as_separate_fields() {
+        // Function and data, not just UI: the two choices must persist under
+        // separate keys and come back unchanged.
+        let mut config = Config::default();
+        config.conversation_window = "15m".into();
+        config.deepseek_desktop_window = "12h".into();
+        let json = serde_json::to_string(&config).expect("serialise");
+        assert!(json.contains(r#""conversation_window":"15m""#), "{json}");
+        assert!(
+            json.contains(r#""deepseek_desktop_window":"12h""#),
+            "the second range must have its own persisted key: {json}"
+        );
+        let back: Config = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.conversation_window, "15m");
+        assert_eq!(back.deepseek_desktop_window, "12h");
+    }
+
+    #[test]
     fn conversation_window_keys_map_to_durations() {
         let window = |key: &str| {
             Config {
