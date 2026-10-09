@@ -72,10 +72,10 @@ pub fn focus_url(url: &str, reuse_tabs: bool) -> bool {
     if reuse_tabs && focus_existing_tab(url) {
         return true;
     }
-    #[cfg(target_os = "macos")]
-    if reuse_tabs && automation_denied(url) && activate_browser() {
-        return true;
-    }
+    // Reuse cannot work without the Automation grant the script needs, and that
+    // grant is the user's to give. `open` still reaches the page — the OS reuses
+    // the browser's existing tab for the same URL when it is already open — so it
+    // is the correct fallback rather than activating the browser repeatedly.
     Command::new("open")
         .arg(url)
         .status()
@@ -105,26 +105,6 @@ fn focus_existing_tab(url: &str) -> bool {
         .is_ok_and(|output| output.status.success() && !output.stdout.is_empty())
 }
 
-#[cfg(target_os = "macos")]
-fn automation_denied(url: &str) -> bool {
-    let script = include_str!("web_focus.applescript").replace("{url}", &url.replace('"', "\\\""));
-    Command::new("/usr/bin/osascript")
-        .args(["-l", "JavaScript", "-e", &script])
-        .output()
-        .is_ok_and(|output| String::from_utf8_lossy(&output.stderr).contains("-1743"))
-}
-
-#[cfg(target_os = "macos")]
-fn activate_browser() -> bool {
-    ["Google Chrome", "Microsoft Edge", "Brave Browser", "Safari"]
-        .iter()
-        .any(|app| {
-            Command::new("/usr/bin/open")
-                .args(["-a", app])
-                .status()
-                .is_ok_and(|status| status.success())
-        })
-}
 
 #[cfg(test)]
 mod tests {

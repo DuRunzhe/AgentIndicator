@@ -37,10 +37,6 @@ pub struct Detector {
     codex_titles: CodexTitles,
     #[cfg(target_os = "macos")]
     web_urls: crate::web::WebUrlDetector,
-    /// What the last scan found for `dsh` CLI processes, for
-    /// `--diagnose-deepseek-desktop`.
-    #[cfg(target_os = "macos")]
-    last_drivers: Vec<DeepSeekDriver>,
 }
 
 impl Detector {
@@ -65,17 +61,7 @@ impl Detector {
             codex_titles: CodexTitles::default(),
             #[cfg(target_os = "macos")]
             web_urls: crate::web::WebUrlDetector::default(),
-            #[cfg(target_os = "macos")]
-            last_drivers: Vec::new(),
         }
-    }
-
-    /// The `dsh` CLI processes the last scan found, with the conversation each
-    /// drives and the web address it serves. Reported by the diagnostic so a row
-    /// that navigates to the wrong place can be explained.
-    #[cfg(target_os = "macos")]
-    pub fn last_drivers(&self) -> &[DeepSeekDriver] {
-        &self.last_drivers
     }
 
     pub fn set_conversation_window(&mut self, window: Option<Duration>) {
@@ -89,11 +75,13 @@ impl Detector {
 
     /// The hosted (ChatGPT) range currently in effect. Read by the tests that
     /// pin the two ranges as independent *data*, not merely two menu groups.
+    #[cfg(test)]
     pub fn conversation_window(&self) -> Option<Duration> {
         self.conversation_window
     }
 
     /// The DeepSeek Harness desktop range currently in effect.
+    #[cfg(test)]
     pub fn deepseek_desktop_window(&self) -> Option<Duration> {
         self.deepseek_desktop_window
     }
@@ -471,39 +459,6 @@ pub(crate) const DEEPSEEK_PLACEHOLDER_KIND: &str = "DeepSeek Harness";
 /// has to sort and group.
 pub(crate) const DEEPSEEK_TERMINAL_KIND: &str = "DeepSeek Harness (terminal)";
 
-/// The stopped row for one DeepSeek Harness form.
-fn deepseek_form_stopped(terminal: bool) -> AgentInstance {
-    let form = crate::i18n::deepseek_form(!terminal);
-    AgentInstance {
-        key: if terminal {
-            "stopped:deepseek:terminal".into()
-        } else {
-            "stopped:deepseek:desktop".into()
-        },
-        kind: if terminal {
-            DEEPSEEK_TERMINAL_KIND.into()
-        } else {
-            DEEPSEEK_PLACEHOLDER_KIND.into()
-        },
-        label: format!("{DEEPSEEK_PLACEHOLDER_KIND} · {form}"),
-        pid: 0,
-        cwd: None,
-        state: AgentState::Stopped,
-        uptime: Duration::ZERO,
-        model: None,
-        context: None,
-        open_url: None,
-        automatic_confirmation_mode: false,
-        informational: false,
-    }
-}
-
-/// Whether a DeepSeek Harness terminal row is present.
-fn has_deepseek_terminal(instances: &[AgentInstance]) -> bool {
-    instances
-        .iter()
-        .any(|instance| instance.kind == DEEPSEEK_TERMINAL_KIND)
-}
 
 /// The drivers found by the most recent scan, as JSON: the project a `dsh` CLI
 /// serves, the conversation it drives, and the address it serves.
@@ -557,7 +512,6 @@ fn desktop_rows(
 ) -> Vec<AgentInstance> {
     let display = display_name("deepseek");
     let pid = host.map_or(0, |(pid, _)| pid);
-    let uptime = host.map_or(Duration::ZERO, |(_, uptime)| uptime);
     // Whether a window exists to bring forward, which decides where a
     // conversation the CLI is not currently writing navigates.
     let host_running = host.is_some();
@@ -606,7 +560,7 @@ fn desktop_rows(
             // Where a row navigates follows whoever is driving the conversation:
             // the `dsh web` UI when a CLI owns it, otherwise the desktop window,
             // which has no per-conversation deep link yet.
-            open_url: session_target(session, drivers, host.is_some()),
+            open_url: session_target(session, drivers, host_running),
             automatic_confirmation_mode: session.automatic_confirmation_mode,
             informational: false,
         })
@@ -2437,45 +2391,6 @@ mod tests {
         assert_ne!(bare, crate::i18n::deepseek_form(false));
     }
 
-    #[test]
-    fn each_deepseek_form_reports_its_own_absence() {
-        // The two forms are independently present, so one pair-level stopped row
-        // could not say which of them is missing.
-        let stopped = |terminal: bool| deepseek_form_stopped(terminal);
-        let terminal = stopped(true);
-        let desktop = stopped(false);
-        assert_eq!(terminal.state, AgentState::Stopped);
-        assert_eq!(desktop.state, AgentState::Stopped);
-        assert_eq!(terminal.pid, 0);
-        assert_eq!(desktop.pid, 0);
-        assert_ne!(terminal.key, desktop.key, "their rows are separate state");
-        assert!(terminal.label.contains(crate::i18n::deepseek_form(false)));
-        assert!(desktop.label.contains(crate::i18n::deepseek_form(true)));
-
-        // The terminal form is recognized by its own kind, so its absence can be
-        // detected while the desktop form is listing conversations.
-        assert!(has_deepseek_terminal(&[terminal]));
-        assert!(!has_deepseek_terminal(&[desktop]));
-        let running = desktop_rows(
-            Some((43958, Duration::from_secs(60))),
-            &[desktop_session("session-a", AgentState::Working)],
-            &[],
-        );
-        assert!(!has_deepseek_terminal(&running));
-        assert!(
-            running
-                .iter()
-                .any(|instance| instance.kind == DEEPSEEK_PLACEHOLDER_KIND),
-            "a running desktop conversation stands in for the desktop form"
-        );
-
-        // Both forms sort with the agent they belong to, not after every other.
-        assert_eq!(
-            kind_order(DEEPSEEK_TERMINAL_KIND),
-            kind_order(DEEPSEEK_PLACEHOLDER_KIND)
-        );
-        assert!(kind_order(DEEPSEEK_TERMINAL_KIND) < usize::MAX);
-    }
 
     #[test]
     fn stopped_instances_have_no_focus_pid() {

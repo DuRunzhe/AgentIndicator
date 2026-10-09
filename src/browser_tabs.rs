@@ -42,11 +42,20 @@ pub fn open_automation_settings() -> bool {
     false
 }
 
+/// Whether Apple events to the browser are authorized.
+///
+/// `osascript` exits 0 even when the event is refused — the refusal arrives on
+/// stderr as `-1743` — so the exit status alone reported "authorized" for a user
+/// who had denied it, and the menu's check could never tell them otherwise.
 fn probe_automation() -> bool {
     #[cfg(target_os = "macos")]
     return Command::new("/usr/bin/osascript")
         .args(["-e", "tell application \"Google Chrome\" to if it is running then get URL of tabs of windows"])
-        .output().is_ok_and(|output| output.status.success());
+        .output()
+        .is_ok_and(|output| {
+            output.status.success()
+                && !String::from_utf8_lossy(&output.stderr).contains("-1743")
+        });
     #[cfg(not(target_os = "macos"))]
     false
 }
