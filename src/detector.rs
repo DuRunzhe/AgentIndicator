@@ -104,6 +104,25 @@ impl Detector {
             .filter_map(|(pid, process)| agent_kind(process).map(|kind| (*pid, process, kind)))
             .filter(|(_, process, kind)| !has_agent_parent(process, kind, &self.system))
             .collect();
+        // Snapshot the desktop host's identity before `roots` is consumed by the
+        // scan below: these rows are built afterwards, from the session cache.
+        let desktop_hosts: Vec<(u32, Duration, Option<PathBuf>)> = roots
+            .iter()
+            .filter(|(_, process, kind)| *kind == "deepseek" && is_desktop_host(process))
+            .map(|(_, process, _)| {
+                let command = process
+                    .cmd()
+                    .iter()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (
+                    process.pid().as_u32(),
+                    Duration::from_secs(process.run_time()),
+                    crate::deepseek_desktop::home_from_command(&command),
+                )
+            })
+            .collect();
         let mut instances: Vec<_> = roots
             .into_iter()
             .map(|(pid, process, kind)| {
@@ -153,26 +172,7 @@ impl Detector {
         // The desktop application hosts every conversation it has open in one
         // process, so its rows come from the profile's session cache instead of
         // from the process tree.
-        let desktop: Vec<_> = roots
-            .iter()
-            .filter(|(_, _, kind)| *kind == "deepseek")
-            .filter_map(|(_, process, _)| {
-                let command = process
-                    .cmd()
-                    .iter()
-                    .map(|value| value.to_string_lossy().into_owned())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                is_desktop_host(process).then(|| {
-                    (
-                        process.pid().as_u32(),
-                        Duration::from_secs(process.run_time()),
-                        crate::deepseek_desktop::home_from_command(&command),
-                    )
-                })
-            })
-            .collect();
-        for (pid, uptime, home) in desktop {
+        for (pid, uptime, home) in desktop_hosts {
             instances.retain(|instance| instance.pid != pid);
             let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
             instances.extend(desktop_rows(pid, uptime, &sessions));
@@ -505,7 +505,7 @@ fn desktop_label(session: &crate::deepseek_desktop::DesktopSession) -> String {
 /// the profile's session cache rather than from a per-conversation process.
 #[cfg(target_os = "macos")]
 fn is_desktop_host(process: &ProcessRecord) -> bool {
-    crate::deepseek_desktop::is_desktop_process(&process.executable, &process.command)
+    desktop_host_from_parts(&process.command, &process.executable)
 }
 
 /// The DeepSeek Harness desktop application's root processes: the Electron
@@ -564,6 +564,17 @@ fn desktop_roots(processes: &[ProcessRecord]) -> Vec<(&ProcessRecord, Option<Pat
         .collect()
 }
 
+/// The platform-independent half of desktop-host detection, compiled and tested
+/// on every platform.
+///
+/// Each platform adapter only has to produce a command line and an executable
+/// path. The non-macOS adapter used to inline the whole judgement, which put
+/// that branch's logic out of reach of an Apple Silicon host's compiler — the
+/// same reason a borrow error in it reached CI before it was caught here.
+pub(crate) fn desktop_host_from_parts(command: &str, path: &str) -> bool {
+    crate::deepseek_desktop::is_desktop_process(path, command)
+}
+
 #[cfg(not(target_os = "macos"))]
 fn is_desktop_host(process: &Process) -> bool {
     let command = process
@@ -576,7 +587,7 @@ fn is_desktop_host(process: &Process) -> bool {
         .exe()
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|| executable(process));
-    crate::deepseek_desktop::is_desktop_process(&path, &command)
+    desktop_host_from_parts(&command, &path)
 }
 
 fn supported_kinds() -> [&'static str; 5] {
@@ -1972,6 +1983,33 @@ mod tests {
         let rows = desktop_rows(43958, Duration::from_secs(30), &[session]);
         assert!(rows[0].automatic_confirmation_mode);
         assert!(!rows[0].informational);
+    }
+
+    #[test]
+    fn the_desktop_host_is_recognized_from_a_real_command_line() {
+        // Captured from a running app: the predicate is platform-independent, so
+        // it is compiled everywhere and this is the one place the *judgement*
+        // (rather than a platform adapter) is exercised on an Apple Silicon
+        // host. A borrow error in the non-macOS branch reached CI because that
+        // branch is not compiled here; keeping the judgement shared is what
+        // makes it reachable.
+        let command = "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness \
+             --expose-internals /Applications/DeepSeek Harness.app/Contents/Resources/app.asar\
+/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js";
+        assert!(desktop_host_from_parts(
+            command,
+            "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
+        ));
+        // An ordinary CLI session in the same project is not the desktop host.
+        assert!(!desktop_host_from_parts(
+            "node /usr/local/lib/node_modules/@deepseek-ai/dsh/bin/dsh.js",
+            "/usr/local/bin/node"
+        ));
+        // Nor is an unrelated Electron application.
+        assert!(!desktop_host_from_parts(
+            "/Applications/Other App.app/Contents/MacOS/Other App",
+            "/Applications/Other App.app/Contents/MacOS/Other App"
+        ));
     }
 
     #[test]
