@@ -226,6 +226,56 @@ impl ProfileHealth {
     }
 }
 
+/// The sessions the desktop application is actually showing.
+///
+/// `storages/workspace.json` is the application's own list of the conversations
+/// its workspaces hold, and it agrees exactly with the track's rows — every
+/// session it names is listed, and the one session it did *not* name was the
+/// conversation a `dsh` CLI process created in the same project. That makes it
+/// the authority on what "a desktop session" is.
+#[derive(Debug, Default)]
+struct WorkspaceRegistry {
+    /// Every session the application's workspaces hold.
+    sessions: std::collections::HashSet<String>,
+    /// Whether the registry was readable at all. An application that has not
+    /// written one yet must not blank the list.
+    present: bool,
+}
+
+impl WorkspaceRegistry {
+    fn load(home: &Path) -> Self {
+        let path = home.join("storages/workspace.json");
+        let Ok(file) = std::fs::File::open(&path) else {
+            return Self::default();
+        };
+        let Ok(root) = serde_json::from_reader::<_, Value>(file) else {
+            return Self::default();
+        };
+        let mut sessions = std::collections::HashSet::new();
+        if let Some(table) = root["tables"]["workspaces"].as_object() {
+            for workspace in table.values() {
+                for id in workspace["sessionIds"].as_array().into_iter().flatten() {
+                    if let Some(id) = id.as_str() {
+                        sessions.insert(id.to_owned());
+                    }
+                }
+            }
+        }
+        Self {
+            present: root["tables"]["workspaces"].is_object(),
+            sessions,
+        }
+    }
+
+    /// Whether the application itself is showing this conversation.
+    ///
+    /// A session it does not name was created by something else writing into the
+    /// same profile — a `dsh` CLI process — and belongs to the terminal form.
+    fn shows(&self, session: &DesktopSession) -> bool {
+        !self.present || self.sessions.contains(&session.id)
+    }
+}
+
 /// Why the profile could not be read the way this build expects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AlertKind {
@@ -263,6 +313,8 @@ pub struct DeepSeekDesktopAnalyzer {
     signals: HashMap<String, CachedSignals>,
     /// What the last scan found.
     health: ProfileHealth,
+    /// The application's own record of the sessions it shows.
+    workspaces: WorkspaceRegistry,
 }
 
 impl DeepSeekDesktopAnalyzer {
@@ -364,6 +416,11 @@ impl DeepSeekDesktopAnalyzer {
             parsed += 1;
         }
         self.prune(&seen);
+        if let Some(home) = self.home.as_deref() {
+            // Re-read every scan: one small JSON file, and it is what separates
+            // the application's conversations from a CLI process's.
+            self.workspaces = WorkspaceRegistry::load(home);
+        }
         health.retry_unjudged = self.resolve_signals();
         self.health = health;
         parsed
@@ -579,6 +636,7 @@ impl DeepSeekDesktopAnalyzer {
                 .filter_map(|cached| cached.applied.clone())
                 .collect::<Vec<_>>(),
             window,
+            &self.workspaces,
         );
         sessions.sort_by(|left, right| {
             attention_rank(left.state)
@@ -732,12 +790,19 @@ fn log_signals(text: &str) -> LogSignals {
 /// [`parse_session_file`]: a superseded document is already refused there when it
 /// also lost the rows this build reads (which is the case on the profile measured
 /// here), while the version marker still catches one that happens to carry them.
-fn listed_sessions(sessions: &[DesktopSession], window: Option<Duration>) -> Vec<DesktopSession> {
+fn listed_sessions(
+    sessions: &[DesktopSession],
+    window: Option<Duration>,
+    workspaces: &WorkspaceRegistry,
+) -> Vec<DesktopSession> {
     let now = SystemTime::now();
     sessions
         .iter()
         .filter(|session| {
             session.format_version.is_some()
+                // Only conversations the application itself shows: one it does
+                // not name was created by a CLI process into the same profile.
+                && workspaces.shows(session)
                 && started(session)
                 && worth_showing(session, now, window)
         })
@@ -1708,7 +1773,9 @@ mod tests {
         legacy.id = "session-legacy".into();
         legacy.format_version = None;
 
-        let listed = listed_sessions(&[legacy, current], None);
+        // No registry present means "show everything", so this exercises the
+        // format filter rather than the application's list.
+        let listed = listed_sessions(&[legacy, current], None, &WorkspaceRegistry::default());
         assert_eq!(listed.len(), 1, "the stale projection must not be listed");
         assert_ne!(listed[0].format_version, None);
 
@@ -1723,6 +1790,38 @@ mod tests {
         assert_eq!(health.stale_format, 1);
         assert!(health.is_intact());
         assert!(health.alert().is_none());
+    }
+
+    #[test]
+    fn only_the_sessions_the_application_shows_are_listed() {
+        // Measured on this profile: the application's workspace list held five
+        // sessions while six projections were present, and the extra one was the
+        // conversation a `dsh` CLI process created in the same project. The tray
+        // listed it as a desktop row, which is what "classified as desktop"
+        // means here.
+        let current = parse_temp(&session_document(rows(
+            json!(null),
+            json!({}),
+            json!([]),
+            json!("应用打开的会话"),
+        )));
+        let mut cli = current.clone();
+        cli.id = "session-cli".into();
+
+        let mut registry = WorkspaceRegistry::default();
+        registry.present = true;
+        registry.sessions.insert(current.id.clone());
+
+        let listed = listed_sessions(&[cli.clone(), current.clone()], None, &registry);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, current.id);
+        assert!(registry.shows(&current));
+        assert!(!registry.shows(&cli));
+
+        // A registry that was never written must not blank the list.
+        let absent = WorkspaceRegistry::default();
+        assert!(absent.shows(&cli));
+        assert_eq!(listed_sessions(&[cli], None, &absent).len(), 1);
     }
 
     #[test]
