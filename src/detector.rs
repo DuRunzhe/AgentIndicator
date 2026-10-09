@@ -215,8 +215,7 @@ impl Detector {
             instances.retain(|instance| instance.pid != process.pid);
             let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
             instances.extend(desktop_rows(
-                process.pid,
-                process.uptime,
+                Some((process.pid, process.uptime)),
                 &sessions,
                 &drivers,
             ));
@@ -402,16 +401,26 @@ impl Detector {
                 vec![instance]
             })
             .collect();
-        for (process, home) in desktop_hosts {
-            let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
-            instances.extend(desktop_rows(
-                process.pid,
-                process.uptime,
-                &sessions,
-                &drivers,
-            ));
-            instances.extend(desktop_overflow_row(process.pid, hidden));
-            instances.extend(desktop_alert_row(process.pid, alert));
+        if desktop_hosts.is_empty() {
+            // The conversations live in `$DSH_HOME`, which the CLI shares and
+            // keeps writing, so they are listed whether or not the application is
+            // running. The rows carry no pid: with the window closed there is
+            // nothing to activate, and a `dsh web` CLI's conversations open its UI.
+            let (sessions, hidden, alert) = self.deepseek_desktop_overview(None);
+            instances.extend(desktop_rows(None, &sessions, &drivers));
+            instances.extend(desktop_overflow_row(0, hidden));
+            instances.extend(desktop_alert_row(0, alert));
+        } else {
+            for (process, home) in desktop_hosts {
+                let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
+                instances.extend(desktop_rows(
+                    Some((process.pid, process.uptime)),
+                    &sessions,
+                    &drivers,
+                ));
+                instances.extend(desktop_overflow_row(process.pid, hidden));
+                instances.extend(desktop_alert_row(process.pid, alert));
+            }
         }
         if let Ok(mut snapshot) = DRIVERS_SNAPSHOT.lock() {
             *snapshot = drivers.clone();
@@ -542,13 +551,20 @@ struct DeepSeekDriver {
 /// With no conversation inside the configured range the application still gets
 /// a row: the user has the window open, and "ready" is the truth about it.
 fn desktop_rows(
-    pid: u32,
-    uptime: Duration,
+    host: Option<(u32, Duration)>,
     sessions: &[crate::deepseek_desktop::DesktopSession],
     drivers: &[DeepSeekDriver],
 ) -> Vec<AgentInstance> {
     let display = display_name("deepseek");
+    let pid = host.map_or(0, |(pid, _)| pid);
+    let uptime = host.map_or(Duration::ZERO, |(_, uptime)| uptime);
     if sessions.is_empty() {
+        // With no conversations in range the application still gets a row, but
+        // only while it is running: "ready" describes a window that is open, and
+        // a row with no process behind it would be a row for nothing.
+        let Some((pid, uptime)) = host else {
+            return Vec::new();
+        };
         return vec![AgentInstance {
             key: format!("desktop:{pid}"),
             kind: display.into(),
@@ -2318,6 +2334,28 @@ mod tests {
     }
 
     #[test]
+    fn conversations_are_listed_without_the_application_running() {
+        // The conversations live in `$DSH_HOME`, which the CLI shares and keeps
+        // writing, so closing the application window must not empty the list. The
+        // rows then have no process to activate.
+        let sessions = [desktop_session("session-a", AgentState::Working)];
+        let rows = desktop_rows(None, &sessions, &[]);
+        assert_eq!(rows.len(), 1, "a conversation is listed on its own");
+        assert_eq!(rows[0].pid, 0, "there is no window to activate");
+        assert_eq!(rows[0].uptime, Duration::ZERO);
+        assert_eq!(rows[0].label, "DeepSeek Harness · 同步代码");
+
+        // With no conversation in range there is nothing to describe, so a host
+        // that is not running gets no row at all — "ready" would be a claim about
+        // a window that does not exist.
+        assert!(desktop_rows(None, &[], &[]).is_empty());
+        // A running host still reports itself.
+        let host_only = desktop_rows(Some((43958, Duration::from_secs(60))), &[], &[]);
+        assert_eq!(host_only.len(), 1);
+        assert_eq!(host_only[0].pid, 43958);
+    }
+
+    #[test]
     fn a_conversation_navigates_to_whoever_is_driving_it() {
         // One row per conversation: the `dsh web` UI opens for the conversation a
         // CLI is writing, and every other conversation brings the application
@@ -2393,8 +2431,7 @@ mod tests {
         assert!(has_deepseek_terminal(&[terminal]));
         assert!(!has_deepseek_terminal(&[desktop]));
         let running = desktop_rows(
-            43958,
-            Duration::from_secs(60),
+            Some((43958, Duration::from_secs(60))),
             &[desktop_session("session-a", AgentState::Working)],
             &[],
         );
@@ -2447,7 +2484,11 @@ mod tests {
     fn desktop_conversations_own_their_rows() {
         let session = desktop_session("session-0c3f162a", AgentState::Working);
         let waiting = desktop_session("session-106ec104", AgentState::WaitingReply);
-        let rows = desktop_rows(43958, Duration::from_secs(417), &[session, waiting], &[]);
+        let rows = desktop_rows(
+            Some((43958, Duration::from_secs(417))),
+            &[session, waiting],
+            &[],
+        );
         assert_eq!(rows.len(), 2);
         assert_ne!(rows[0].key, rows[1].key, "each conversation owns its row");
         assert_eq!(rows[0].kind, "DeepSeek Harness");
@@ -2468,7 +2509,7 @@ mod tests {
         // The measured run wins when the log provided one.
         let mut measured = desktop_session("session-measured", AgentState::Working);
         measured.run = Some(Duration::from_secs(125));
-        let measured_rows = desktop_rows(43958, Duration::from_secs(417), &[measured], &[]);
+        let measured_rows = desktop_rows(Some((43958, Duration::from_secs(417))), &[measured], &[]);
         assert_eq!(measured_rows[0].uptime, Duration::from_secs(125));
     }
 
@@ -2476,7 +2517,7 @@ mod tests {
     fn descriptor_rows_carry_the_auto_confirmation_mode() {
         let mut session = desktop_session("session-auto", AgentState::Ready);
         session.automatic_confirmation_mode = true;
-        let rows = desktop_rows(43958, Duration::from_secs(30), &[session], &[]);
+        let rows = desktop_rows(Some((43958, Duration::from_secs(30))), &[session], &[]);
         assert!(rows[0].automatic_confirmation_mode);
         assert!(!rows[0].informational);
     }
@@ -2691,7 +2732,7 @@ mod tests {
 
     #[test]
     fn a_desktop_app_without_conversations_still_gets_a_row() {
-        let rows = desktop_rows(43958, Duration::from_secs(30), &[], &[]);
+        let rows = desktop_rows(Some((43958, Duration::from_secs(30))), &[], &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].key, "desktop:43958");
         assert_eq!(rows[0].label, "DeepSeek Harness");
