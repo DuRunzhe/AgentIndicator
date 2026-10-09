@@ -98,6 +98,21 @@ fn prune_cache(cache: &mut HashMap<PathBuf, Cached>) {
 /// The newest session is the one the CLI is driving: a `dsh web` process
 /// reattaches to its project's latest conversation rather than starting a new
 /// one each run.
+/// The session a `dsh` process in this project is currently driving: the one
+/// whose log was written most recently.
+///
+/// This is what decides where a session row navigates. `dsh web` and the desktop
+/// application share one profile, so both write into the same project tree; the
+/// conversation being written is the one the terminal is showing.
+pub fn driven_session_for(cwd: &Path) -> Option<String> {
+    let home = dirs::home_dir()?.join(".dsh");
+    let (_, session) = newest_logged_session(&home.join("sessions").join(encode_project_key(cwd)))?;
+    // The directory name is the session id as every other reader sees it: the
+    // projection document is `<id>.json`, and its rows are keyed by that same
+    // `session-<id>`. Stripping the prefix compared against ids that keep it.
+    Some(session.file_name()?.to_str()?.to_owned())
+}
+
 pub fn session_title_for(cwd: &Path) -> Option<String> {
     let home = dirs::home_dir()?.join(".dsh");
     // Which session the CLI drives is the one being *written*, so the newest log
@@ -129,39 +144,56 @@ pub fn session_title_for(cwd: &Path) -> Option<String> {
 /// `collect_sessions` recognises only the older `session.jsonl` names, which is
 /// why this walks the directories itself.
 fn newest_logged_session(root: &Path) -> Option<(SystemTime, PathBuf)> {
+    // `root` is either the sessions tree or one project directory inside it, so
+    // both layouts are walked. Assuming the deeper one made a project directory's
+    // session folders look like projects themselves, and every log inside them
+    // look like a directory that is not one.
     let mut newest: Option<(SystemTime, PathBuf)> = None;
-    let projects = std::fs::read_dir(root).ok()?;
-    for project in projects.flatten() {
-        let Ok(sessions) = std::fs::read_dir(project.path()) else {
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
             continue;
-        };
-        for session in sessions.flatten() {
-            let directory = session.path();
+        }
+        if let Some(modified) = session_log_time(&path) {
+            consider(&mut newest, modified, &path);
+            continue;
+        }
+        for nested in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+            let directory = nested.path();
             if !directory.is_dir() {
                 continue;
             }
-            for name in [
-                "session.v4.jsonl.zstd",
-                "session.jsonl.zstd",
-                "session.jsonl",
-            ] {
-                let log = directory.join(name);
-                if !log.is_file() {
-                    continue;
-                }
-                if let Ok(modified) = log.metadata().and_then(|meta| meta.modified()) {
-                    if newest
-                        .as_ref()
-                        .is_none_or(|(current, _)| modified > *current)
-                    {
-                        newest = Some((modified, directory.clone()));
-                    }
-                }
-                break;
+            if let Some(modified) = session_log_time(&directory) {
+                consider(&mut newest, modified, &directory);
             }
         }
     }
     newest
+}
+
+/// The modification time of the session log inside a session directory.
+fn session_log_time(directory: &Path) -> Option<SystemTime> {
+    for name in [
+        "session.v4.jsonl.zstd",
+        "session.jsonl.zstd",
+        "session.jsonl",
+    ] {
+        let log = directory.join(name);
+        if log.is_file() {
+            return log.metadata().ok()?.modified().ok();
+        }
+    }
+    None
+}
+
+/// Keep the most recently written session.
+fn consider(newest: &mut Option<(SystemTime, PathBuf)>, modified: SystemTime, directory: &Path) {
+    if newest
+        .as_ref()
+        .is_none_or(|(current, _)| modified > *current)
+    {
+        *newest = Some((modified, directory.to_path_buf()));
+    }
 }
 
 fn latest_session(cwd: &Path, home: &Path) -> Option<PathBuf> {

@@ -64,7 +64,19 @@ fn main() -> Result<()> {
     }
     if arguments.iter().any(|argument| argument == "--diagnose") {
         let mut detector = Detector::new();
-        println!("{}", serde_json::to_string_pretty(&detector.scan())?);
+        let rows = detector.scan();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        // The `dsh` CLI drivers the scan found, so a row that navigates to the
+        // wrong place can be explained.
+        if arguments
+            .iter()
+            .any(|argument| argument == "--with-drivers")
+        {
+            eprintln!(
+                "{}",
+                serde_json::to_string_pretty(&detector::drivers_json())?
+            );
+        }
         return Ok(());
     }
     // Why the DeepSeek Harness desktop application is or is not being reported:

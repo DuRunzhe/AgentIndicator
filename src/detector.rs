@@ -37,6 +37,10 @@ pub struct Detector {
     codex_titles: CodexTitles,
     #[cfg(target_os = "macos")]
     web_urls: crate::web::WebUrlDetector,
+    /// What the last scan found for `dsh` CLI processes, for
+    /// `--diagnose-deepseek-desktop`.
+    #[cfg(target_os = "macos")]
+    last_drivers: Vec<DeepSeekDriver>,
 }
 
 impl Detector {
@@ -61,7 +65,17 @@ impl Detector {
             codex_titles: CodexTitles::default(),
             #[cfg(target_os = "macos")]
             web_urls: crate::web::WebUrlDetector::default(),
+            #[cfg(target_os = "macos")]
+            last_drivers: Vec::new(),
         }
+    }
+
+    /// The `dsh` CLI processes the last scan found, with the conversation each
+    /// drives and the web address it serves. Reported by the diagnostic so a row
+    /// that navigates to the wrong place can be explained.
+    #[cfg(target_os = "macos")]
+    pub fn last_drivers(&self) -> &[DeepSeekDriver] {
+        &self.last_drivers
     }
 
     pub fn set_conversation_window(&mut self, window: Option<Duration>) {
@@ -197,38 +211,29 @@ impl Detector {
         // The desktop application hosts every conversation it has open in one
         // process, so its rows come from the profile's session cache instead of
         // from the process tree.
-        for (pid, uptime, home) in desktop_hosts {
-            instances.retain(|instance| instance.pid != pid);
+        for (process, home) in desktop_hosts {
+            instances.retain(|instance| instance.pid != process.pid);
             let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
-            instances.extend(desktop_rows(pid, uptime, &sessions));
-            instances.extend(desktop_overflow_row(pid, hidden));
-            instances.extend(desktop_alert_row(pid, alert));
+            instances.extend(desktop_rows(
+                process.pid,
+                process.uptime,
+                &sessions,
+                &drivers,
+            ));
+            instances.extend(desktop_overflow_row(process.pid, hidden));
+            instances.extend(desktop_alert_row(process.pid, alert));
+        }
+        if let Ok(mut snapshot) = DRIVERS_SNAPSHOT.lock() {
+            *snapshot = drivers.clone();
         }
         enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
-            // DeepSeek Harness is reported per form below: the terminal and the
-            // desktop application are independently present, so one stopped row
-            // for the pair could not say which of them is missing.
-            if kind == "deepseek" {
-                continue;
-            }
             if !instances
                 .iter()
                 .any(|instance| instance.kind == display_name(kind))
             {
                 instances.push(stopped_instance(kind));
             }
-        }
-        // Each form states its own absence, so "the terminal is not running"
-        // never hides behind the desktop application's rows (or the reverse).
-        if !has_deepseek_terminal(&instances) {
-            instances.push(deepseek_form_stopped(true));
-        }
-        if !instances
-            .iter()
-            .any(|instance| instance.kind == DEEPSEEK_PLACEHOLDER_KIND)
-        {
-            instances.push(deepseek_form_stopped(false));
         }
         instances.sort_by_key(|instance| kind_order(&instance.kind));
         instances
@@ -281,6 +286,10 @@ impl Detector {
         let metadata = self.macos_processes.metadata_for(&tracked_pids);
         let now = SystemTime::now();
         let window = self.conversation_window;
+        // A `dsh` CLI is not a row of its own: it drives one of its project's
+        // conversations, and each conversation row asks who is driving it to
+        // decide where it navigates.
+        let mut drivers: Vec<DeepSeekDriver> = Vec::new();
         let mut instances: Vec<_> = roots
             .into_iter()
             .flat_map(|(process, kind, host)| {
@@ -317,6 +326,18 @@ impl Detector {
                     }
                 }
                 let cwd = group_metadata.iter().find_map(|entry| entry.cwd.clone());
+                // Record what a DeepSeek CLI serves and which conversation it is
+                // writing, then emit no row for the process itself.
+                if kind == "deepseek" && host.is_none() {
+                    if let Some(project) = cwd.as_deref() {
+                        drivers.push(DeepSeekDriver {
+                            project: project.to_path_buf(),
+                            web_url: self.web_urls.discover(process.pid, &group_pids),
+                            driven: crate::deepseek::driven_session_for(project),
+                        });
+                    }
+                    return Vec::new();
+                }
                 let display = host.map_or_else(|| display_name(kind), |host| host.display);
                 // A GUI host keeps its helper processes alive permanently, so
                 // descendant activity says nothing about the embedded agent;
@@ -383,35 +404,26 @@ impl Detector {
             .collect();
         for (process, home) in desktop_hosts {
             let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
-            instances.extend(desktop_rows(process.pid, process.uptime, &sessions));
+            instances.extend(desktop_rows(
+                process.pid,
+                process.uptime,
+                &sessions,
+                &drivers,
+            ));
             instances.extend(desktop_overflow_row(process.pid, hidden));
             instances.extend(desktop_alert_row(process.pid, alert));
         }
+        if let Ok(mut snapshot) = DRIVERS_SNAPSHOT.lock() {
+            *snapshot = drivers.clone();
+        }
         enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
-            // DeepSeek Harness is reported per form below: the terminal and the
-            // desktop application are independently present, so one stopped row
-            // for the pair could not say which of them is missing.
-            if kind == "deepseek" {
-                continue;
-            }
             if !instances
                 .iter()
                 .any(|instance| instance.kind == display_name(kind))
             {
                 instances.push(stopped_instance(kind));
             }
-        }
-        // Each form states its own absence, so "the terminal is not running"
-        // never hides behind the desktop application's rows (or the reverse).
-        if !has_deepseek_terminal(&instances) {
-            instances.push(deepseek_form_stopped(true));
-        }
-        if !instances
-            .iter()
-            .any(|instance| instance.kind == DEEPSEEK_PLACEHOLDER_KIND)
-        {
-            instances.push(deepseek_form_stopped(false));
         }
         instances.sort_by_key(|instance| kind_order(&instance.kind));
         instances
@@ -484,6 +496,44 @@ fn has_deepseek_terminal(instances: &[AgentInstance]) -> bool {
         .any(|instance| instance.kind == DEEPSEEK_TERMINAL_KIND)
 }
 
+/// The drivers found by the most recent scan, as JSON: the project a `dsh` CLI
+/// serves, the conversation it drives, and the address it serves.
+pub fn drivers_json() -> Value {
+    let drivers = DRIVERS_SNAPSHOT
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
+    Value::Array(
+        drivers
+            .iter()
+            .map(|driver| {
+                serde_json::json!({
+                    "project": driver.project.to_string_lossy(),
+                    "webUrl": driver.web_url,
+                    "driven": driver.driven,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The drivers found by the most recent scan, for the diagnostic. A process-wide
+/// snapshot keeps the diagnostic independent of which `Detector` instance scanned.
+static DRIVERS_SNAPSHOT: std::sync::Mutex<Vec<DeepSeekDriver>> = std::sync::Mutex::new(Vec::new());
+
+/// A running `dsh` CLI process: the project it serves, where its web UI listens,
+/// and the conversation it is driving.
+///
+/// The terminal and the desktop application share one profile, so a conversation
+/// is one row whichever of them drives it. This is what tells that row where to
+/// navigate.
+#[derive(Clone)]
+struct DeepSeekDriver {
+    project: PathBuf,
+    web_url: Option<String>,
+    driven: Option<String>,
+}
+
 /// One row per conversation the DeepSeek Harness desktop application has open,
 /// taken from the profile's session cache. Every row carries the host's pid, so
 /// clicking it activates the application window; the conversation id keeps the
@@ -495,6 +545,7 @@ fn desktop_rows(
     pid: u32,
     uptime: Duration,
     sessions: &[crate::deepseek_desktop::DesktopSession],
+    drivers: &[DeepSeekDriver],
 ) -> Vec<AgentInstance> {
     let display = display_name("deepseek");
     if sessions.is_empty() {
@@ -533,9 +584,10 @@ fn desktop_rows(
             uptime: session.run.unwrap_or(Duration::ZERO),
             model: session.model.clone(),
             context: session.context.clone(),
-            // The desktop app has no per-conversation deep link yet, so clicking
-            // a row brings its window forward.
-            open_url: None,
+            // Where a row navigates follows whoever is driving the conversation:
+            // the `dsh web` UI when a CLI owns it, otherwise the desktop window,
+            // which has no per-conversation deep link yet.
+            open_url: session_target(session, drivers),
             automatic_confirmation_mode: session.automatic_confirmation_mode,
             informational: false,
         })
@@ -605,18 +657,36 @@ fn desktop_alert_row(
 /// repeating both would only shorten the useful part of the row.
 fn desktop_label(session: &crate::deepseek_desktop::DesktopSession) -> String {
     let display = display_name("deepseek");
-    // The desktop application and the terminal are different things to the user:
-    // one hosts every conversation in a single process, the other is one process
-    // per project. Without a marker the two forms read as the same row.
-    let form = crate::i18n::deepseek_form(true);
+    // One row per conversation, whichever process drives it: the terminal and the
+    // desktop application share a profile, so naming a form would report the same
+    // conversation twice and the row's destination is decided by the click.
     let detail = session
         .title
         .as_deref()
         .or_else(|| session.cwd.as_deref().and_then(Path::file_name)?.to_str());
     match detail {
-        Some(detail) => format!("{display} · {form} · {detail}"),
-        None => format!("{display} · {form}"),
+        Some(detail) => format!("{display} · {detail}"),
+        None => display.into(),
     }
+}
+
+/// Where a conversation row navigates.
+///
+/// A `dsh` CLI process serves a project's conversations over its own web UI; the
+/// desktop application shows them in its window. The conversation a CLI is writing
+/// is the one it is showing, so that conversation — and only that one — opens the
+/// web UI; every other conversation in the project is the application's and brings
+/// its window forward.
+fn session_target(
+    session: &crate::deepseek_desktop::DesktopSession,
+    drivers: &[DeepSeekDriver],
+) -> Option<String> {
+    let cwd = session.cwd.as_deref()?;
+    let driver = drivers.iter().find(|driver| driver.project == cwd)?;
+    if driver.driven.as_deref() == Some(session.id.as_str()) {
+        return driver.web_url.clone();
+    }
+    None
 }
 
 /// Whether a process is the DeepSeek Harness desktop host, whose rows come from
@@ -1572,6 +1642,32 @@ pub fn diagnose_deepseek_desktop() -> Value {
         "processes": [],
         "sessions": [],
     });
+    // The DeepSeek CLI's process chain, to explain a missing driver.
+    {
+        let source = crate::macos_process::MacProcessSource::default();
+        let processes = source.processes();
+        let rows: Vec<Value> = processes
+            .iter()
+            .filter(|process| {
+                process.command.contains("dsh") || process.executable.contains("dsh")
+            })
+            .map(|process| {
+                serde_json::json!({
+                    "pid": process.pid,
+                    "ppid": process.ppid,
+                    "executable": process.executable,
+                    "command": process.command,
+                    "kind": agent_kind_from_executable(&process.executable, &process.command),
+                    "host": host_application_for(process, &processes).map(|host| host.display),
+                    "hasAgentParent": match agent_kind_from_executable(&process.executable, &process.command) {
+                        Some(kind) => has_process_agent_parent(process, kind, &processes),
+                        None => false,
+                    },
+                })
+            })
+            .collect();
+        result["cliProbe"] = Value::Array(rows);
+    }
     let mut home: Option<PathBuf> = None;
     #[cfg(target_os = "macos")]
     {
@@ -1643,6 +1739,21 @@ pub fn diagnose_deepseek_desktop() -> Value {
     let read = Instant::now();
     let sessions = analyzer.sessions(None);
     let sessions_ms = read.elapsed().as_secs_f64() * 1_000.0;
+    result["drivers"] = serde_json::Value::Array(
+        DRIVERS_SNAPSHOT
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(|driver| {
+                serde_json::json!({
+                    "project": driver.project.to_string_lossy(),
+                    "webUrl": driver.web_url,
+                    "driven": driver.driven,
+                })
+            })
+            .collect(),
+    );
     result["health"] = serde_json::json!({
         "rootPresent": analyzer.health().root_present,
         "files": analyzer.health().files,
@@ -2207,6 +2318,37 @@ mod tests {
     }
 
     #[test]
+    fn a_conversation_navigates_to_whoever_is_driving_it() {
+        // One row per conversation: the `dsh web` UI opens for the conversation a
+        // CLI is writing, and every other conversation brings the application
+        // window forward.
+        let session = desktop_session("session-driven", AgentState::Working);
+        let drivers = [DeepSeekDriver {
+            project: PathBuf::from("/Users/me/code/nita"),
+            web_url: Some("http://127.0.0.1:3080/".into()),
+            driven: Some("session-driven".into()),
+        }];
+        assert_eq!(
+            session_target(&session, &drivers).as_deref(),
+            Some("http://127.0.0.1:3080/")
+        );
+
+        // A different conversation in the same project is the application's.
+        let other = desktop_session("session-other", AgentState::Ready);
+        assert_eq!(session_target(&other, &drivers), None);
+
+        // No CLI serving that project: nothing to navigate to but the window.
+        assert_eq!(session_target(&session, &[]), None);
+        // A CLI with no listening address cannot be navigated to either.
+        let silent = [DeepSeekDriver {
+            project: PathBuf::from("/Users/me/code/nita"),
+            web_url: None,
+            driven: Some("session-driven".into()),
+        }];
+        assert_eq!(session_target(&session, &silent), None);
+    }
+
+    #[test]
     fn a_terminal_row_names_its_project_and_conversation() {
         let path = Path::new("/Users/me/code/AgentIndicator");
         // Non-DeepSeek agents keep their long-standing shape.
@@ -2254,6 +2396,7 @@ mod tests {
             43958,
             Duration::from_secs(60),
             &[desktop_session("session-a", AgentState::Working)],
+            &[],
         );
         assert!(!has_deepseek_terminal(&running));
         assert!(
@@ -2304,19 +2447,16 @@ mod tests {
     fn desktop_conversations_own_their_rows() {
         let session = desktop_session("session-0c3f162a", AgentState::Working);
         let waiting = desktop_session("session-106ec104", AgentState::WaitingReply);
-        let rows = desktop_rows(43958, Duration::from_secs(417), &[session, waiting]);
+        let rows = desktop_rows(43958, Duration::from_secs(417), &[session, waiting], &[]);
         assert_eq!(rows.len(), 2);
         assert_ne!(rows[0].key, rows[1].key, "each conversation owns its row");
         assert_eq!(rows[0].kind, "DeepSeek Harness");
         // The form is named, so a desktop row cannot be mistaken for a terminal
         // one: the two report the same agent through different machinery.
-        assert_eq!(rows[0].label, "DeepSeek Harness · 桌面端 · 同步代码");
-        assert!(rows[0].label.contains(crate::i18n::deepseek_form(true)));
-        assert_ne!(
-            crate::i18n::deepseek_form(true),
-            crate::i18n::deepseek_form(false),
-            "the two forms must not read the same"
-        );
+        // One row per conversation, with no form marker: the terminal and the
+        // desktop application share a profile, so the conversation is the unit
+        // and its destination is decided when it is clicked.
+        assert_eq!(rows[0].label, "DeepSeek Harness · 同步代码");
         assert_eq!(rows[0].pid, 43958, "clicking brings the app forward");
         assert_eq!(rows[0].state, AgentState::Working);
         assert_eq!(rows[1].state, AgentState::WaitingReply);
@@ -2328,7 +2468,7 @@ mod tests {
         // The measured run wins when the log provided one.
         let mut measured = desktop_session("session-measured", AgentState::Working);
         measured.run = Some(Duration::from_secs(125));
-        let measured_rows = desktop_rows(43958, Duration::from_secs(417), &[measured]);
+        let measured_rows = desktop_rows(43958, Duration::from_secs(417), &[measured], &[]);
         assert_eq!(measured_rows[0].uptime, Duration::from_secs(125));
     }
 
@@ -2336,7 +2476,7 @@ mod tests {
     fn descriptor_rows_carry_the_auto_confirmation_mode() {
         let mut session = desktop_session("session-auto", AgentState::Ready);
         session.automatic_confirmation_mode = true;
-        let rows = desktop_rows(43958, Duration::from_secs(30), &[session]);
+        let rows = desktop_rows(43958, Duration::from_secs(30), &[session], &[]);
         assert!(rows[0].automatic_confirmation_mode);
         assert!(!rows[0].informational);
     }
@@ -2431,6 +2571,23 @@ mod tests {
             "node",
             "node -e \"0\" node_modules/@deepseek-ai/dsh"
         ));
+    }
+
+    #[test]
+    fn the_real_cli_command_line_is_recognized() {
+        // Captured from `ps -axo command=` for a running `dsh web` on this
+        // machine, and from `ps comm=` for its executable.
+        let executable = "node";
+        let command = "node /Users/durunzhe/.nvm/versions/node/v24.19.0/bin/dsh web";
+        assert!(
+            is_dsh_cli(executable, command),
+            "the shim invocation must be recognized"
+        );
+        assert_eq!(
+            agent_kind_from_executable(executable, command),
+            Some("deepseek"),
+            "and it must be classified as the deepseek agent"
+        );
     }
 
     #[test]
@@ -2534,7 +2691,7 @@ mod tests {
 
     #[test]
     fn a_desktop_app_without_conversations_still_gets_a_row() {
-        let rows = desktop_rows(43958, Duration::from_secs(30), &[]);
+        let rows = desktop_rows(43958, Duration::from_secs(30), &[], &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].key, "desktop:43958");
         assert_eq!(rows[0].label, "DeepSeek Harness");

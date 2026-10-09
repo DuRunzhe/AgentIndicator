@@ -974,9 +974,8 @@ mod tests {
         // daemon, so the terminal process must be bound by its `resume` id
         // instead of by a file descriptor it owns.
         let session_id = "01a0de1c-f66f-7e03-8ea5-9899852756cb";
-        let path = std::env::temp_dir().join(format!(
-            "rollout-2026-09-26T22-27-15-{session_id}.jsonl"
-        ));
+        let path =
+            std::env::temp_dir().join(format!("rollout-2026-09-26T22-27-15-{session_id}.jsonl"));
         std::fs::write(
             &path,
             "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
