@@ -113,6 +113,19 @@ pub fn driven_session_for(cwd: &Path) -> Option<String> {
     Some(session.file_name()?.to_str()?.to_owned())
 }
 
+/// The conversation the profile-wide `dsh web` server is currently showing: the
+/// log written most recently anywhere in the shared profile.
+///
+/// `dsh web` is not the project it was started in. Its UI lists every workspace
+/// in `$DSH_HOME`, so a conversation it drives can live in any of them; ranking
+/// only the process's own directory found nothing and left every row without a
+/// destination.
+pub fn driven_session_in_profile() -> Option<String> {
+    let home = dirs::home_dir()?.join(".dsh");
+    let (_, session) = newest_logged_session(&home.join("sessions"))?;
+    Some(session.file_name()?.to_str()?.to_owned())
+}
+
 pub fn session_title_for(cwd: &Path) -> Option<String> {
     let home = dirs::home_dir()?.join(".dsh");
     // Which session the CLI drives is the one being *written*, so the newest log

@@ -307,11 +307,23 @@ impl Detector {
                 // Record what a DeepSeek CLI serves and which conversation it is
                 // writing, then emit no row for the process itself.
                 if kind == "deepseek" && host.is_none() {
-                    if let Some(project) = cwd.as_deref() {
+                    let web_url = self.web_urls.discover(process.pid, &group_pids);
+                    // A CLI that serves a web UI serves the whole shared profile:
+                    // its UI lists every workspace, not the directory the process
+                    // happens to run in, so it carries no single project. Only a
+                    // terminal CLI, which has no listening address, is scoped to
+                    // the directory it runs in.
+                    let project = if web_url.is_some() { None } else { cwd.clone() };
+                    let driven = if web_url.is_some() {
+                        crate::deepseek::driven_session_in_profile()
+                    } else {
+                        cwd.as_deref().and_then(crate::deepseek::driven_session_for)
+                    };
+                    if web_url.is_some() || project.is_some() {
                         drivers.push(DeepSeekDriver {
-                            project: project.to_path_buf(),
-                            web_url: self.web_urls.discover(process.pid, &group_pids),
-                            driven: crate::deepseek::driven_session_for(project),
+                            project,
+                            web_url,
+                            driven,
                         });
                     }
                     return Vec::new();
@@ -463,7 +475,7 @@ pub fn drivers_json() -> Value {
             .iter()
             .map(|driver| {
                 serde_json::json!({
-                    "project": driver.project.to_string_lossy(),
+                    "project": driver.project.as_ref().map(|path| path.to_string_lossy()),
                     "webUrl": driver.web_url,
                     "driven": driver.driven,
                 })
@@ -481,10 +493,11 @@ static DRIVERS_SNAPSHOT: std::sync::Mutex<Vec<DeepSeekDriver>> = std::sync::Mute
 ///
 /// The terminal and the desktop application share one profile, so a conversation
 /// is one row whichever of them drives it. This is what tells that row where to
-/// navigate.
+/// navigate. A terminal CLI is scoped to the project it runs in; the `dsh web`
+/// server has no project, because its UI lists every workspace in the profile.
 #[derive(Clone)]
 struct DeepSeekDriver {
-    project: PathBuf,
+    project: Option<PathBuf>,
     web_url: Option<String>,
     driven: Option<String>,
 }
@@ -636,15 +649,20 @@ fn desktop_label(session: &crate::deepseek_desktop::DesktopSession) -> String {
 
 /// Where a conversation row navigates.
 ///
-/// A `dsh` CLI process serves a project's conversations over its own web UI; the
-/// desktop application shows them in its window. Two rules, in order:
+/// A `dsh` CLI process serves conversations over its own web UI; the desktop
+/// application shows them in its window. Two rules, in order:
 ///
 /// 1. The conversation the CLI is writing is the one it is showing, so it opens
 ///    the web UI. This holds whether or not the window is open.
-/// 2. Everything else in a project a CLI serves opens the web UI too when the
-///    window is *not* running: the application cannot be activated, so its web UI
-///    is the only destination the conversation has. While the window is open the
-///    same conversations belong to it and bring it forward.
+/// 2. Everything else a CLI serves opens the web UI too when the window is *not*
+///    running: the application cannot be activated, so its web UI is the only
+///    destination the conversation has. While the window is open the same
+///    conversations belong to it and bring it forward.
+///
+/// A driver reaches a conversation when it serves the whole profile — the `dsh
+/// web` server, which lists every workspace — or the conversation's own project.
+/// Only a driver with a listening address has a destination, so a terminal CLI
+/// that serves no URL never wins the lookup.
 ///
 /// The web UI has no per-conversation route, so a destination is the UI, not one
 /// conversation inside it.
@@ -653,8 +671,10 @@ fn session_target(
     drivers: &[DeepSeekDriver],
     host_running: bool,
 ) -> Option<String> {
-    let cwd = session.cwd.as_deref()?;
-    let driver = drivers.iter().find(|driver| driver.project == cwd)?;
+    let cwd = session.cwd.as_deref();
+    let driver = drivers.iter().find(|driver| {
+        driver.web_url.is_some() && (driver.project.is_none() || driver.project.as_deref() == cwd)
+    })?;
     let url = driver.web_url.clone()?;
     if driver.driven.as_deref() == Some(session.id.as_str()) || !host_running {
         return Some(url);
@@ -904,11 +924,13 @@ fn reaches_dsh_through_runtime(executable: &str, command: &str) -> bool {
 /// That shape names the package nowhere, which is why matching the package path
 /// alone reported a live CLI as stopped.
 ///
-/// The token has to be an executable `dsh` inside a `bin` directory and carry no
-/// extension — the shape npm links onto `PATH`. So `dsh` as an argument value
-/// (`--name dsh`), an extensioned file beside it (`dsh.js`), a bare directory
-/// (`…/dsh`) and an arbitrary file that happens to share the name
-/// (`/tmp/probe/dsh`) are all excluded.
+/// The token has to be an executable `dsh` inside a `bin` or `.bin` directory
+/// and carry no extension. `bin` is the shape a global install links onto
+/// `PATH` (`…/nvm/…/bin/dsh`); `.bin` is the shape a local or `npx` shim takes
+/// (`…/node_modules/.bin/dsh`), which is how `npx @deepseek-ai/dsh` runs and was
+/// previously missed. `dsh` as an argument value (`--name dsh`), an extensioned
+/// file beside it (`dsh.js`), a bare directory (`…/dsh`) and an arbitrary file
+/// that happens to share the name (`/tmp/probe/dsh`) are all still excluded.
 fn is_dsh_entry(token: &str) -> bool {
     let token = token.trim_matches(|c| c == '"' || c == '\\');
     if token.starts_with('-') {
@@ -919,7 +941,7 @@ fn is_dsh_entry(token: &str) -> bool {
     let Some(last) = segments.next() else {
         return false;
     };
-    last == "dsh" && segments.next() == Some("bin")
+    last == "dsh" && matches!(segments.next(), Some("bin" | ".bin"))
 }
 
 /// The tokens of a command line, split on whitespace and on the quoting a shell
@@ -1723,7 +1745,7 @@ pub fn diagnose_deepseek_desktop() -> Value {
             .iter()
             .map(|driver| {
                 serde_json::json!({
-                    "project": driver.project.to_string_lossy(),
+                    "project": driver.project.as_ref().map(|path| path.to_string_lossy()),
                     "webUrl": driver.web_url,
                     "driven": driver.driven,
                 })
@@ -2321,8 +2343,10 @@ mod tests {
         // CLI is writing, and every other conversation brings the application
         // window forward.
         let session = desktop_session("session-driven", AgentState::Working);
+        // The web server is profile-wide — its UI lists every workspace — so it
+        // carries no project and reaches a conversation wherever it lives.
         let drivers = [DeepSeekDriver {
-            project: PathBuf::from("/Users/me/code/nita"),
+            project: None,
             web_url: Some("http://127.0.0.1:3080/".into()),
             driven: Some("session-driven".into()),
         }];
@@ -2336,8 +2360,7 @@ mod tests {
             Some("http://127.0.0.1:3080/")
         );
 
-        // Another conversation in the project belongs to the window while it is
-        // open…
+        // Another conversation belongs to the window while it is open…
         let other = desktop_session("session-other", AgentState::Ready);
         assert_eq!(session_target(&other, &drivers, true), None);
         // …and to the web UI when it is not, because the window cannot be
@@ -2346,13 +2369,22 @@ mod tests {
             session_target(&other, &drivers, false).as_deref(),
             Some("http://127.0.0.1:3080/")
         );
+        // The profile-wide server reaches a conversation in a project it was not
+        // started in, which is the shape a `dsh web` launch from elsewhere takes.
+        let mut elsewhere = desktop_session("session-elsewhere", AgentState::Ready);
+        elsewhere.cwd = Some(PathBuf::from("/Users/me/code/other"));
+        assert_eq!(
+            session_target(&elsewhere, &drivers, false).as_deref(),
+            Some("http://127.0.0.1:3080/")
+        );
 
-        // No CLI serving that project: the window is the only destination.
+        // No CLI serving a destination: the window is the only place to go.
         assert_eq!(session_target(&session, &[], true), None);
         assert_eq!(session_target(&session, &[], false), None);
-        // A CLI with no listening address cannot be navigated to either.
+        // A CLI with no listening address cannot be navigated to either. A
+        // terminal CLI is scoped to its own project and still offers no URL.
         let silent = [DeepSeekDriver {
-            project: PathBuf::from("/Users/me/code/nita"),
+            project: Some(PathBuf::from("/Users/me/code/nita")),
             web_url: None,
             driven: Some("session-driven".into()),
         }];
@@ -2512,6 +2544,15 @@ mod tests {
             "node",
             "node /Users/durunzhe/.nvm/versions/node/v24.19.0/bin/dsh web"
         ));
+        // Captured from this machine: `npx @deepseek-ai/dsh web` runs the local
+        // shim in `node_modules/.bin`, not the global `bin` directory. Matching
+        // only `bin` left the running CLI unrecognized, so its conversations had
+        // no driver and clicking one did nothing. The `_npx` cache id is opaque
+        // and irrelevant — only the `.bin/dsh` shape is matched.
+        assert!(is_dsh_cli(
+            "node",
+            "node /Users/me/.npm/_npx/0000000000000000/node_modules/.bin/dsh web"
+        ));
         // Windows separators and quoting.
         assert!(is_dsh_cli(
             "node",
@@ -2529,6 +2570,9 @@ mod tests {
             "cat node_modules/@deepseek-ai/dsh/README.md"
         ));
         assert!(!is_dsh_cli("node", "node /tmp/probe/dsh"));
+        // The `.bin` rule still requires `dsh` to sit directly inside it.
+        assert!(!is_dsh_cli("node", "node /tmp/.bin/nested/dsh"));
+        assert!(!is_dsh_cli("node", "node /tmp/.bin/dsh.js"));
         assert!(!is_dsh_cli(
             "node",
             "node node_modules/@deepseek-ai/dsh-other/lib/bin.js"
