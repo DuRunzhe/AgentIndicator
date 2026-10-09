@@ -235,8 +235,12 @@ impl ProfileHealth {
 /// the authority on what "a desktop session" is.
 #[derive(Debug, Default)]
 struct WorkspaceRegistry {
-    /// Every session the application's workspaces hold.
+    /// Every session the application's workspaces hold and still shows.
     sessions: std::collections::HashSet<String>,
+    /// Sessions the user archived. The application keeps them in its workspaces'
+    /// lists, so membership alone would keep reporting a conversation the user
+    /// has filed away.
+    archived: std::collections::HashSet<String>,
     /// Whether the registry was readable at all. An application that has not
     /// written one yet must not blank the list.
     present: bool,
@@ -261,18 +265,30 @@ impl WorkspaceRegistry {
                 }
             }
         }
+        let archived = root["global"]["archivedSessionIds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|id| id.as_str().map(str::to_owned))
+            .collect();
         Self {
             present: root["tables"]["workspaces"].is_object(),
             sessions,
+            archived,
         }
     }
 
     /// Whether the application itself is showing this conversation.
     ///
     /// A session it does not name was created by something else writing into the
-    /// same profile — a `dsh` CLI process — and belongs to the terminal form.
+    /// same profile — a `dsh` CLI process — and belongs to the terminal form. A
+    /// session the user archived is still *named* but no longer listed, so it is
+    /// excluded too; pinned sessions stay in the list and are unaffected.
     fn shows(&self, session: &DesktopSession) -> bool {
-        !self.present || self.sessions.contains(&session.id)
+        if !self.present {
+            return true;
+        }
+        self.sessions.contains(&session.id) && !self.archived.contains(&session.id)
     }
 }
 
@@ -1822,6 +1838,45 @@ mod tests {
         let absent = WorkspaceRegistry::default();
         assert!(absent.shows(&cli));
         assert_eq!(listed_sessions(&[cli], None, &absent).len(), 1);
+    }
+
+    #[test]
+    fn an_archived_conversation_is_not_listed() {
+        // Measured on this profile: `archivedSessionIds` held one conversation
+        // that the workspace's `sessionIds` still names, so membership alone kept
+        // reporting a conversation the user had filed away.
+        let shown = parse_temp(&session_document(rows(
+            json!(null),
+            json!({}),
+            json!([]),
+            json!("在列表里的会话"),
+        )));
+        let mut archived = shown.clone();
+        archived.id = "session-archived".into();
+
+        let mut registry = WorkspaceRegistry::default();
+        registry.present = true;
+        registry.sessions.insert(shown.id.clone());
+        registry.sessions.insert(archived.id.clone());
+
+        // Both are named by a workspace, so both are the application's…
+        assert!(registry.shows(&shown));
+        assert!(registry.shows(&archived));
+        // …until one is archived, which removes it from the list.
+        registry.archived.insert(archived.id.clone());
+        assert!(registry.shows(&shown));
+        assert!(!registry.shows(&archived));
+
+        let listed = listed_sessions(&[archived, shown.clone()], None, &registry);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, shown.id);
+
+        // Archiving is keyed by session, so another session is unaffected even
+        // when it shares the archived one's project and title.
+        let mut same_project = shown.clone();
+        same_project.id = "session-other".into();
+        registry.sessions.insert(same_project.id.clone());
+        assert!(registry.shows(&same_project));
     }
 
     #[test]
