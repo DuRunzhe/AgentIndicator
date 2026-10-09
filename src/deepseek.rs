@@ -212,12 +212,190 @@ pub fn retries_exhausted(data: &Value) -> bool {
     max > 0 && retry >= max
 }
 
+/// How one event type bears on the log-level state.
+///
+/// The categories are the *semantics* the state machine needs; the event names
+/// are only the data contract that carries them. Keeping the mapping in one
+/// table (rather than as `match` arms scattered through a loop) is what makes an
+/// unlisted event visible: [`EventRole::Unknown`] is counted and reported by the
+/// diagnostic instead of being silently skipped, which is how the earlier
+/// mis-named failure events went unnoticed for so long.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventRole {
+    /// Opens a turn.
+    TurnStart,
+    /// Closes a turn on its own; not evidence that failure was recovered.
+    TurnEnd,
+    /// The conversation moved on: the strongest generic evidence that whatever
+    /// went wrong before it is no longer current.
+    Progress,
+    /// A budgeted retry that spent its budget.
+    Failure,
+    /// An approval prompt is open / answered.
+    ApprovalAsked,
+    ApprovalDecided,
+    /// Nothing the log-level state depends on.
+    Inert,
+    /// A type this build does not know. Counted, never guessed at.
+    Unknown,
+}
+
+/// The events whose arrival means the conversation moved past a failure.
+///
+/// Deliberately excludes the turn and step boundaries: a failed turn closes
+/// itself, so treating `turn/end` as progress is what made an offline session
+/// read as recovered.
+pub fn event_role(event_type: &str) -> EventRole {
+    match event_type {
+        "turn/start" => EventRole::TurnStart,
+        "turn/end" => EventRole::TurnEnd,
+        "assistant/message"
+        | "assistant/attempt"
+        | "assistant/live-chunk"
+        | "tool/call"
+        | "tool/result"
+        | "user/message" => EventRole::Progress,
+        "llm/retry" => EventRole::Failure,
+        "approval/asked" => EventRole::ApprovalAsked,
+        "approval/decided" => EventRole::ApprovalDecided,
+        // The question pair is distinguished by the tool name, not the event
+        // type, so both calls and results start as Inert and the caller marks
+        // them by name.
+        _ if is_known_event(event_type) => EventRole::Inert,
+        _ => EventRole::Unknown,
+    }
+}
+
+/// The event types this build recognizes enough to classify safely. Types
+/// outside the list are reported as unknown rather than assumed harmless.
+fn is_known_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "agent-preset/selected"
+            | "agent/inbox/spliced"
+            | "approval/policy"
+            | "command/done"
+            | "command/run"
+            | "compaction/end"
+            | "compaction/prune"
+            | "compaction/start"
+            | "compaction/summary"
+            | "deliverables/presented"
+            | "developer/message"
+            | "feedback/message-delete"
+            | "feedback/message-put"
+            | "feedback/record"
+            | "goal/change"
+            | "hook/invoked"
+            | "hook/result"
+            | "image/offload"
+            | "llm/retry-started"
+            | "model/selection"
+            | "permission/preset"
+            | "plan/mode"
+            | "request/context"
+            | "request/header"
+            | "sandbox/mode"
+            | "schedule/change"
+            | "session-log-deepseek/delivery-accepted"
+            | "session/end-seed"
+            | "session/title"
+            | "session/title-llm-request"
+            | "step/end"
+            | "step/start"
+            | "subagent/catalog"
+            | "subagent/descriptor"
+            | "subagent/model-selection-policy"
+            | "system/message"
+            | "team/member"
+            | "team/message/delivered"
+            | "team/message/queued"
+            | "team/task"
+            | "todo/write"
+            | "tool-workflow/agent-end"
+            | "tool-workflow/agent-start"
+            | "tool-workflow/run-end"
+            | "tool-workflow/run-start"
+            | "tool/ptc-dispatch"
+            | "tool/ptc-dispatch-start"
+            | "web/deepseek-search-llm-request"
+            | "workspace/changes"
+    )
+}
+
+/// The state a log tail carries, derived by walking the events in order.
+///
+/// The failure is a *position* in the log, not a latched flag: it is current
+/// only while no later event shows the conversation moved on. That is what makes
+/// the offline shape (retries spent, turn closed, nothing after) report a
+/// failure while a recovered one does not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timeline {
+    /// Sequence of the newest spent retry inside an open turn.
+    failed_at: Option<u64>,
+    /// Sequence of the newest event that moved the conversation on.
+    progress_at: Option<u64>,
+    turn_open: bool,
+    unknown: u32,
+}
+
+/// The events of a log tail, in order, for the state machine to consume.
+pub fn session_events(text: &str) -> impl Iterator<Item = Value> + '_ {
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+}
+
+impl Timeline {
+    /// A turn opened; a failure recorded in an earlier turn cannot be current.
+    pub fn turn_started(&mut self) {
+        self.turn_open = true;
+        self.failed_at = None;
+    }
+
+    /// A turn closed on its own. Deliberately *not* recovery: a failed turn
+    /// closes itself, which is the shape an offline session leaves behind.
+    pub fn turn_ended(&mut self) {
+        self.turn_open = false;
+    }
+
+    /// The conversation moved on.
+    pub fn progressed(&mut self, seq: u64) {
+        self.progress_at = Some(seq);
+    }
+
+    /// Record a spent retry budget, when the payload says one was spent and a
+    /// turn is open (the retry plugin only appends inside an open turn).
+    pub fn failed(&mut self, seq: u64, data: &Value) {
+        if self.turn_open && retries_exhausted(data) {
+            self.failed_at = Some(seq);
+        }
+    }
+
+    pub fn saw_unknown(&mut self) {
+        self.unknown += 1;
+    }
+
+    pub fn unknown_events(&self) -> u32 {
+        self.unknown
+    }
+
+    /// A failure is current while no event after it moved the conversation on.
+    pub fn failure_current(&self) -> bool {
+        match (self.failed_at, self.progress_at) {
+            (None, _) => false,
+            // Nothing has happened since the failure. This is the offline shape:
+            // the retry budget is spent and the driver had nothing left to do.
+            (Some(_), None) => true,
+            (Some(failed), Some(progress)) => failed > progress,
+        }
+    }
+}
+
 fn parse_signals(text: &str) -> DeepSeekFacts {
     let mut facts = DeepSeekFacts::default();
     let mut approvals = HashSet::new();
     let mut questions = HashSet::new();
-    let mut turn_open = false;
-    let mut failed = false;
+    let mut timeline = Timeline::default();
     let mut reply_requested = false;
     let mut last_text: Option<String> = None;
     let lines: Vec<_> = text.lines().rev().take(TAIL_LINES).collect();
@@ -230,23 +408,21 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
             Some("user/message") => {
                 reply_requested = false;
                 last_text = None;
-                failed = false;
+                timeline.progressed(event["seq"].as_u64().unwrap_or_default());
             }
             Some("assistant/message") => {
-                failed = false;
+                timeline.progressed(event["seq"].as_u64().unwrap_or_default());
                 last_text = last_text_block(&data["message"]["content"]);
                 if let Some(model) = data["message"]["source"]["model"].as_str() {
                     facts.model = Some(model.trim().into());
                 }
             }
-            Some("turn/start") => {
-                turn_open = true;
-            }
+            Some("turn/start") => timeline.turn_started(),
             Some("turn/end") => {
                 // Closing the turn is not recovery: an offline session spends
                 // its retries, closes the turn and stops there, which is exactly
                 // the failure worth reporting. Only later progress clears it.
-                turn_open = false;
+                timeline.turn_ended();
                 reply_requested = last_text
                     .take()
                     .is_some_and(|text| ends_with_question(&text));
@@ -262,10 +438,10 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
                 }
             }
             Some("assistant/attempt") => {
-                failed = false;
+                timeline.progressed(event["seq"].as_u64().unwrap_or_default());
             }
             Some("tool/call") => {
-                failed = false;
+                timeline.progressed(event["seq"].as_u64().unwrap_or_default());
                 if data["name"] == "ask_user_question" {
                     if let Some(id) = data["callId"].as_str() {
                         questions.insert(id.to_owned());
@@ -273,19 +449,18 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
                 }
             }
             Some("tool/result") => {
-                failed = false;
+                timeline.progressed(event["seq"].as_u64().unwrap_or_default());
                 if let Some(id) = data["message"]["source"]["callId"].as_str() {
                     questions.remove(id);
                 }
             }
-            Some("llm/retry") if retries_exhausted(&data) => {
+            Some("llm/retry") => {
                 // The session log carries no error event: `agent/error` is a
                 // live-bus signal that is never written to it. A failed step
                 // reaches the log only as an `llm/retry` record, so an exhausted
-                // retry budget is what a failure looks like here. The final
-                // precedence below decides whether it is reported, exactly as the
-                // waiting states are decided.
-                failed = turn_open;
+                // retry budget is what a failure looks like here. Whether it is
+                // still current is decided by the events after it.
+                timeline.failed(event["seq"].as_u64().unwrap_or_default(), &data);
             }
 
             _ => {}
@@ -297,7 +472,7 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
         Some(AgentState::WaitingReply)
     } else if !approvals.is_empty() {
         Some(AgentState::Waiting)
-    } else if failed {
+    } else if timeline.failure_current() {
         Some(AgentState::Error)
     } else {
         None
@@ -393,6 +568,74 @@ mod tests {
         let facts = parse_signals("{\"type\":\"approval/asked\",\"data\":{\"id\":\"a\"}}\n");
         assert_eq!(facts.state, Some(AgentState::Waiting));
     }
+    fn timeline_of(events: &[&str]) -> Timeline {
+        let text: String = events.iter().map(|e| format!("{e}\n")).collect();
+        let mut timeline = Timeline::default();
+        for event in session_events(&text) {
+            let data = &event["data"];
+            let seq = event["seq"].as_u64().unwrap_or_default();
+            match event_role(event["type"].as_str().unwrap_or_default()) {
+                EventRole::TurnStart => timeline.turn_started(),
+                EventRole::TurnEnd => timeline.turn_ended(),
+                EventRole::Progress => timeline.progressed(seq),
+                EventRole::Failure => timeline.failed(seq, data),
+                EventRole::Unknown => timeline.saw_unknown(),
+                _ => {}
+            }
+        }
+        timeline
+    }
+
+    #[test]
+    fn an_unknown_event_is_counted_and_changes_nothing() {
+        // The whole point of classifying events: a type this build does not
+        // know must be visible, not silently treated as progress or as a
+        // failure. Its presence leaves the timing untouched either way.
+        let known = [
+            r#"{"seq":1,"type":"turn/start","data":{}}"#,
+            r#"{"seq":2,"type":"llm/retry","data":{"retry":5,"maxRetries":5,"mode":"normal"}}"#,
+        ];
+        let with_unknown = [
+            r#"{"seq":1,"type":"turn/start","data":{}}"#,
+            r#"{"seq":2,"type":"llm/retry","data":{"retry":5,"maxRetries":5,"mode":"normal"}}"#,
+            r#"{"seq":3,"type":"some/future-event","data":{"whatever":true}}"#,
+            r#"{"seq":4,"type":"another/new-one","data":{}}"#,
+        ];
+        let baseline = timeline_of(&known);
+        let extended = timeline_of(&with_unknown);
+        assert!(baseline.failure_current());
+        assert!(
+            extended.failure_current(),
+            "an unknown event must not clear a failure"
+        );
+        assert_eq!(extended.unknown_events(), 2);
+        assert_eq!(baseline.unknown_events(), 0);
+    }
+
+    #[test]
+    fn failure_currency_follows_the_event_order() {
+        let start = r#"{"seq":1,"type":"turn/start","data":{}}"#;
+        let fail =
+            r#"{"seq":2,"type":"llm/retry","data":{"retry":5,"maxRetries":5,"mode":"normal"}}"#;
+        let close = r#"{"seq":3,"type":"turn/end","data":{}}"#;
+        let progress = r#"{"seq":4,"type":"assistant/message","data":{}}"#;
+        // Retrying inside the budget is not a failure at all.
+        assert!(!timeline_of(&[
+            start,
+            r#"{"seq":2,"type":"llm/retry","data":{"retry":2,"maxRetries":5,"mode":"normal"}}"#
+        ])
+        .failure_current());
+        // Spent budget, turn still open.
+        assert!(timeline_of(&[start, fail]).failure_current());
+        // The offline shape: spent budget, turn closed, nothing after it.
+        assert!(timeline_of(&[start, fail, close]).failure_current());
+        // Progress after the failure clears it, whichever side of the boundary.
+        assert!(!timeline_of(&[start, fail, progress]).failure_current());
+        assert!(!timeline_of(&[start, fail, close, progress]).failure_current());
+        // A new turn cannot inherit the previous turn's failure.
+        assert!(!timeline_of(&[start, fail, close, start]).failure_current());
+    }
+
     #[test]
     fn a_spent_retry_budget_is_a_failure_in_the_cli_log_too() {
         // Both readers share this rule; the CLI log has no error event either.

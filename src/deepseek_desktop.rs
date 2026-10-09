@@ -64,8 +64,11 @@ struct LogSignals {
     /// pending tool call is what distinguishes "waiting for the user" from
     /// "working".
     question_pending: bool,
-    /// An error, failed turn or dropped connection in the tail.
+    /// A spent retry budget with no later evidence of recovery.
     error: bool,
+    /// Event types this build does not recognize. Reported by the diagnostic so
+    /// a schema change shows up as a number instead of a silent misread.
+    unknown_events: u32,
 }
 
 /// Cached log signals with the evidence they came from: when they were read and
@@ -416,6 +419,7 @@ impl DeepSeekDesktopAnalyzer {
             "approvalAsked": read.is_some_and(|state| state.signals.approval_asked),
             "questionPending": read.is_some_and(|state| state.signals.question_pending),
             "error": read.is_some_and(|state| state.signals.error),
+            "unknownEvents": read.map_or(0, |state| state.signals.unknown_events),
             "logSignature": read.and_then(|state| state.log).map(|(size, _)| size),
             "readAgoSecs": read.map(|state| state.checked.elapsed().as_secs_f64()),
             "inObservation": signals.is_some(),
@@ -475,55 +479,46 @@ fn log_signals(text: &str) -> LogSignals {
     let mut signals = LogSignals::default();
     let mut asked: Vec<String> = Vec::new();
     let mut question_calls: Vec<String> = Vec::new();
-    // A failure is a point in time, not a state: an exhausted retry is only
-    // still true while nothing after it has moved the conversation on. The
-    // events are walked in order so a later recovery can clear it.
-    let mut failed = false;
-    let mut turn_open = false;
-    for line in text.lines() {
-        let Ok(event) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
+    let mut timeline = crate::deepseek::Timeline::default();
+    for event in crate::deepseek::session_events(text) {
+        use crate::deepseek::EventRole;
         let data = &event["data"];
+        let seq = event["seq"].as_u64().unwrap_or_default();
         let id = data["id"].as_str().unwrap_or_default();
-        match event["type"].as_str() {
-            Some("approval/asked") if !id.is_empty() => asked.push(id.to_owned()),
-            Some("approval/decided") if !id.is_empty() => {
+        let mut role = crate::deepseek::event_role(event["type"].as_str().unwrap_or_default());
+        // The question pair shares its event types with ordinary tools, so the
+        // tool name is what identifies it.
+        if role == EventRole::Progress && data["name"] == "ask_user_question" {
+            role = EventRole::Inert;
+            if let Some(call_id) = data["callId"].as_str().filter(|id| !id.is_empty()) {
+                question_calls.push(call_id.to_owned());
+            }
+        }
+        if role == EventRole::Progress && event["type"] == "tool/result" {
+            if let Some(call_id) = data["message"]["source"]["callId"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+            {
+                question_calls.retain(|candidate| candidate != call_id);
+            }
+        }
+        match role {
+            EventRole::TurnStart => timeline.turn_started(),
+            EventRole::TurnEnd => timeline.turn_ended(),
+            EventRole::Progress => timeline.progressed(seq),
+            EventRole::Failure => timeline.failed(seq, data),
+            EventRole::ApprovalAsked if !id.is_empty() => asked.push(id.to_owned()),
+            EventRole::ApprovalDecided if !id.is_empty() => {
                 asked.retain(|candidate| candidate != id);
             }
-            Some("tool/call") if data["name"] == "ask_user_question" => {
-                if let Some(call_id) = data["callId"].as_str().filter(|id| !id.is_empty()) {
-                    question_calls.push(call_id.to_owned());
-                }
-            }
-            Some("tool/result") => {
-                if let Some(call_id) = data["message"]["source"]["callId"]
-                    .as_str()
-                    .filter(|id| !id.is_empty())
-                {
-                    question_calls.retain(|candidate| candidate != call_id);
-                }
-                failed = false;
-            }
-            Some("turn/start") => turn_open = true,
-            Some("turn/end") => turn_open = false,
-            // The retry plugin appends inside an open turn, so a spent budget is
-            // a failure; `mode: "always"` carries no budget and never stops on
-            // its own, so it is not one.
-            Some("llm/retry") if crate::deepseek::retries_exhausted(data) => failed = turn_open,
-            // Evidence that the conversation moved past the failure. `step/end`
-            // and `turn/end` are deliberately not progress: a failed turn closes
-            // itself, which is exactly the shape an offline session leaves
-            // behind — retries spent, turn closed, nothing after it.
-            Some("assistant/message" | "assistant/attempt" | "tool/call" | "user/message") => {
-                failed = false
-            }
+            EventRole::Unknown => timeline.saw_unknown(),
             _ => {}
         }
     }
     signals.approval_asked = !asked.is_empty();
     signals.question_pending = !question_calls.is_empty();
-    signals.error = failed;
+    signals.error = timeline.failure_current();
+    signals.unknown_events = timeline.unknown_events();
     signals
 }
 

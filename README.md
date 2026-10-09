@@ -295,7 +295,15 @@ DeepSeek 桌面缓存 ┘
 
 状态优先级：等待确认 → 等待回复 → 进行中 → 就绪 → 已停止。工具调用必须按 ID 配对，只有未完成的 `request_user_input` / `AskUserQuestion` 判为等待回复，显式提权或完整终端确认提示判为等待确认。
 
-DeepSeek Harness 终端会话与桌面端走两条路径：终端 `dsh` 进程按项目读取 `~/.dsh/sessions` 日志；桌面应用（Electron，`DeepSeek Harness.app`）由一个进程承载全部会话，托盘改为读取该进程 `DSH_HOME` 下 `storages/session_projcache/sessions` 的每会话投影缓存——未完成的 `openStep`/`pendingCalls` 判为进行中，`userQuestions.active` 判为等待回复，其余为就绪。每条会话一行，`open_url` 为空时点击回到桌面端窗口。
+DeepSeek Harness 终端会话与桌面端走两条路径：终端 `dsh` 进程按项目读取 `~/.dsh/sessions` 日志；桌面应用（Electron，`DeepSeek Harness.app`）由一个进程承载全部会话，托盘改为读取该进程 `DSH_HOME` 下 `storages/session_projcache/sessions` 的每会话投影缓存——未完成的 `openStep`/`pendingCalls` 判为进行中，其余为就绪。每条会话一行，`open_url` 为空时点击回到桌面端窗口。
+
+**判定规则何以保持通用**（避免硬编码式探测）：
+
+- 投影缓存拿不到的信号（等待、失败）从会话事件日志推导：事件类型先归类为**语义角色**（turn 开/关、进展、失败、审批、提问、无关、未知）一张表，再交给一个**按事件序号排序的时间线状态机**，而不是把事件名直接写进判定分支。
+- 失败被建模为**日志中的一个位置**而非锁存标志：`llm/retry` 的 `retry >= maxRetries` 记为失败，之后只有出现"对话确实往前走了"的事件才视为已恢复。`step/end`/`turn/end` 有意不算进展——失败的轮次会自己关闭，离线会话正是停在这里。两者都是**从字段语义推导**（`retry`/`maxRetries` 来自插件自身的重试预算），不是魔法数字。
+- 会话日志里没有 error 事件：`agent/error` 是总线事件、不落盘（见官方 API 目录），因此失败必须由 `llm/retry` 推导。
+- **未知事件被计数而非静默忽略**：事件类型表对照 `dsh-session` 的官方清单（59 类）逐项覆盖，`--diagnose-deepseek-desktop` 会输出每个会话的 `unknownEvents`；上游新增事件类型时会显示为非零数字，而不是变成一次静默误判。
+- 终端与桌面两条读取器**共用同一份**事件分类与时间线实现，不各自维护一套规则。
 
 ### 依赖
 
