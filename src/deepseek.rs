@@ -230,8 +230,10 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
             Some("user/message") => {
                 reply_requested = false;
                 last_text = None;
+                failed = false;
             }
             Some("assistant/message") => {
+                failed = false;
                 last_text = last_text_block(&data["message"]["content"]);
                 if let Some(model) = data["message"]["source"]["model"].as_str() {
                     facts.model = Some(model.trim().into());
@@ -241,11 +243,10 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
                 turn_open = true;
             }
             Some("turn/end") => {
-                // The turn is closed, so a failure recorded inside it has been
-                // contained: an exhausted retry only means "still broken" while
-                // the turn that hit it is open.
+                // Closing the turn is not recovery: an offline session spends
+                // its retries, closes the turn and stops there, which is exactly
+                // the failure worth reporting. Only later progress clears it.
                 turn_open = false;
-                failed = false;
                 reply_requested = last_text
                     .take()
                     .is_some_and(|text| ends_with_question(&text));
@@ -260,12 +261,19 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
                     approvals.remove(id);
                 }
             }
-            Some("tool/call") if data["name"] == "ask_user_question" => {
-                if let Some(id) = data["callId"].as_str() {
-                    questions.insert(id.to_owned());
+            Some("assistant/attempt") => {
+                failed = false;
+            }
+            Some("tool/call") => {
+                failed = false;
+                if data["name"] == "ask_user_question" {
+                    if let Some(id) = data["callId"].as_str() {
+                        questions.insert(id.to_owned());
+                    }
                 }
             }
             Some("tool/result") => {
+                failed = false;
                 if let Some(id) = data["message"]["source"]["callId"].as_str() {
                     questions.remove(id);
                 }
@@ -279,6 +287,7 @@ fn parse_signals(text: &str) -> DeepSeekFacts {
                 // waiting states are decided.
                 failed = turn_open;
             }
+
             _ => {}
         }
     }
@@ -395,15 +404,22 @@ mod tests {
         };
         assert_eq!(parse_signals(&line(1, "5")).state, None);
         assert_eq!(parse_signals(&line(5, "5")).state, Some(AgentState::Error));
-        // Once the turn closes, the failure is contained.
+        // Closing the turn is not recovery: an offline session ends exactly
+        // there (retries spent, turn closed, nothing after it).
         let closed = format!(
-            "{} {{\"type\":\"turn/end\",\"data\":{{\"turn\":1}}}}\n",
+            "{}{{\"type\":\"turn/end\",\"data\":{{\"turn\":1}}}}\n",
             line(5, "5")
         );
-        assert_eq!(parse_signals(&closed).state, None);
+        assert_eq!(parse_signals(&closed).state, Some(AgentState::Error));
         // No budget to spend: not a terminal failure.
         let always = "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}\n{\"type\":\"llm/retry\",\"data\":{\"mode\":\"always\",\"retry\":9}}\n";
         assert_eq!(parse_signals(always).state, None);
+        // Evidence that the conversation moved on clears it.
+        let after_progress = format!(
+            "{}{{\"type\":\"assistant/message\",\"data\":{{}}}}\n",
+            line(5, "5")
+        );
+        assert_eq!(parse_signals(&after_progress).state, None);
         assert!(retries_exhausted(
             &serde_json::json!({ "retry": 5, "maxRetries": 5 })
         ));

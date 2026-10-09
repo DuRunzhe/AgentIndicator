@@ -475,6 +475,10 @@ fn log_signals(text: &str) -> LogSignals {
     let mut signals = LogSignals::default();
     let mut asked: Vec<String> = Vec::new();
     let mut question_calls: Vec<String> = Vec::new();
+    // A failure is a point in time, not a state: an exhausted retry is only
+    // still true while nothing after it has moved the conversation on. The
+    // events are walked in order so a later recovery can clear it.
+    let mut failed = false;
     let mut turn_open = false;
     for line in text.lines() {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
@@ -499,24 +503,27 @@ fn log_signals(text: &str) -> LogSignals {
                 {
                     question_calls.retain(|candidate| candidate != call_id);
                 }
+                failed = false;
             }
-            // An exhausted retry only means "still broken" while the turn that
-            // hit it is open: the retry plugin appends inside an open turn, and a
-            // closed turn has already contained the failure. Without this a
-            // failure the user moved on from would keep reporting an error.
             Some("turn/start") => turn_open = true,
-            Some("turn/end") => {
-                turn_open = false;
-                signals.error = false;
-            }
-            Some("llm/retry") if turn_open && crate::deepseek::retries_exhausted(data) => {
-                signals.error = true;
+            Some("turn/end") => turn_open = false,
+            // The retry plugin appends inside an open turn, so a spent budget is
+            // a failure; `mode: "always"` carries no budget and never stops on
+            // its own, so it is not one.
+            Some("llm/retry") if crate::deepseek::retries_exhausted(data) => failed = turn_open,
+            // Evidence that the conversation moved past the failure. `step/end`
+            // and `turn/end` are deliberately not progress: a failed turn closes
+            // itself, which is exactly the shape an offline session leaves
+            // behind — retries spent, turn closed, nothing after it.
+            Some("assistant/message" | "assistant/attempt" | "tool/call" | "user/message") => {
+                failed = false
             }
             _ => {}
         }
     }
     signals.approval_asked = !asked.is_empty();
     signals.question_pending = !question_calls.is_empty();
+    signals.error = failed;
     signals
 }
 
@@ -1048,12 +1055,18 @@ mod tests {
         assert!(!log_signals(&retry(4, json!(5))).error);
         // The last attempt has been spent.
         assert!(log_signals(&retry(5, json!(5))).error);
-        // A closed turn contains the failure it recorded.
-        let contained = format!(
+        // Closing the turn is not recovery: an offline session ends exactly
+        // there (retries spent, turn closed, nothing after it).
+        let closed = format!(
             "{}{{\"type\":\"turn/end\",\"data\":{{\"turn\":1}}}}\n",
             retry(5, json!(5))
         );
-        assert!(!log_signals(&contained).error);
+        assert!(log_signals(&closed).error);
+        // Progress after it is.
+        let recovered = format!(
+            "{closed}{{\"type\":\"turn/start\",\"data\":{{\"turn\":2}}}}\n{{\"type\":\"assistant/message\",\"data\":{{\"turn\":2}}}}\n"
+        );
+        assert!(!log_signals(&recovered).error);
         // `mode: "always"` carries no budget and never stops on its own.
         let always = "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}\n{\"type\":\"llm/retry\",\"data\":{\"mode\":\"always\",\"retry\":9,\"failure\":{\"message\":\"boom\"}}}\n";
         assert!(!log_signals(always).error);
