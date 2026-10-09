@@ -154,7 +154,13 @@ impl Detector {
                 let active = has_task_descendant(pid, kind, &self.system);
                 let mut instance = AgentInstance {
                     key: pid.as_u32().to_string(),
-                    kind: display_name(kind).into(),
+                    // The terminal form carries its own kind so that its absence
+                    // can be reported while the desktop form is present.
+                    kind: if kind == "deepseek" {
+                        DEEPSEEK_TERMINAL_KIND.into()
+                    } else {
+                        display_name(kind).into()
+                    },
                     label: cwd
                         .as_ref()
                         .and_then(|p| p.file_name())
@@ -205,12 +211,29 @@ impl Detector {
         }
         enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
+            // DeepSeek Harness is reported per form below: the terminal and the
+            // desktop application are independently present, so one stopped row
+            // for the pair could not say which of them is missing.
+            if kind == "deepseek" {
+                continue;
+            }
             if !instances
                 .iter()
                 .any(|instance| instance.kind == display_name(kind))
             {
                 instances.push(stopped_instance(kind));
             }
+        }
+        // Each form states its own absence, so "the terminal is not running"
+        // never hides behind the desktop application's rows (or the reverse).
+        if !has_deepseek_terminal(&instances) {
+            instances.push(deepseek_form_stopped(true));
+        }
+        if !instances
+            .iter()
+            .any(|instance| instance.kind == DEEPSEEK_PLACEHOLDER_KIND)
+        {
+            instances.push(deepseek_form_stopped(false));
         }
         instances.sort_by_key(|instance| kind_order(&instance.kind));
         instances
@@ -377,12 +400,29 @@ impl Detector {
         }
         enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
+            // DeepSeek Harness is reported per form below: the terminal and the
+            // desktop application are independently present, so one stopped row
+            // for the pair could not say which of them is missing.
+            if kind == "deepseek" {
+                continue;
+            }
             if !instances
                 .iter()
                 .any(|instance| instance.kind == display_name(kind))
             {
                 instances.push(stopped_instance(kind));
             }
+        }
+        // Each form states its own absence, so "the terminal is not running"
+        // never hides behind the desktop application's rows (or the reverse).
+        if !has_deepseek_terminal(&instances) {
+            instances.push(deepseek_form_stopped(true));
+        }
+        if !instances
+            .iter()
+            .any(|instance| instance.kind == DEEPSEEK_PLACEHOLDER_KIND)
+        {
+            instances.push(deepseek_form_stopped(false));
         }
         instances.sort_by_key(|instance| kind_order(&instance.kind));
         instances
@@ -404,6 +444,55 @@ fn stopped_instance(kind: &str) -> AgentInstance {
         automatic_confirmation_mode: false,
         informational: false,
     }
+}
+
+/// Key of the DeepSeek Harness placeholder row. The desktop form's placeholder
+/// and its stopped row are the same row, so they share this key and the scan
+/// never lists both.
+pub(crate) const DEEPSEEK_PLACEHOLDER_KIND: &str = "DeepSeek Harness";
+
+/// Key and kind of the DeepSeek Harness terminal (`dsh` CLI) rows and of its
+/// placeholder.
+///
+/// The kind is distinct from the desktop form's on purpose: the two forms are
+/// independently present, so "no terminal running" must be able to produce its
+/// own row while the desktop application keeps listing its conversations. The
+/// kind is never rendered — the menu shows the label and the state — so it only
+/// has to sort and group.
+pub(crate) const DEEPSEEK_TERMINAL_KIND: &str = "DeepSeek Harness (terminal)";
+
+/// The stopped row for one DeepSeek Harness form.
+fn deepseek_form_stopped(terminal: bool) -> AgentInstance {
+    let form = crate::i18n::deepseek_form(!terminal);
+    AgentInstance {
+        key: if terminal {
+            "stopped:deepseek:terminal".into()
+        } else {
+            "stopped:deepseek:desktop".into()
+        },
+        kind: if terminal {
+            DEEPSEEK_TERMINAL_KIND.into()
+        } else {
+            DEEPSEEK_PLACEHOLDER_KIND.into()
+        },
+        label: format!("{DEEPSEEK_PLACEHOLDER_KIND} · {form}"),
+        pid: 0,
+        cwd: None,
+        state: AgentState::Stopped,
+        uptime: Duration::ZERO,
+        model: None,
+        context: None,
+        open_url: None,
+        automatic_confirmation_mode: false,
+        informational: false,
+    }
+}
+
+/// Whether a DeepSeek Harness terminal row is present.
+fn has_deepseek_terminal(instances: &[AgentInstance]) -> bool {
+    instances
+        .iter()
+        .any(|instance| instance.kind == DEEPSEEK_TERMINAL_KIND)
 }
 
 /// One row per conversation the DeepSeek Harness desktop application has open,
@@ -1093,6 +1182,12 @@ fn kind_order(kind: &str) -> usize {
         "DeepSeek Harness",
         "Pi",
     ];
+    // The terminal form sorts with the agent it belongs to.
+    let kind = if kind == DEEPSEEK_TERMINAL_KIND {
+        DEEPSEEK_PLACEHOLDER_KIND
+    } else {
+        kind
+    };
     ORDER
         .iter()
         .position(|candidate| *candidate == kind)
@@ -2056,6 +2151,46 @@ mod tests {
         assert!(
             codex_resume_session_id_from_command("/opt/homebrew/bin/codex resume --last").is_none()
         );
+    }
+
+    #[test]
+    fn each_deepseek_form_reports_its_own_absence() {
+        // The two forms are independently present, so one pair-level stopped row
+        // could not say which of them is missing.
+        let stopped = |terminal: bool| deepseek_form_stopped(terminal);
+        let terminal = stopped(true);
+        let desktop = stopped(false);
+        assert_eq!(terminal.state, AgentState::Stopped);
+        assert_eq!(desktop.state, AgentState::Stopped);
+        assert_eq!(terminal.pid, 0);
+        assert_eq!(desktop.pid, 0);
+        assert_ne!(terminal.key, desktop.key, "their rows are separate state");
+        assert!(terminal.label.contains(crate::i18n::deepseek_form(false)));
+        assert!(desktop.label.contains(crate::i18n::deepseek_form(true)));
+
+        // The terminal form is recognized by its own kind, so its absence can be
+        // detected while the desktop form is listing conversations.
+        assert!(has_deepseek_terminal(&[terminal]));
+        assert!(!has_deepseek_terminal(&[desktop]));
+        let running = desktop_rows(
+            43958,
+            Duration::from_secs(60),
+            &[desktop_session("session-a", AgentState::Working)],
+        );
+        assert!(!has_deepseek_terminal(&running));
+        assert!(
+            running
+                .iter()
+                .any(|instance| instance.kind == DEEPSEEK_PLACEHOLDER_KIND),
+            "a running desktop conversation stands in for the desktop form"
+        );
+
+        // Both forms sort with the agent they belong to, not after every other.
+        assert_eq!(
+            kind_order(DEEPSEEK_TERMINAL_KIND),
+            kind_order(DEEPSEEK_PLACEHOLDER_KIND)
+        );
+        assert!(kind_order(DEEPSEEK_TERMINAL_KIND) < usize::MAX);
     }
 
     #[test]
