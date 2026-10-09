@@ -330,7 +330,13 @@ impl Detector {
                     host.is_none() && has_active_process_descendant(process.pid, kind, &processes);
                 let mut instance = AgentInstance {
                     key: process.pid.to_string(),
-                    kind: display.into(),
+                    // The terminal form carries its own kind so its absence can be
+                    // reported while the desktop form lists conversations.
+                    kind: if kind == "deepseek" && host.is_none() {
+                        DEEPSEEK_TERMINAL_KIND.into()
+                    } else {
+                        display.into()
+                    },
                     label: cwd
                         .as_ref()
                         .and_then(|path| path.file_name())
@@ -802,70 +808,108 @@ fn host_application_for(
 /// reproduce exactly the bug this replaced (a basename-only match that missed
 /// `node …/dsh/lib/bin.js`).
 fn is_dsh_cli(executable: &str, command: &str) -> bool {
-    if is_dsh_package_path(executable) {
-        return true;
+    is_dsh_package_path(executable) || reaches_dsh_through_runtime(executable, command)
+}
+
+/// Whether a command line, or an executable path, names the `dsh` CLI package
+/// or the desktop host that embeds the same runtime.
+///
+/// The search runs over the *whole* string rather than one whitespace-separated
+/// token: this application's own bundle path contains a space, so a token split
+/// cut `…/DeepSeek Harness.app/…/@deepseek-ai/dsh/lib/bin.js` in half and the
+/// package stopped being recognisable. Backslashes are normalised first, because
+/// Windows separates paths with them.
+///
+/// The package must sit directly under a `node_modules` directory and be followed
+/// by something that looks like a file, so a bare `…/@deepseek-ai/dsh` argument —
+/// the shape `grep -r dsh …/dsh` has — is not an agent, while every real
+/// invocation is.
+fn is_dsh_package_path(text: &str) -> bool {
+    const PACKAGE: &str = "node_modules/@deepseek-ai/dsh";
+    let normalized = text.replace('\\', "/");
+    let mut rest = normalized.as_str();
+    while let Some(found) = rest.find(PACKAGE) {
+        let after = &rest[found + PACKAGE.len()..];
+        // The desktop host carries the same runtime under its own package name.
+        if after
+            .strip_prefix("desktop-host")
+            .is_some_and(|tail| tail.starts_with('/'))
+        {
+            return true;
+        }
+        if let Some(tail) = after.strip_prefix('/') {
+            // Any later segment looking like a file (`lib/bin.js`,
+            // `package.json`, an entry file at the root) proves the token reaches
+            // *inside* the package rather than naming its directory.
+            if tail.split('/').any(|segment| segment.contains('.')) {
+                return true;
+            }
+        }
+        rest = &rest[found + 1..];
     }
-    command_tokens(command).any(|token| is_dsh_package_path(token))
+    false
+}
+
+/// The runtime names a JavaScript entry file can be handed to. `dsh` is an npm
+/// package, so every install runs it through one of these.
+fn is_js_runtime(executable: &str) -> bool {
+    let name = executable
+        .rsplit('/')
+        .next()
+        .unwrap_or(executable)
+        .to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "node" | "node.exe" | "bun" | "bun.exe" | "deno" | "deno.exe"
+    )
+}
+
+/// Whether a command line reaches the `dsh` CLI through a runtime, either by the
+/// package's own entry file or by the shim npm links onto `PATH`.
+fn reaches_dsh_through_runtime(executable: &str, command: &str) -> bool {
+    is_js_runtime(executable)
+        && (is_dsh_package_path(command) || command_tokens(command).any(is_dsh_entry))
+}
+
+/// Whether one command-line token is the `dsh` entry point the runtime was handed
+/// — the shim npm links onto `PATH`, e.g.
+/// `node /Users/…/nvm/versions/node/v24.19.0/bin/dsh web`.
+///
+/// That shape names the package nowhere, which is why matching the package path
+/// alone reported a live CLI as stopped.
+///
+/// The token has to be an executable `dsh` inside a `bin` directory and carry no
+/// extension — the shape npm links onto `PATH`. So `dsh` as an argument value
+/// (`--name dsh`), an extensioned file beside it (`dsh.js`), a bare directory
+/// (`…/dsh`) and an arbitrary file that happens to share the name
+/// (`/tmp/probe/dsh`) are all excluded.
+fn is_dsh_entry(token: &str) -> bool {
+    let token = token.trim_matches(|c| c == '"' || c == '\\');
+    if token.starts_with('-') {
+        return false;
+    }
+    let normalized = token.replace('\\', "/");
+    let mut segments = normalized.rsplit('/');
+    let Some(last) = segments.next() else {
+        return false;
+    };
+    last == "dsh" && segments.next() == Some("bin")
 }
 
 /// The tokens of a command line, split on whitespace and on the quoting a shell
-/// or a runtime may have added.
-///
-/// A backslash is deliberately *not* a separator: it is the path separator on
-/// Windows, so splitting on it cut `…\node_modules\@deepseek-ai\dsh\…` apart.
-/// It is normalised to a forward slash per token instead.
+/// or a runtime may have added. A backslash is deliberately not a separator: it
+/// separates paths on Windows, so splitting on it cut such a path apart.
 fn command_tokens(command: &str) -> impl Iterator<Item = &str> {
     command
         .split(|c: char| c.is_whitespace() || c == '"' || c == '(' || c == ')')
         .filter(|token| !token.is_empty())
 }
 
-/// Whether a path or token names the `dsh` CLI package, or the desktop host that
-/// embeds the same runtime.
-///
-/// The package must sit directly under a `node_modules` directory, so a file
-/// that merely mentions the name (`cat …/dsh/README.md`, `--name dsh`) is not an
-/// agent, while every real invocation — `…/node_modules/@deepseek-ai/dsh/...`,
-/// `<home>/node_modules/@deepseek-ai/dsh/...`, a `file://` specifier, or an
-/// npx cache copy — is.
-fn is_dsh_package_path(token: &str) -> bool {
-    let token = token.trim_matches(|c| c == '"' || c == '\\');
-    if token.is_empty() || token.starts_with('-') {
-        return false;
-    }
-    // `file://` specifiers are how the runtime names the same package.
-    let token = token.strip_prefix("file://").unwrap_or(token);
-    // Windows paths use backslashes; the command may still be quoted.
-    let normalized = token.replace('\\', "/");
-    let mut parts = normalized.split('/');
-    let mut previous = "";
-    while let Some(part) = parts.next() {
-        if previous == "node_modules" && part == "@deepseek-ai" {
-            if !matches!(parts.next(), Some("dsh") | Some("dsh-desktop-host")) {
-                return false;
-            }
-            // The token has to reach a *file inside* the package. A bare
-            // `node_modules/@deepseek-ai/dsh` is a directory argument — the
-            // shape `grep … node_modules/@deepseek-ai/dsh` has — not a command
-            // that runs the CLI. The search covers the rest of the path because
-            // entry points are nested to different depths (`lib/bin.js`,
-            // `lib/index.js`, a bundle beside them).
-            return parts.any(|segment| {
-                segment.rsplit_once('.').is_some_and(|(_, extension)| {
-                    matches!(extension, "js" | "mjs" | "cjs" | "ts" | "jsx" | "tsx")
-                })
-            });
-        }
-        previous = part;
-    }
-    false
-}
-
 /// The executed program's basename, matched against the known agent binaries.
 /// Only the executable is considered for the CLI agents: command lines routinely
 /// mention agent names (`which pi`) without being that agent. The one exception
 /// is `dsh`, which ships as an npm package and is recognised from its command
-/// line by [`is_dsh_node_cli`].
+/// line by [`is_dsh_cli`].
 ///
 /// The DeepSeek Harness desktop application is matched by its bundle directory
 /// instead: its executable is the product name with a space, which no CLI
@@ -2292,38 +2336,37 @@ mod tests {
 
     #[test]
     fn the_dsh_cli_is_recognized_however_it_was_installed() {
-        // There is no binary named `dsh`: the CLI is an npm package, so npm,
-        // pnpm, bun, npx and a direct `node` invocation all run the same entry
-        // file under different runtimes. What is stable is the package path,
-        // which is what is matched. The earlier basename-only match missed the
-        // first of these and the terminal form never appeared.
-        let invocations = [
-            // Captured from this machine: npx cache.
-            "node /Users/me/.npm/_npx/1e7f6d9597241db0/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web",
-            // Global npm/pnpm/bun installs and a profile-local copy.
-            "/opt/homebrew/bin/node /opt/homebrew/lib/node_modules/@deepseek-ai/dsh/lib/bin.js",
-            "node /Users/me/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js",
-            // bun and deno run the same package.
-            "bun /Users/me/.bun/install/global/node_modules/@deepseek-ai/dsh/lib/bin.js",
-            "deno run -A /Users/me/node_modules/@deepseek-ai/dsh/lib/bin.js",
-            // A direct shebang invocation, i.e. an entry file on PATH.
-            "/usr/local/bin/dsh",
-            // `file://` specifiers are how the runtime reports the same package.
-            "node file:///Users/me/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js",
-            // Windows separators and quoting.
-            "node \"C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js\"",
-            // The desktop host embeds the same runtime.
-            "node /Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js",
-        ];
-        for invocation in invocations {
-            let executable = invocation.split_whitespace().next().unwrap_or_default();
-            assert!(
-                is_dsh_cli(executable, invocation)
-                    || is_dsh_package_path(executable)
-                    || executable.ends_with("dsh"),
-                "not recognized: {invocation}"
-            );
-        }
+        // Every install runs a JavaScript entry file through a runtime: there is
+        // no binary named `dsh`. Two command-line shapes have to be covered, and
+        // the second is the one this machine actually runs.
+        assert!(is_dsh_cli(
+            "node",
+            "node /Users/me/.npm/_npx/1e7f6d9597241db0/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web"
+        ));
+        assert!(is_dsh_cli(
+            "node",
+            "node /Users/me/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js"
+        ));
+        assert!(is_dsh_cli(
+            "bun",
+            "bun /Users/me/.bun/install/global/node_modules/@deepseek-ai/dsh/lib/bin.js"
+        ));
+        assert!(is_dsh_cli(
+            "deno",
+            "deno run -A /Users/me/node_modules/@deepseek-ai/dsh/lib/bin.js"
+        ));
+        // Captured from this machine: the shim npm links onto `PATH` names the
+        // package nowhere, so a package-path-only match reported a perfectly live
+        // CLI as stopped.
+        assert!(is_dsh_cli(
+            "node",
+            "node /Users/durunzhe/.nvm/versions/node/v24.19.0/bin/dsh web"
+        ));
+        // Windows separators and quoting.
+        assert!(is_dsh_cli(
+            "node",
+            "node \"C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js\""
+        ));
 
         // Merely mentioning the name is not an agent.
         assert!(!is_dsh_cli("node", "node script.js --name dsh"));
@@ -2336,15 +2379,23 @@ mod tests {
             "cat node_modules/@deepseek-ai/dsh/README.md"
         ));
         assert!(!is_dsh_cli("node", "node /tmp/probe/dsh"));
-        // A different package under the same scope is not the CLI.
         assert!(!is_dsh_cli(
             "node",
             "node node_modules/@deepseek-ai/dsh-other/lib/bin.js"
         ));
-        // The package name is only meaningful directly under `node_modules`.
         assert!(!is_dsh_cli(
             "node",
             "node /tmp/fake/@deepseek-ai/dsh/lib/bin.js"
+        ));
+        // A package path without a JS runtime is not a running CLI either.
+        assert!(!is_dsh_cli(
+            "/bin/cat",
+            "cat /tmp/node_modules/@deepseek-ai/dsh/lib/bin.js"
+        ));
+        // A directory argument is not an invocation.
+        assert!(!is_dsh_cli(
+            "node",
+            "node -e \"0\" node_modules/@deepseek-ai/dsh"
         ));
     }
 
