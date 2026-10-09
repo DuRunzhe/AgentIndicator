@@ -202,14 +202,21 @@ fn read_zstd_tail(path: &Path) -> Option<String> {
 /// below the budget is transient, and `step/start` / `turn/end` clear the
 /// projection, so a recovered session stops reporting it.
 pub fn retries_exhausted(data: &Value) -> bool {
-    let Some(retry) = data["retry"].as_u64() else {
-        return false;
-    };
-    let Some(max) = data["maxRetries"].as_u64() else {
-        // `mode: "always"` has no budget: its retries never stop on their own.
+    let (Some(retry), Some(max)) = (data["retry"].as_u64(), data["maxRetries"].as_u64()) else {
         return false;
     };
     max > 0 && retry >= max
+}
+
+/// The retry budget a record reports, when it reports one.
+///
+/// `mode: "always"` deliberately carries no budget: those retries never stop on
+/// their own, so their absence is meaningful rather than a missing field.
+pub fn retry_budget(data: &Value) -> Option<(u64, u64)> {
+    if data["mode"].as_str() == Some("always") {
+        return Some((1, 0));
+    }
+    Some((data["retry"].as_u64()?, data["maxRetries"].as_u64()?))
 }
 
 /// How one event type bears on the log-level state.
@@ -342,6 +349,9 @@ pub struct Timeline {
     progress_at: Option<u64>,
     turn_open: bool,
     unknown: u32,
+    /// Retry records whose budget was unreadable, so whether they were spent
+    /// could not be decided.
+    unjudged: u32,
 }
 
 /// The events of a log tail, in order, for the state machine to consume.
@@ -370,10 +380,22 @@ impl Timeline {
 
     /// Record a spent retry budget, when the payload says one was spent and a
     /// turn is open (the retry plugin only appends inside an open turn).
+    ///
+    /// A record whose budget cannot be read is counted instead of assumed
+    /// harmless: a renamed `maxRetries` would otherwise turn every failure into
+    /// a silent "still retrying".
     pub fn failed(&mut self, seq: u64, data: &Value) {
+        if retry_budget(data).is_none() {
+            self.unjudged += 1;
+            return;
+        }
         if self.turn_open && retries_exhausted(data) {
             self.failed_at = Some(seq);
         }
+    }
+
+    pub fn unjudged_retries(&self) -> u32 {
+        self.unjudged
     }
 
     pub fn saw_unknown(&mut self) {

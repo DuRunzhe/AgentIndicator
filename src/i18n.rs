@@ -257,6 +257,23 @@ fn no_activity_for(locale: &str) -> &'static str {
     }
 }
 
+/// Row label reporting that the desktop profile no longer matches this build's
+/// format, with how many sessions were affected.
+pub fn profile_format_changed(affected: usize) -> String {
+    let suffix = text("profile_format_changed");
+    format!("{suffix} ({affected})")
+}
+
+/// Row label reporting that the profile directory is absent.
+pub fn profile_missing() -> &'static str {
+    text("profile_missing")
+}
+
+/// Row label reporting that a failure could not be judged from the log.
+pub fn failure_undecidable() -> &'static str {
+    text("failure_undecidable")
+}
+
 /// Row label reporting conversations the menu cap left out.
 pub fn hidden_sessions(count: usize) -> String {
     let suffix = text("hidden_sessions");
@@ -768,6 +785,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("en", "uninstall") => "Uninstall",
         ("en", "no_agents") => "⚪ No running agents found",
         ("en", "hidden_sessions") => "more sessions",
+        ("en", "profile_format_changed") => "DeepSeek Harness profile changed",
+        ("en", "profile_missing") => "No DeepSeek Harness profile found",
+        ("en", "failure_undecidable") => "Some failures could not be judged",
         ("en", "context_used") => "Used",
         ("en", "context_total") => "Total",
         ("en", "about_version") => "Version",
@@ -847,6 +867,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("zh-Hant", "uninstall") => "移除",
         ("zh-Hant", "no_agents") => "⚪ 未發現執行中的 Agent",
         ("zh-Hant", "hidden_sessions") => "個會話未顯示",
+        ("zh-Hant", "profile_format_changed") => "DeepSeek Harness 設定檔格式已變更",
+        ("zh-Hant", "profile_missing") => "找不到 DeepSeek Harness 設定檔",
+        ("zh-Hant", "failure_undecidable") => "部分失敗無法判定",
         ("zh-Hant", "context_used") => "已用",
         ("zh-Hant", "context_total") => "總計",
         ("zh-Hant", "about_version") => "版本",
@@ -926,6 +949,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("ja", "uninstall") => "アンインストール",
         ("ja", "no_agents") => "⚪ 実行中のエージェントが見つかりません",
         ("ja", "hidden_sessions") => "件の会話を非表示",
+        ("ja", "profile_format_changed") => "DeepSeek Harness プロファイル形式が変更",
+        ("ja", "profile_missing") => "DeepSeek Harness プロファイルが見つかりません",
+        ("ja", "failure_undecidable") => "一部の失敗を判定できません",
         ("ja", "context_used") => "使用済み",
         ("ja", "context_total") => "合計",
         ("ja", "about_version") => "バージョン",
@@ -1005,6 +1031,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("ko", "uninstall") => "제거",
         ("ko", "no_agents") => "⚪ 실행 중인 에이전트가 없습니다",
         ("ko", "hidden_sessions") => "개 대화 숨김",
+        ("ko", "profile_format_changed") => "DeepSeek Harness 프로필 형식 변경됨",
+        ("ko", "profile_missing") => "DeepSeek Harness 프로필을 찾을 수 없음",
+        ("ko", "failure_undecidable") => "일부 실패를 판단할 수 없음",
         ("ko", "context_used") => "사용",
         ("ko", "context_total") => "전체",
         ("ko", "about_version") => "버전",
@@ -1084,6 +1113,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("id", "uninstall") => "Hapus",
         ("id", "no_agents") => "⚪ Tidak ada agen yang berjalan",
         ("id", "hidden_sessions") => "sesi lain disembunyikan",
+        ("id", "profile_format_changed") => "Format profil DeepSeek Harness berubah",
+        ("id", "profile_missing") => "Profil DeepSeek Harness tidak ditemukan",
+        ("id", "failure_undecidable") => "Sebagian kegagalan tidak dapat dinilai",
         ("id", "context_used") => "Terpakai",
         ("id", "context_total") => "Total",
         ("id", "about_version") => "Versi",
@@ -1163,6 +1195,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("ms", "uninstall") => "Nyahpasang",
         ("ms", "no_agents") => "⚪ Tiada ejen yang berjalan ditemui",
         ("ms", "hidden_sessions") => "sesi lain disembunyikan",
+        ("ms", "profile_format_changed") => "Format profil DeepSeek Harness berubah",
+        ("ms", "profile_missing") => "Profil DeepSeek Harness tidak ditemui",
+        ("ms", "failure_undecidable") => "Sebahagian kegagalan tidak dapat dinilai",
         ("ms", "context_used") => "Digunakan",
         ("ms", "context_total") => "Jumlah",
         ("ms", "about_version") => "Versi",
@@ -1242,6 +1277,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("vi", "uninstall") => "Gỡ cài đặt",
         ("vi", "no_agents") => "⚪ Không tìm thấy tác nhân nào đang chạy",
         ("vi", "hidden_sessions") => "hội thoại khác bị ẩn",
+        ("vi", "profile_format_changed") => "Định dạng hồ sơ DeepSeek Harness đã đổi",
+        ("vi", "profile_missing") => "Không tìm thấy hồ sơ DeepSeek Harness",
+        ("vi", "failure_undecidable") => "Một số lỗi không thể đánh giá",
         ("vi", "context_used") => "Đã dùng",
         ("vi", "context_total") => "Tổng",
         ("vi", "about_version") => "Phiên bản",
@@ -1321,6 +1359,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("es", "uninstall") => "Desinstalar",
         ("es", "no_agents") => "⚪ No se encontraron agentes en ejecución",
         ("es", "hidden_sessions") => "conversaciones más ocultas",
+        ("es", "profile_format_changed") => "El formato del perfil de DeepSeek Harness cambió",
+        ("es", "profile_missing") => "No se encontró el perfil de DeepSeek Harness",
+        ("es", "failure_undecidable") => "Algunos fallos no se pudieron evaluar",
         ("es", "context_used") => "Usado",
         ("es", "context_total") => "Total",
         ("es", "about_version") => "Versión",
@@ -1400,6 +1441,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("fr", "uninstall") => "Désinstaller",
         ("fr", "no_agents") => "⚪ Aucun agent en cours d'exécution",
         ("fr", "hidden_sessions") => "conversations masquées",
+        ("fr", "profile_format_changed") => "Le format du profil DeepSeek Harness a changé",
+        ("fr", "profile_missing") => "Profil DeepSeek Harness introuvable",
+        ("fr", "failure_undecidable") => "Certains échecs n'ont pas pu être évalués",
         ("fr", "context_used") => "Utilisé",
         ("fr", "context_total") => "Total",
         ("fr", "about_version") => "Version",
@@ -1479,6 +1523,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("it", "uninstall") => "Disinstalla",
         ("it", "no_agents") => "⚪ Nessun agente in esecuzione",
         ("it", "hidden_sessions") => "conversazioni nascoste",
+        ("it", "profile_format_changed") => "Il formato del profilo DeepSeek Harness è cambiato",
+        ("it", "profile_missing") => "Profilo DeepSeek Harness non trovato",
+        ("it", "failure_undecidable") => "Alcuni errori non sono stati valutabili",
         ("it", "context_used") => "Usato",
         ("it", "context_total") => "Totale",
         ("it", "about_version") => "Versione",
@@ -1558,6 +1605,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("de", "uninstall") => "Deinstallieren",
         ("de", "no_agents") => "⚪ Keine laufenden Agenten gefunden",
         ("de", "hidden_sessions") => "weitere Unterhaltungen ausgeblendet",
+        ("de", "profile_format_changed") => "Format des DeepSeek-Harness-Profils geändert",
+        ("de", "profile_missing") => "Kein DeepSeek-Harness-Profil gefunden",
+        ("de", "failure_undecidable") => "Einige Fehler waren nicht bewertbar",
         ("de", "context_used") => "Verwendet",
         ("de", "context_total") => "Gesamt",
         ("de", "about_version") => "Version",
@@ -1637,6 +1687,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("ru", "uninstall") => "Удалить",
         ("ru", "no_agents") => "⚪ Запущенных агентов не найдено",
         ("ru", "hidden_sessions") => "бесед скрыто",
+        ("ru", "profile_format_changed") => "Формат профиля DeepSeek Harness изменился",
+        ("ru", "profile_missing") => "Профиль DeepSeek Harness не найден",
+        ("ru", "failure_undecidable") => "Часть сбоев не удалось оценить",
         ("ru", "context_used") => "Использовано",
         ("ru", "context_total") => "Всего",
         ("ru", "about_version") => "Версия",
@@ -1716,6 +1769,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         ("tr", "uninstall") => "Kaldır",
         ("tr", "no_agents") => "⚪ Çalışan ajan bulunamadı",
         ("tr", "hidden_sessions") => "konuşma gizlendi",
+        ("tr", "profile_format_changed") => "DeepSeek Harness profil biçimi değişti",
+        ("tr", "profile_missing") => "DeepSeek Harness profili bulunamadı",
+        ("tr", "failure_undecidable") => "Bazı hatalar değerlendirilemedi",
         ("tr", "context_used") => "Kullanılan",
         ("tr", "context_total") => "Toplam",
         ("tr", "about_version") => "Sürüm",
@@ -1793,6 +1849,9 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         (_, "install") => "安装",
         (_, "uninstall") => "卸载",
         (_, "hidden_sessions") => "個會話未顯示",
+        (_, "profile_format_changed") => "DeepSeek Harness 設定檔格式已變更",
+        (_, "profile_missing") => "找不到 DeepSeek Harness 設定檔",
+        (_, "failure_undecidable") => "部分失敗無法判定",
         (_, "no_agents") => "⚪ 未发现运行中的 Agent",
         (_, "context_used") => "已用",
         (_, "context_total") => "总计",
@@ -1859,7 +1918,7 @@ mod tests {
         "automation",
     ];
 
-    const TEXT_KEYS: [&str; 78] = [
+    const TEXT_KEYS: [&str; 81] = [
         "disable_notifications",
         "enable_notifications",
         "disable_startup",
@@ -1885,6 +1944,9 @@ mod tests {
         "window_24h",
         "window_all",
         "hidden_sessions",
+        "profile_format_changed",
+        "profile_missing",
+        "failure_undecidable",
         "notify_waiting_confirmation",
         "notify_waiting_reply",
         "notify_auto_confirm",

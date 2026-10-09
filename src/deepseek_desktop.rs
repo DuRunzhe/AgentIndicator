@@ -25,7 +25,11 @@ use std::{
 const CACHE_TTL: Duration = Duration::from_secs(86_400);
 /// Bumped when the parsed shape changes, so entries cached by an older build
 /// are read again instead of being trusted.
-const CACHE_VERSION: u8 = 5;
+const CACHE_VERSION: u8 = 6;
+/// The `session_projcache` document version this build reads. A document at any
+/// other version is refused rather than guessed at, and counted in the profile
+/// health so the diagnostic can say so.
+const PROJECTION_VERSION: u64 = 7;
 /// How long a session's event-log signals are trusted. The projection cache
 /// reports a step as open while an approval prompt is on screen and carries no
 /// row for a failed turn, so the event log is consulted for both — once per
@@ -69,6 +73,10 @@ struct LogSignals {
     /// Event types this build does not recognize. Reported by the diagnostic so
     /// a schema change shows up as a number instead of a silent misread.
     unknown_events: u32,
+    /// Retry records whose budget could not be read, so "spent or not" was
+    /// undecidable. Counted because a renamed field would otherwise look like a
+    /// normal, healthy retry.
+    retry_unjudged: u32,
 }
 
 /// Cached log signals with the evidence they came from: when they were read and
@@ -110,6 +118,9 @@ pub struct DesktopSession {
     /// (`permissions.approval == "never"`), i.e. the auto-confirmation mode the
     /// notification settings can silence.
     pub automatic_confirmation_mode: bool,
+    /// How many rows this build reads were absent from the document. Non-zero
+    /// means the projection moved on, so the state derived from it is partial.
+    pub missing_rows: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -126,6 +137,95 @@ struct CachedSession {
     applied: Option<DesktopSession>,
 }
 
+/// What the last scan found while reading the profile.
+///
+/// The reader is deliberately tolerant — an unreadable session must not take the
+/// tray down — but tolerance without visibility is how a format change becomes a
+/// silent wrong answer instead of an obvious gap. Every deviation from the
+/// expected shape is counted here and reported by the diagnostic.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProfileHealth {
+    pub files: usize,
+    pub parsed: usize,
+    /// Documents whose `version` is not the one this build reads.
+    pub version_mismatch: usize,
+    /// Documents whose JSON could not be read.
+    pub unreadable: usize,
+    /// Documents that parsed but are missing a row this build relies on.
+    pub incomplete: usize,
+    /// Retry records seen without a usable `maxRetries`, i.e. a failure could
+    /// not be judged either way.
+    pub retry_unjudged: u32,
+    /// Whether the profile directory exists at all.
+    pub root_present: bool,
+}
+
+impl ProfileHealth {
+    /// Whether every document looked like the shape this build expects.
+    pub fn is_intact(&self) -> bool {
+        self.root_present
+            && self.unreadable == 0
+            && self.version_mismatch == 0
+            && self.incomplete == 0
+            && self.retry_unjudged == 0
+    }
+
+    /// What to tell the user when the profile no longer looks the way this
+    /// build reads it, or `None` when it does.
+    ///
+    /// Silence is the failure this exists to prevent: a format change used to
+    /// look like "the app has no conversations", which is indistinguishable from
+    /// a healthy idle app.
+    pub fn alert(&self) -> Option<ProfileAlert> {
+        if !self.root_present {
+            return Some(ProfileAlert {
+                kind: AlertKind::ProfileMissing,
+                affected: 0,
+            });
+        }
+        let affected = self.version_mismatch + self.incomplete + self.unreadable;
+        if affected > 0 {
+            return Some(ProfileAlert {
+                kind: if self.version_mismatch > 0 {
+                    AlertKind::FormatChanged
+                } else {
+                    AlertKind::Unreadable
+                },
+                affected,
+            });
+        }
+        if self.retry_unjudged > 0 {
+            return Some(ProfileAlert {
+                kind: AlertKind::FailureUndecidable,
+                affected: self.parsed,
+            });
+        }
+        None
+    }
+}
+
+/// Why the profile could not be read the way this build expects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AlertKind {
+    /// The profile directory is not there at all.
+    ProfileMissing,
+    /// Documents are at a version or shape this build does not read.
+    FormatChanged,
+    /// Documents could not be parsed as JSON.
+    Unreadable,
+    /// Retry records whose budget could not be read, so a failure could not be
+    /// judged either way.
+    FailureUndecidable,
+}
+
+/// A visible statement that the profile moved away from this build's format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProfileAlert {
+    pub kind: AlertKind,
+    /// How many sessions were affected.
+    pub affected: usize,
+}
+
 /// Reads the desktop profile's session projection cache, reusing the previous
 /// parse while a file's size and modification time are unchanged.
 #[derive(Default)]
@@ -139,6 +239,8 @@ pub struct DeepSeekDesktopAnalyzer {
     logs: HashMap<String, (Instant, Option<PathBuf>)>,
     /// Session id to the signals read from its event log.
     signals: HashMap<String, CachedSignals>,
+    /// What the last scan found.
+    health: ProfileHealth,
 }
 
 impl DeepSeekDesktopAnalyzer {
@@ -158,7 +260,12 @@ impl DeepSeekDesktopAnalyzer {
         let Some(root) = self.home.as_deref().map(session_cache_root_for) else {
             return 0;
         };
+        let mut health = ProfileHealth {
+            root_present: root.is_dir(),
+            ..ProfileHealth::default()
+        };
         let Ok(entries) = root.read_dir() else {
+            self.health = health;
             return 0;
         };
         let mut seen = Vec::new();
@@ -173,6 +280,7 @@ impl DeepSeekDesktopAnalyzer {
             };
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             seen.push(path.clone());
+            health.files += 1;
             if let Some(cached) = self.cache.get(&path) {
                 // The app rewrites the whole document, so an unchanged size and
                 // modification time means an unchanged projection. The check
@@ -191,7 +299,32 @@ impl DeepSeekDesktopAnalyzer {
                     continue;
                 }
             }
+            // Read the declared version and row shape before deciding what to
+            // report: a refused document still has to explain itself, and the
+            // refusal branch used to bypass the shape accounting entirely.
+            let version = read_projection_version(&path);
+            let shape_moved = version.is_some_and(|v| v != PROJECTION_VERSION)
+                && read_projection_rows(&path).is_some_and(|rows| missing_rows(&rows) > 0);
             let facts = parse_session_file(&path, modified);
+            match &facts {
+                Some(facts) => {
+                    health.parsed += 1;
+                    if facts.missing_rows > 0 {
+                        health.incomplete += 1;
+                    }
+                }
+                None => {
+                    if shape_moved {
+                        health.version_mismatch += 1;
+                    } else if version.is_some_and(|v| v != PROJECTION_VERSION) {
+                        // An unknown version whose rows still matched: read on
+                        // trust when it reads at all, otherwise a shape change.
+                        health.version_mismatch += 1;
+                    } else {
+                        health.unreadable += 1;
+                    }
+                }
+            }
             self.cache.insert(
                 path,
                 CachedSession {
@@ -206,8 +339,19 @@ impl DeepSeekDesktopAnalyzer {
             parsed += 1;
         }
         self.prune(&seen);
-        self.resolve_signals();
+        health.retry_unjudged = self.resolve_signals();
+        self.health = health;
         parsed
+    }
+
+    /// What the last scan found while reading the profile.
+    pub fn health(&self) -> &ProfileHealth {
+        &self.health
+    }
+
+    /// The profile-level alert for the last scan, if any.
+    pub fn alert(&self) -> Option<ProfileAlert> {
+        self.health.alert()
     }
 
     /// Applies the signals the projection cache does not carry: an unresolved
@@ -217,8 +361,9 @@ impl DeepSeekDesktopAnalyzer {
     /// approval", and its failure surfaces are invisible to the cache, so the
     /// session's event log is consulted for both — once per changed log, and no
     /// more often than [`SIGNAL_CHECK_INTERVAL`].
-    fn resolve_signals(&mut self) {
+    fn resolve_signals(&mut self) -> u32 {
         let now = Instant::now();
+        let mut unjudged_total = 0;
         // Which conversations the event log has to be consulted for.
         //
         // A conversation with a step in flight is checked while it works and
@@ -288,6 +433,7 @@ impl DeepSeekDesktopAnalyzer {
                     .map(|text| log_signals(&text))
                     .unwrap_or_default()
             });
+            unjudged_total += signals.retry_unjudged;
             self.signals.insert(
                 id.clone(),
                 CachedSignals {
@@ -330,6 +476,7 @@ impl DeepSeekDesktopAnalyzer {
         }
         // A conversation that neither works nor shows a failure needs no signals.
         self.signals.retain(|id, _| active.contains(id));
+        unjudged_total
     }
 
     /// Whether the applied view currently reports a wait or a failure, i.e. a
@@ -519,6 +666,7 @@ fn log_signals(text: &str) -> LogSignals {
     signals.question_pending = !question_calls.is_empty();
     signals.error = timeline.failure_current();
     signals.unknown_events = timeline.unknown_events();
+    signals.retry_unjudged = timeline.unjudged_retries();
     signals
 }
 
@@ -643,13 +791,38 @@ pub fn home_from_command(command: &str) -> Option<PathBuf> {
     (!home.is_empty() && home != "/").then(|| PathBuf::from(home))
 }
 
+/// The document's declared version, read without committing to the rest of the
+/// shape. Used to tell an upstream format change from local damage.
+fn read_projection_version(path: &Path) -> Option<u64> {
+    let file = std::fs::File::open(path).ok()?;
+    let root: Value = serde_json::from_reader(file).ok()?;
+    root["version"].as_u64()
+}
+
+/// The document's `record.rows`, for shape accounting on documents that are
+/// refused for another reason.
+fn read_projection_rows(path: &Path) -> Option<Value> {
+    let file = std::fs::File::open(path).ok()?;
+    let root: Value = serde_json::from_reader(file).ok()?;
+    let rows = &root["record"]["rows"];
+    (!rows.is_null()).then(|| rows.clone())
+}
+
 fn parse_session_file(path: &Path, modified: SystemTime) -> Option<DesktopSession> {
     let file = std::fs::File::open(path).ok()?;
     let root: Value = serde_json::from_reader(file).ok()?;
-    if root["version"].as_u64() != Some(7) {
-        // The projection cache is an internal format; a version we have not
-        // seen may have moved the rows this module reads.
-        return None;
+    let version = root["version"].as_u64();
+    if version != Some(PROJECTION_VERSION) {
+        // A version this build does not know is refused only when the rows it
+        // needs are absent. Losing every session on a version bump would be a
+        // worse failure than reading a document that still carries the shape we
+        // understand; `missing_rows` records that it was read on trust, and the
+        // profile health reports it.
+        // The known version is read as-is; an *unknown* one is only read when
+        // the rows this build needs are all still there.
+        if version.is_none() || missing_rows(&root["record"]["rows"]) > 0 {
+            return None;
+        }
     }
     let record = &root["record"];
     if record.is_null() {
@@ -670,6 +843,7 @@ fn parse_session_file(path: &Path, modified: SystemTime) -> Option<DesktopSessio
         turn_open: turn_open(rows),
         automatic_confirmation_mode: rows["permissions"]["val"]["approval"].as_str()
             == Some("never"),
+        missing_rows: missing_rows(rows),
         model: rows["modelSelection"]["val"]["lastUsed"]["model"]
             .as_str()
             .map(str::to_owned),
@@ -677,6 +851,44 @@ fn parse_session_file(path: &Path, modified: SystemTime) -> Option<DesktopSessio
         activity: millis(&rows["sessionListMetadata"]["val"]["lastPromptAt"]).unwrap_or(modified),
         created: millis(&record["identity"]["createdAt"]),
     })
+}
+
+/// Which of the rows this build depends on are absent. A missing row is not
+/// necessarily fatal — every reader is written to tolerate it — but it is
+/// evidence that the projection format moved, so it is counted and reported.
+pub fn missing_rows(rows: &Value) -> u8 {
+    // Only what the state derivation cannot proceed without.
+    //
+    // Not every absent row is a change: a conversation that was never prompted
+    // legitimately has no `userQuestions` and no `inbox` (the live profile holds
+    // two such sessions from months ago), and counting those as a format change
+    // produced a false alarm on a healthy profile. The anchor is the structure
+    // the reader dereferences to decide anything at all.
+    let anchors: [(&str, &[&str]); 2] = [("sessionStats", &["val"]), ("identity", &[])];
+    let record = &rows["record"];
+    let row_source = if record.is_null() {
+        rows
+    } else {
+        &record["rows"]
+    };
+    anchors
+        .iter()
+        .filter(|(row, path)| {
+            let mut node = if row == &"identity" {
+                record
+            } else {
+                row_source
+            };
+            node = &node[*row];
+            path.iter().any(|key| match node.get(*key) {
+                Some(next) => {
+                    node = next;
+                    false
+                }
+                None => true,
+            })
+        })
+        .count() as u8
 }
 
 /// Whether the conversation still has a step in flight, which stays true across
@@ -765,6 +977,28 @@ fn json_u64(value: &Value) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_current_document_reports_no_missing_rows() {
+        // The row check must accept the shape this build reads; mutation
+        // testing is worthless if the baseline itself reads as incomplete.
+        let document = session_document(rows(json!(null), json!({}), json!([]), json!("基线")));
+        let rows = &document["record"]["rows"];
+        assert_eq!(missing_rows(rows), 0, "baseline rows: {rows}");
+    }
+
+    #[test]
+    fn a_renamed_row_is_reported_missing() {
+        let mut document = session_document(rows(json!(null), json!({}), json!([]), json!("改名")));
+        let moved = document["record"]["rows"]["sessionStats"].take();
+        document["record"]["rows"]["turnStats"] = moved;
+        assert!(missing_rows(&document["record"]["rows"]) > 0);
+        // A renamed nested field counts too: the readers dereference `val`.
+        let mut nested = session_document(rows(json!(null), json!({}), json!([]), json!("嵌套")));
+        let value = nested["record"]["rows"]["sessionStats"].take();
+        nested["record"]["rows"]["sessionStats"] = json!({ "value": value["val"] });
+        assert!(missing_rows(&nested["record"]["rows"]) > 0);
+    }
     use serde_json::json;
     use std::{
         io::Write,
@@ -801,7 +1035,21 @@ mod tests {
             "title": { "val": title },
             "modelSelection": { "val": { "lastUsed": { "model": "deepseek-flash" } } },
             "contextPressure": { "val": { "pressureTokens": 309_973u64, "contextWindow": 1_000_000u64 } },
+            // The real document always carries this row, and a live session's
+            // `lastPromptAt` is *now* — a hard-coded past value would put every
+            // fixture outside the failure observation window and silently stop
+            // the event-log pass, which is exactly how a test can pass while the
+            // feature is broken.
+            "sessionListMetadata": { "val": { "blank": false, "lastPromptAt": now_millis() } },
         })
+    }
+
+    /// The current wall clock in the unit the projection stores.
+    fn now_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or_default()
     }
 
     /// The same rows with an approval policy, which decides whether the
@@ -907,10 +1155,24 @@ mod tests {
     }
 
     #[test]
-    fn a_projection_version_we_do_not_know_is_ignored() {
+    fn a_projection_version_we_do_not_know_is_ignored_when_its_rows_moved() {
+        // An unknown version whose rows this build still recognizes is read on
+        // trust (losing every session on a version bump would be worse, and the
+        // health report marks it). An unknown version that *also* moved the rows
+        // is refused, because guessing there would be a silent wrong answer.
+        let mut intact = session_document(rows(json!(null), json!({}), json!([]), json!("新版本")));
+        intact["version"] = json!(99);
+        let dir = std::env::temp_dir().join(format!("asi-projver-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = dir.join("session-new.json");
+        std::fs::write(&ok, serde_json::to_string(&intact).unwrap()).unwrap();
+        assert!(parse_session_file(&ok, SystemTime::now()).is_some());
+
         let mut document =
             session_document(rows(json!(null), json!({}), json!([]), json!("旧版本")));
         document["version"] = json!(99);
+        let moved = document["record"]["rows"]["sessionStats"].take();
+        document["record"]["rows"]["turnStats"] = moved;
         let dir = std::env::temp_dir().join(format!("asi-deepseek-version-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session-old.json");
@@ -946,13 +1208,23 @@ mod tests {
             SystemTime::now(),
             Some(Duration::from_secs(3600))
         ));
-        // A conversation that never recorded a prompt falls back to the file.
-        let fallback = parse_temp(&session_document(rows(
-            json!(null),
-            json!({}),
-            json!([]),
-            json!("无提示时间"),
-        )));
+        // A conversation whose provenance row is absent (an older projection)
+        // falls back to the file's own timestamp.
+        let mut old =
+            session_document(rows(json!(null), json!({}), json!([]), json!("无提示时间")));
+        old["record"]["rows"]
+            .as_object_mut()
+            .unwrap()
+            .remove("sessionListMetadata");
+        let dir = std::env::temp_dir().join(format!(
+            "asi-recency-fallback-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session-fallback.json");
+        std::fs::write(&path, serde_json::to_string(&old).unwrap()).unwrap();
+        let fallback = parse_session_file(&path, SystemTime::now()).expect("a parsed session");
         assert!(
             SystemTime::now()
                 .duration_since(fallback.activity)
@@ -1329,6 +1601,119 @@ mod tests {
     }
 
     #[test]
+    fn the_health_report_explains_a_shape_change() {
+        // A renamed row must not read as "everything is fine, there are simply
+        // no sessions" — that is the silent failure this accounting exists for.
+        let dir = std::env::temp_dir().join(format!(
+            "asi-health-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        let cache = dir.join("storages/session_projcache/sessions");
+        std::fs::create_dir_all(&cache).unwrap();
+
+        // Intact: parsed, nothing missing.
+        let good = session_document(rows(json!(null), json!({}), json!([]), json!("健康")));
+        std::fs::write(
+            cache.join("session-good.json"),
+            serde_json::to_string(&good).unwrap(),
+        )
+        .unwrap();
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&dir));
+        assert_eq!(analyzer.health().parsed, 1);
+        assert_eq!(analyzer.health().incomplete, 0);
+        assert!(analyzer.health().is_intact());
+
+        // Rows moved (same format version): parsed but reported incomplete.
+        let mut moved = session_document(rows(json!(null), json!({}), json!([]), json!("改名")));
+        let stats = moved["record"]["rows"]["sessionStats"].take();
+        moved["record"]["rows"]["turnStats"] = stats;
+        std::fs::write(
+            cache.join("session-moved.json"),
+            serde_json::to_string(&moved).unwrap(),
+        )
+        .unwrap();
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&dir));
+        assert_eq!(
+            analyzer.health().incomplete,
+            1,
+            "a renamed row must be visible"
+        );
+        assert!(!analyzer.health().is_intact());
+
+        // A newer format version whose rows moved: refused and named.
+        let mut future = session_document(rows(json!(null), json!({}), json!([]), json!("未来")));
+        future["version"] = json!(99);
+        let stats = future["record"]["rows"]["sessionStats"].take();
+        future["record"]["rows"]["turnStats"] = stats;
+        std::fs::write(
+            cache.join("session-future.json"),
+            serde_json::to_string(&future).unwrap(),
+        )
+        .unwrap();
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&dir));
+        assert_eq!(analyzer.health().version_mismatch, 1);
+        assert!(!analyzer.health().is_intact());
+
+        // Unreadable bytes are local damage, counted separately.
+        std::fs::write(cache.join("session-broken.json"), b"{not json").unwrap();
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&dir));
+        assert_eq!(analyzer.health().unreadable, 1);
+
+        // An absent profile is stated, not implied by an empty list.
+        let empty = DeepSeekDesktopAnalyzer::default();
+        let mut empty = empty;
+        empty.refresh(Some(&dir.join("nowhere")));
+        assert!(!empty.health().root_present);
+    }
+
+    #[test]
+    fn a_stale_conversation_is_not_probed_for_a_failure() {
+        if !zstd_available() {
+            return;
+        }
+        // Outside the failure window a session is left alone: its state comes
+        // from the projection, and the log is not read. This is deliberate (the
+        // cost bound) and is why the window exists.
+        let id = "session-stale";
+        let home = std::env::temp_dir().join(format!(
+            "asi-desktop-stale-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        let cache = home.join("storages/session_projcache/sessions");
+        std::fs::create_dir_all(&cache).unwrap();
+        let mut document =
+            session_document(rows(json!(null), json!({}), json!([]), json!("陈旧会话")));
+        document["record"]["rows"]["sessionListMetadata"]["val"]["lastPromptAt"] =
+            json!(now_millis().saturating_sub(60 * 60 * 1000));
+        std::fs::write(
+            cache.join(format!("{id}.json")),
+            serde_json::to_string(&document).unwrap(),
+        )
+        .unwrap();
+        let log = home
+            .join("sessions")
+            .join("--Users-me-code-app--")
+            .join(id)
+            .join("session.v4.jsonl.zstd");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        compress(
+            "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}\n{\"type\":\"llm/retry\",\"data\":{\"turn\":1,\"step\":1,\"mode\":\"normal\",\"retry\":5,\"maxRetries\":5,\"failure\":{\"message\":\"boom\"}}}\n",
+            &log,
+        );
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&home));
+        // A finished turn with old activity: ready, and no log read at all.
+        assert_eq!(analyzer.sessions(None)[0].state, AgentState::Ready);
+        assert!(analyzer.signal_report(id)["readAgoSecs"].is_null());
+    }
+
+    #[test]
     fn a_turn_that_ends_drops_the_working_state() {
         // Regression: the applied state used to be written back over the
         // projection's own, so once a scan reported "working" the row kept
@@ -1445,6 +1830,7 @@ mod tests {
                 created: None,
                 turn_open: false,
                 automatic_confirmation_mode: false,
+                missing_rows: 0,
             })
             .collect();
         // One waiting conversation is the oldest: urgency must beat recency, or
@@ -1486,6 +1872,7 @@ mod tests {
             created: None,
             turn_open: false,
             automatic_confirmation_mode: false,
+            missing_rows: 0,
         };
         let window = Some(Duration::from_secs(15 * 60));
         assert!(worth_showing(

@@ -69,9 +69,18 @@ impl Detector {
     pub fn deepseek_desktop_overview(
         &mut self,
         home: Option<&Path>,
-    ) -> (Vec<crate::deepseek_desktop::DesktopSession>, usize) {
+    ) -> (
+        Vec<crate::deepseek_desktop::DesktopSession>,
+        usize,
+        Option<crate::deepseek_desktop::ProfileAlert>,
+    ) {
+        // An explicit `DSH_HOME` is a deliberate override and wins over a
+        // running host's profile, so the tray and the diagnostic agree.
+        let from_env = crate::deepseek_desktop::env_home();
+        let home = from_env.as_deref().or(home);
         self.deepseek_desktop.refresh(home);
-        self.deepseek_desktop.overview(self.conversation_window)
+        let (sessions, hidden) = self.deepseek_desktop.overview(self.conversation_window);
+        (sessions, hidden, self.deepseek_desktop.alert())
     }
 
     pub fn scan(&mut self) -> Vec<AgentInstance> {
@@ -165,9 +174,10 @@ impl Detector {
             .collect();
         for (pid, uptime, home) in desktop {
             instances.retain(|instance| instance.pid != pid);
-            let (sessions, hidden) = self.deepseek_desktop_overview(home.as_deref());
+            let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
             instances.extend(desktop_rows(pid, uptime, &sessions));
             instances.extend(desktop_overflow_row(pid, hidden));
+            instances.extend(desktop_alert_row(pid, alert));
         }
         enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
@@ -329,9 +339,10 @@ impl Detector {
             })
             .collect();
         for (process, home) in desktop_hosts {
-            let (sessions, hidden) = self.deepseek_desktop_overview(home.as_deref());
+            let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
             instances.extend(desktop_rows(process.pid, process.uptime, &sessions));
             instances.extend(desktop_overflow_row(process.pid, hidden));
+            instances.extend(desktop_alert_row(process.pid, alert));
         }
         enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
@@ -429,6 +440,40 @@ fn desktop_overflow_row(pid: u32, hidden: usize) -> Option<AgentInstance> {
         key: format!("desktop:{pid}:more"),
         kind: display_name("deepseek").into(),
         label: crate::i18n::hidden_sessions(hidden),
+        pid,
+        cwd: None,
+        state: AgentState::Ready,
+        uptime: Duration::ZERO,
+        model: None,
+        context: None,
+        open_url: None,
+        automatic_confirmation_mode: false,
+        informational: true,
+    })
+}
+
+/// A row stating that the desktop profile no longer matches this build's format.
+///
+/// Without it a format change is indistinguishable from an idle app: the
+/// conversations simply stop appearing. The row is informational, so it is not
+/// clickable, does not enter the summary, and never notifies.
+fn desktop_alert_row(
+    pid: u32,
+    alert: Option<crate::deepseek_desktop::ProfileAlert>,
+) -> Option<AgentInstance> {
+    use crate::deepseek_desktop::AlertKind;
+    let alert = alert?;
+    let label = match alert.kind {
+        AlertKind::ProfileMissing => crate::i18n::profile_missing().to_owned(),
+        AlertKind::FormatChanged | AlertKind::Unreadable => {
+            crate::i18n::profile_format_changed(alert.affected)
+        }
+        AlertKind::FailureUndecidable => crate::i18n::failure_undecidable().to_owned(),
+    };
+    Some(AgentInstance {
+        key: format!("desktop:{pid}:alert"),
+        kind: display_name("deepseek").into(),
+        label,
         pid,
         cwd: None,
         state: AgentState::Ready,
@@ -1346,6 +1391,16 @@ pub fn diagnose_deepseek_desktop() -> Value {
     let read = Instant::now();
     let sessions = analyzer.sessions(None);
     let sessions_ms = read.elapsed().as_secs_f64() * 1_000.0;
+    result["health"] = serde_json::json!({
+        "rootPresent": analyzer.health().root_present,
+        "files": analyzer.health().files,
+        "parsed": analyzer.health().parsed,
+        "versionMismatch": analyzer.health().version_mismatch,
+        "unreadable": analyzer.health().unreadable,
+        "incomplete": analyzer.health().incomplete,
+        "retryUnjudged": analyzer.health().retry_unjudged,
+        "intact": analyzer.health().is_intact(),
+    });
     result["timing"] = serde_json::json!({
         "refreshColdMs": cold_ms,
         "refreshColdParsed": cold_parsed,
@@ -1883,6 +1938,7 @@ mod tests {
             created: Some(SystemTime::now() - Duration::from_secs(600)),
             turn_open: true,
             automatic_confirmation_mode: false,
+            missing_rows: 0,
         }
     }
 
@@ -1916,6 +1972,39 @@ mod tests {
         let rows = desktop_rows(43958, Duration::from_secs(30), &[session]);
         assert!(rows[0].automatic_confirmation_mode);
         assert!(!rows[0].informational);
+    }
+
+    #[test]
+    fn a_format_change_is_stated_in_the_menu() {
+        use crate::deepseek_desktop::{AlertKind, ProfileAlert};
+        // Nothing wrong: no extra row.
+        assert!(desktop_alert_row(43958, None).is_none());
+        let row = desktop_alert_row(
+            43958,
+            Some(ProfileAlert {
+                kind: AlertKind::FormatChanged,
+                affected: 4,
+            }),
+        )
+        .expect("an alert row");
+        assert!(row.informational, "it reports, it is not a session");
+        assert_eq!(row.pid, 43958);
+        assert_eq!(row.key, "desktop:43958:alert");
+        assert!(
+            row.label.contains('4'),
+            "the affected count must be in the label: {}",
+            row.label
+        );
+        // An absent profile says so instead of showing an empty app.
+        let missing = desktop_alert_row(
+            43958,
+            Some(ProfileAlert {
+                kind: AlertKind::ProfileMissing,
+                affected: 0,
+            }),
+        )
+        .expect("an alert row");
+        assert_eq!(missing.label, crate::i18n::profile_missing());
     }
 
     #[test]
