@@ -636,7 +636,7 @@ fn supported_kinds() -> [&'static str; 5] {
 
 #[cfg(target_os = "macos")]
 fn process_kind(process: &ProcessRecord) -> Option<&'static str> {
-    agent_kind_from_executable(&process.executable)
+    agent_kind_from_executable(&process.executable, &process.command)
 }
 
 /// Subcommands that turn an agent binary into a headless server driven by a
@@ -699,15 +699,60 @@ fn host_application_for(
     None
 }
 
+/// Whether a process is the `dsh` CLI running under Node.
+///
+/// The published CLI is a package, not a binary: its `bin` maps `dsh` to
+/// `lib/bin.js`, so a terminal session runs as
+/// `node …/node_modules/@deepseek-ai/dsh/lib/bin.js …`. The executable basename
+/// is therefore `node`, and a basename-only match never sees it — which is why
+/// the terminal form stayed invisible while the desktop form appeared.
+///
+/// Matching the package path keeps this narrow: it appears only in a command
+/// line that actually runs the CLI, whereas a bare `dsh` substring appears in
+/// `grep dsh`. The package must sit directly under a `node_modules` directory.
+fn is_dsh_node_cli(executable: &str, command: &str) -> bool {
+    let name = executable
+        .rsplit('/')
+        .next()
+        .unwrap_or(executable)
+        .to_ascii_lowercase();
+    if name != "node" && name != "node.exe" {
+        return false;
+    }
+    command.split_whitespace().any(is_dsh_package_path)
+}
+
+/// Whether one command-line token names the `dsh` CLI package or its desktop
+/// host, both of which live under `node_modules/@deepseek-ai/`.
+fn is_dsh_package_path(token: &str) -> bool {
+    let token = token.trim_matches(|c| c == '"' || c == '\\' );
+    if token.starts_with('-') {
+        return false;
+    }
+    // `file://` specifiers are how the runtime reports the same package.
+    let token = token.strip_prefix("file://").unwrap_or(token);
+    let mut parts = token.split('/');
+    let mut previous = "";
+    while let Some(part) = parts.next() {
+        if previous == "node_modules" && part == "@deepseek-ai" {
+            return matches!(parts.next(), Some("dsh") | Some("dsh-desktop-host"));
+        }
+        previous = part;
+    }
+    false
+}
+
 /// The executed program's basename, matched against the known agent binaries.
-/// Only the executable is considered: command lines routinely mention agent
-/// names (`which pi`) without being that agent.
+/// Only the executable is considered for the CLI agents: command lines routinely
+/// mention agent names (`which pi`) without being that agent. The one exception
+/// is `dsh`, which ships as an npm package and is recognised from its command
+/// line by [`is_dsh_node_cli`].
 ///
 /// The DeepSeek Harness desktop application is matched by its bundle directory
 /// instead: its executable is the product name with a space, which no CLI
 /// binary is ever called.
 #[cfg(target_os = "macos")]
-fn agent_kind_from_executable(executable: &str) -> Option<&'static str> {
+fn agent_kind_from_executable(executable: &str, command: &str) -> Option<&'static str> {
     if executable.contains(crate::deepseek_desktop::APP_BUNDLE) {
         return Some("deepseek");
     }
@@ -722,6 +767,7 @@ fn agent_kind_from_executable(executable: &str) -> Option<&'static str> {
         "opencode" => Some("opencode"),
         "pi" => Some("pi"),
         "dsh" | "deepseek-harness" => Some("deepseek"),
+        _ if is_dsh_node_cli(&name, command) => Some("deepseek"),
         _ => None,
     }
 }
@@ -745,7 +791,7 @@ fn is_host_integration(process: &ProcessRecord) -> bool {
 
 #[cfg(target_os = "macos")]
 fn is_codex_executable(executable: &str) -> bool {
-    agent_kind_from_executable(executable) == Some("codex")
+    agent_kind_from_executable(executable, "") == Some("codex")
 }
 
 /// A binary inside an application bundle belongs to that GUI app, not to an
@@ -1389,7 +1435,10 @@ pub fn diagnose_deepseek_desktop() -> Value {
                 .map(|process| {
                     serde_json::json!({
                         "pid": process.pid,
-                        "kind": agent_kind_from_executable(&process.executable),
+                        "kind": agent_kind_from_executable(
+                            &process.executable,
+                            &process.command,
+                        ),
                         "executable": process.executable,
                         "host": is_desktop_host(process),
                     })
@@ -1478,6 +1527,19 @@ pub fn diagnose_deepseek_desktop() -> Value {
 }
 
 #[cfg(not(target_os = "macos"))]
+/// The whole command line of a `sysinfo` process, joined the way the macOS
+/// record keeps it.
+#[cfg(not(target_os = "macos"))]
+fn command_line(process: &Process) -> String {
+    process
+        .cmd()
+        .iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(not(target_os = "macos"))]
 fn executable(process: &Process) -> String {
     process
         .exe()
@@ -1506,6 +1568,7 @@ fn agent_kind(process: &Process) -> Option<&'static str> {
         "opencode" => Some("opencode"),
         "pi" => Some("pi"),
         "dsh" | "deepseek-harness" => Some("deepseek"),
+        _ if is_dsh_node_cli(&name, &command_line(process)) => Some("deepseek"),
         _ => None,
     }
 }
@@ -1887,30 +1950,31 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn agent_kind_matches_only_the_executed_program() {
-        assert_eq!(agent_kind_from_executable("pi"), Some("pi"));
+        let kind = |executable: &str| agent_kind_from_executable(executable, "");
+        assert_eq!(kind("pi"), Some("pi"));
         assert_eq!(
-            agent_kind_from_executable("/Users/me/.local/bin/pi"),
+            kind("/Users/me/.local/bin/pi"),
             Some("pi")
         );
         // Shells are not agents even though their command lines mention one.
-        assert_eq!(agent_kind_from_executable("/bin/zsh"), None);
-        assert_eq!(agent_kind_from_executable("/bin/bash"), None);
-        assert_eq!(agent_kind_from_executable("claude"), Some("claude"));
-        assert_eq!(agent_kind_from_executable("dsh"), Some("deepseek"));
+        assert_eq!(kind("/bin/zsh"), None);
+        assert_eq!(kind("/bin/bash"), None);
+        assert_eq!(kind("claude"), Some("claude"));
+        assert_eq!(kind("dsh"), Some("deepseek"));
         // A GUI helper whose bundled path contains "Codex" is not the CLI: the
         // basename must be exactly `codex`.
         assert_eq!(
-            agent_kind_from_executable("/Applications/ChatGPT.app/Contents/Resources/codex"),
+            kind("/Applications/ChatGPT.app/Contents/Resources/codex"),
             Some("codex")
         );
         assert_eq!(
-            agent_kind_from_executable(
+            kind(
                 "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/151.0/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer)"
             ),
             None
         );
         assert_eq!(
-            agent_kind_from_executable(
+            kind(
                 "/Users/me/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService"
             ),
             None
@@ -2059,6 +2123,46 @@ mod tests {
         assert!(!desktop_host_from_parts(
             "/Applications/Other App.app/Contents/MacOS/Other App",
             "/Applications/Other App.app/Contents/MacOS/Other App"
+        ));
+    }
+
+    #[test]
+    fn the_node_cli_is_recognized_as_deepseek() {
+        // Captured from this machine: `dsh` ships as an npm package, so a
+        // terminal session runs under `node` and a basename-only match never saw
+        // it. The terminal form was therefore invisible while the desktop form
+        // appeared, which read as "everything is the desktop app".
+        assert!(is_dsh_node_cli(
+            "node",
+            "node /Users/me/.npm/_npx/1e7f6d9597241db0/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web"
+        ));
+        assert!(is_dsh_node_cli(
+            "/opt/homebrew/bin/node",
+            "node /Users/me/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js"
+        ));
+        // A `file://` specifier is how the runtime names the same package.
+        assert!(is_dsh_node_cli(
+            "node",
+            "node file:///Users/me/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js"
+        ));
+        // The desktop host is the same package family.
+        assert!(is_dsh_node_cli(
+            "node",
+            "node /Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js"
+        ));
+
+        // Not an agent: merely mentioning the package, or naming another file.
+        assert!(!is_dsh_node_cli("node", "node script.js --name dsh"));
+        assert!(!is_dsh_node_cli("grep", "grep -r dsh node_modules/@deepseek-ai/dsh"));
+        assert!(!is_dsh_node_cli(
+            "cat",
+            "cat node_modules/@deepseek-ai/dsh/README.md"
+        ));
+        assert!(!is_dsh_node_cli("node", "node /tmp/probe/dsh"));
+        // A different package under the same scope is not the CLI.
+        assert!(!is_dsh_node_cli(
+            "node",
+            "node node_modules/@deepseek-ai/dsh-other/lib/bin.js"
         ));
     }
 
