@@ -1,6 +1,6 @@
 # AgentStatusIndicator
 
-**中文** | [English](README.en.md)
+**中文** | [English](README.en.md) | [变更日志](CHANGELOG.md)
 
 原生 AI Coding Agent 托盘监控器（macOS 优先，支持 Windows/Linux）。监控 Claude Code、Codex CLI、OpenCode、DeepSeek Harness 与 Pi 等 Coding Agent 的运行状态：进程存活时按项目区分多个会话，在系统托盘汇总展示「等待确认、等待回复、进行中、就绪、异常、已停止」六态；可识别 error、failed、aborted 及断连信号，点击菜单项跳回对应终端或浏览器会话，并在需要人工介入时触发原生系统通知。
 

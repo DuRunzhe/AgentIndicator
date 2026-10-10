@@ -1,6 +1,6 @@
 # AgentStatusIndicator
 
-**English** | [中文](README.md)
+**English** | [中文](README.md) | [Changelog](CHANGELOG.md)
 
 A native tray monitor for AI coding agents (macOS first, with Windows/Linux support). It watches coding agents such as Claude Code, Codex CLI, OpenCode, DeepSeek Harness and Pi: while a process is alive, sessions are grouped by project, and the tray shows a six-state summary — *waiting for confirmation, waiting for reply, working, ready, error, stopped*. Error, failed, aborted and disconnect signals are surfaced as the error state. Clicking a menu item jumps back to the matching terminal, browser or desktop-application session, and native system notifications fire whenever human attention is needed.
 

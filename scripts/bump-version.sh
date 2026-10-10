@@ -36,6 +36,14 @@ perl -pi -e "s/\Q$OLD\E/$NEW/g" "${FILES[@]}"
 # stale hash is never shipped. Fill them after CI with fill-release-shas.sh.
 perl -pi -e 's/sha256 "[0-9a-f]{64}"/sha256 "REPLACE_ON_RELEASE"/g' Formula/agent-status-indicator.rb
 
+# 刷新 CHANGELOG.md，把本次未发布的提交归入即将发布的版本。在新标签创建前
+# 运行，这样日志里的版本段和随后打的标签一致。
+if command -v git-cliff >/dev/null 2>&1; then
+  bash "$ROOT/scripts/update-changelog.sh" "$NEW"
+else
+  echo "git-cliff not found; CHANGELOG.md not refreshed (brew install git-cliff)" >&2
+fi
+
 echo "done."
 echo "next: bash scripts/build-release.sh && cargo test --offline"
 echo "      git add -A && git commit -m \"build: release $NEW\" && git push origin main"
