@@ -1,0 +1,41 @@
+# GitHub 自动生成的 Release Notes 分类规则。
+#
+# GitHub 依据合并 PR 的标签把条目归入下面的分类；未命中的条目落到最后的
+# “其他变更”。本仓库当前多为直接推送提交，没有 PR 标签，因此分类主要作用
+# 于走 PR 的改动——给 PR 打 feat / fix / perf 等标签即会归位。
+# 变更详情的权威来源仍是仓库根目录的 CHANGELOG.md（git-cliff 生成）。
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+      - skip-changelog
+    authors:
+      - dependabot
+      - dependabot[bot]
+  categories:
+    - title: 破坏性变更
+      labels:
+        - breaking
+        - breaking-change
+    - title: 新增
+      labels:
+        - feat
+        - feature
+        - enhancement
+    - title: 修复
+      labels:
+        - fix
+        - bug
+        - bugfix
+    - title: 变更
+      labels:
+        - perf
+        - refactor
+        - change
+    - title: 文档
+      labels:
+        - docs
+        - documentation
+    - title: 其他变更
+      labels:
+        - "*"
