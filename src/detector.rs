@@ -198,12 +198,15 @@ impl Detector {
             .collect();
         // The desktop application hosts every conversation it has open in one
         // process, so its rows come from the profile's session cache instead of
-        // from the process tree. The conversations are listed whether or not the
-        // application is running, because the CLI shares the profile they live in.
-        let (sessions, hidden, alert) = self.deepseek_desktop_overview(None);
-        instances.extend(desktop_rows(None, &sessions, &[]));
-        instances.extend(desktop_overflow_row(0, hidden));
-        instances.extend(desktop_alert_row(0, alert));
+        // from the process tree. A cached conversation is only live while the
+        // application is running; with it closed the terminal `dsh` rows above
+        // are the live source, and with neither the agent stays stopped.
+        if let Some((pid, uptime, home)) = desktop_hosts.first() {
+            let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
+            instances.extend(desktop_rows(Some((*pid, *uptime)), &sessions, &[]));
+            instances.extend(desktop_overflow_row(*pid, hidden));
+            instances.extend(desktop_alert_row(*pid, alert));
+        }
         enrich_pi_instances(&mut instances, &mut self.pi);
         for kind in supported_kinds() {
             if !instances
@@ -268,6 +271,9 @@ impl Detector {
         // conversations, and each conversation row asks who is driving it to
         // decide where it navigates.
         let mut drivers: Vec<DeepSeekDriver> = Vec::new();
+        // Whether a `dsh` CLI is running at all. The cached conversations are
+        // only live while the desktop window or a CLI is driving them.
+        let mut deepseek_cli_running = false;
         let mut instances: Vec<_> = roots
             .into_iter()
             .flat_map(|(process, kind, host)| {
@@ -307,6 +313,7 @@ impl Detector {
                 // Record what a DeepSeek CLI serves and which conversation it is
                 // writing, then emit no row for the process itself.
                 if kind == "deepseek" && host.is_none() {
+                    deepseek_cli_running = true;
                     let web_url = self.web_urls.discover(process.pid, &group_pids);
                     // A CLI that serves a web UI serves the whole shared profile:
                     // its UI lists every workspace, not the directory the process
@@ -405,14 +412,18 @@ impl Detector {
             })
             .collect();
         if desktop_hosts.is_empty() {
-            // The conversations live in `$DSH_HOME`, which the CLI shares and
-            // keeps writing, so they are listed whether or not the application is
-            // running. The rows carry no pid: with the window closed there is
-            // nothing to activate, and a `dsh web` CLI's conversations open its UI.
-            let (sessions, hidden, alert) = self.deepseek_desktop_overview(None);
-            instances.extend(desktop_rows(None, &sessions, &drivers));
-            instances.extend(desktop_overflow_row(0, hidden));
-            instances.extend(desktop_alert_row(0, alert));
+            // The conversations live in `$DSH_HOME`, which the desktop window and
+            // the CLI share. They are only live while one of them is running: a
+            // CLI drives them over its web UI (the rows carry no pid, so there is
+            // nothing to activate). With neither the window nor a CLI running the
+            // cached conversations are history, so they fall back to the stopped
+            // row instead of listing sessions nothing is driving.
+            if deepseek_cli_running {
+                let (sessions, hidden, alert) = self.deepseek_desktop_overview(None);
+                instances.extend(desktop_rows(None, &sessions, &drivers));
+                instances.extend(desktop_overflow_row(0, hidden));
+                instances.extend(desktop_alert_row(0, alert));
+            }
         } else {
             for (process, home) in desktop_hosts {
                 let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
