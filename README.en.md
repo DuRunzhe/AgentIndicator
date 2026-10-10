@@ -10,7 +10,7 @@ Source and releases: <https://github.com/DuRunzhe/AgentIndicator>
 
 ## Installation
 
-The current release is **v0.2.29** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
+The current release is **v0.2.30** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
 
 ### curl (macOS / Linux)
 
@@ -27,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 Pin a version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.29 sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.30 sh
 ```
 
 Install elsewhere:
