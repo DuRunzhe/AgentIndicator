@@ -13,6 +13,9 @@ pub struct OpenCodeFacts {
     pub state: Option<AgentState>,
     pub model: Option<String>,
     pub context: Option<ContextUsage>,
+    /// The conversation title OpenCode stores with the session, shown in the
+    /// row label like every other agent's conversation title.
+    pub title: Option<String>,
     session_id: Option<String>,
 }
 
@@ -109,6 +112,7 @@ fn query(database: &Path, models: &Path, cwd: &Path) -> Option<OpenCodeFacts> {
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })
         .ok()?;
@@ -121,6 +125,7 @@ fn query(database: &Path, models: &Path, cwd: &Path) -> Option<OpenCodeFacts> {
         row.3.as_deref(),
         row.4.as_deref(),
         catalog.as_ref(),
+        row.5.as_deref(),
     );
     facts.session_id = row.0;
     Some(facts)
@@ -128,7 +133,7 @@ fn query(database: &Path, models: &Path, cwd: &Path) -> Option<OpenCodeFacts> {
 
 const SQL: &str = r#"
 WITH latest_session AS (
-  SELECT id, model FROM session
+  SELECT id, model, title FROM session
   WHERE directory = ?1 AND parent_id IS NULL AND time_archived IS NULL
   ORDER BY time_updated DESC LIMIT 1
 ), latest_message AS (
@@ -144,7 +149,7 @@ WITH latest_session AS (
   ORDER BY part.time_created DESC, part.id DESC LIMIT 1
 )
 SELECT latest_session.id, latest_session.model, latest_message.data, latest_assistant.data,
-       (SELECT * FROM latest_text)
+       (SELECT * FROM latest_text), latest_session.title
 FROM latest_session LEFT JOIN latest_message LEFT JOIN latest_assistant
 "#;
 
@@ -154,6 +159,7 @@ fn facts_from_values(
     latest_assistant: Option<&str>,
     assistant_text: Option<&str>,
     catalog: Option<&Value>,
+    title: Option<&str>,
 ) -> OpenCodeFacts {
     let session = parse(session_model);
     let message = parse(latest_message);
@@ -187,6 +193,10 @@ fn facts_from_values(
         })),
         model,
         context,
+        title: title
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_owned),
         session_id: None,
     }
 }
@@ -342,9 +352,11 @@ mod tests {
             ),
             None,
             Some(&serde_json::json!({"openai":{"models":{"gpt-5":{"limit":{"context":10000}}}}})),
+            Some("  对话语言确认与识别  "),
         );
         assert_eq!(facts.model.as_deref(), Some("openai/gpt-5"));
         assert_eq!(facts.context.unwrap().used_tokens, 1200);
+        assert_eq!(facts.title.as_deref(), Some("对话语言确认与识别"));
     }
 
     #[test]

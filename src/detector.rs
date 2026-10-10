@@ -375,6 +375,18 @@ impl Detector {
                             host.is_none(),
                             resumed.as_deref(),
                         );
+                        // A terminal session names the conversation it drives,
+                        // resolved from the rollout it is writing. A fresh
+                        // session with no rollout yet keeps the project alone.
+                        let title = rollout
+                            .as_deref()
+                            .and_then(crate::session::codex_rollout_thread_id)
+                            .and_then(|thread| self.codex_titles.title(thread));
+                        instance.label = session_label(
+                            &instance.kind,
+                            instance.cwd.as_deref(),
+                            title.as_deref(),
+                        );
                         // A hosted session lives inside the application's own
                         // conversation view, so clicking must open that thread
                         // instead of only activating the application.
@@ -462,7 +474,6 @@ pub(crate) const DEEPSEEK_PLACEHOLDER_KIND: &str = "DeepSeek Harness";
 /// has to sort and group.
 pub(crate) const DEEPSEEK_TERMINAL_KIND: &str = "DeepSeek Harness (terminal)";
 
-
 /// The drivers found by the most recent scan, as JSON: the project a `dsh` CLI
 /// serves, the conversation it drives, and the address it serves.
 pub fn drivers_json() -> Value {
@@ -546,7 +557,7 @@ fn desktop_rows(
         .map(|session| AgentInstance {
             key: format!("desktop:{}", session.id),
             kind: display.into(),
-            label: desktop_label(session),
+            label: session_label(display, session.cwd.as_deref(), session.title.as_deref()),
             pid,
             cwd: session.cwd.clone(),
             state: session.state,
@@ -627,24 +638,6 @@ fn desktop_alert_row(
         automatic_confirmation_mode: false,
         informational: true,
     })
-}
-
-/// `DeepSeek Harness · <form> · <title>`, falling back to the project name and then to
-/// the application name. The title already carries the project in practice, so
-/// repeating both would only shorten the useful part of the row.
-fn desktop_label(session: &crate::deepseek_desktop::DesktopSession) -> String {
-    let display = display_name("deepseek");
-    // One row per conversation, whichever process drives it: the terminal and the
-    // desktop application share a profile, so naming a form would report the same
-    // conversation twice and the row's destination is decided by the click.
-    let detail = session
-        .title
-        .as_deref()
-        .or_else(|| session.cwd.as_deref().and_then(Path::file_name)?.to_str());
-    match detail {
-        Some(detail) => format!("{display} · {detail}"),
-        None => display.into(),
-    }
 }
 
 /// Where a conversation row navigates.
@@ -1213,7 +1206,7 @@ fn hosted_codex_instances(
                     |thread| format!("{}:{thread}", process.pid),
                 ),
                 kind: display.into(),
-                label: conversation_label(display, facts.cwd.as_deref(), title.as_deref()),
+                label: session_label(display, facts.cwd.as_deref(), title.as_deref()),
                 pid: process.pid,
                 cwd: facts.cwd.clone(),
                 state: facts.state.unwrap_or(AgentState::Ready),
@@ -1228,17 +1221,21 @@ fn hosted_codex_instances(
         .collect()
 }
 
-/// `Kind (project) · title`, omitting whatever is unknown. The title is what
-/// keeps several conversations of the same project apart.
-#[cfg(target_os = "macos")]
-fn conversation_label(display: &str, cwd: Option<&Path>, title: Option<&str>) -> String {
+/// Longest conversation title kept in a row label.
+const TITLE_LIMIT: usize = 24;
+
+/// The one row label every source uses: `Kind (project) · title`, omitting
+/// whatever is unknown. A row with no title still names its project, so the
+/// agent and the conversation it drives are always readable together and no
+/// source renders a shape of its own.
+fn session_label(display: &str, cwd: Option<&Path>, title: Option<&str>) -> String {
     let mut label = match cwd.and_then(Path::file_name).and_then(|name| name.to_str()) {
         Some(project) => format!("{display} ({project})"),
         None => display.to_owned(),
     };
-    if let Some(title) = title {
+    if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
         label.push_str(" · ");
-        label.push_str(&title.chars().take(24).collect::<String>());
+        label.push_str(&title.chars().take(TITLE_LIMIT).collect::<String>());
     }
     label
 }
@@ -1298,6 +1295,11 @@ fn enrich_opencode(instance: &mut AgentInstance, analyzer: &mut crate::opencode:
     if let Some(state) = facts.state {
         instance.state = state;
     }
+    instance.label = session_label(
+        &instance.kind,
+        instance.cwd.as_deref(),
+        facts.title.as_deref(),
+    );
 }
 
 fn enrich_deepseek(instance: &mut AgentInstance, analyzer: &mut crate::deepseek::DeepSeekAnalyzer) {
@@ -1357,6 +1359,11 @@ fn enrich_pi_instances(instances: &mut [AgentInstance], analyzer: &mut crate::pi
             if let Some(state) = facts.state {
                 instance.state = state;
             }
+            instance.label = session_label(
+                &instance.kind,
+                instance.cwd.as_deref(),
+                facts.title.as_deref(),
+            );
         }
     }
 }
@@ -1383,9 +1390,7 @@ fn enrich_codex(
     if instance.cwd.is_none() {
         if let Some(cwd) = facts.cwd.as_ref() {
             instance.cwd = Some(cwd.clone());
-            if let Some(project) = cwd.file_name().and_then(|name| name.to_str()) {
-                instance.label = format!("Codex ({project})");
-            }
+            instance.label = session_label(&instance.kind, instance.cwd.as_deref(), None);
         }
     }
     let requires_terminal_probe = facts.requires_terminal_probe;
@@ -1466,11 +1471,11 @@ fn enrich_macos_codex(
         (Some(path), facts)
     };
     if let Some(cwd) = facts.cwd {
-        instance.cwd = Some(cwd.clone());
-        if let Some(project) = cwd.file_name().and_then(|name| name.to_str()) {
-            instance.label = format!("{} ({project})", instance.kind);
-        }
+        instance.cwd = Some(cwd);
     }
+    // The caller attaches the conversation title once it knows the rollout; this
+    // keeps the project visible even when no rollout exists yet.
+    instance.label = session_label(&instance.kind, instance.cwd.as_deref(), None);
     let requires_terminal_probe = facts.requires_terminal_probe;
     let activity = facts.activity;
     instance.model = facts.model;
@@ -1570,9 +1575,6 @@ fn enrich_claude(instance: &mut AgentInstance, analyzer: &mut SessionAnalyzer) {
     };
     if let Some(cwd) = session.as_ref().and_then(|v| v["cwd"].as_str()) {
         instance.cwd = Some(PathBuf::from(cwd));
-        if let Some(project) = Path::new(cwd).file_name().and_then(|v| v.to_str()) {
-            instance.label = format!("Claude ({project})");
-        }
     }
     let native_state = session
         .as_ref()
@@ -1587,6 +1589,11 @@ fn enrich_claude(instance: &mut AgentInstance, analyzer: &mut SessionAnalyzer) {
     let snapshot = read_json(
         &PathBuf::from("/tmp/agent-statusbar-claude-context").join(format!("{session_id}.json")),
     );
+    let title = snapshot
+        .as_ref()
+        .and_then(|v| v["transcript_path"].as_str())
+        .and_then(|path| claude_title(Path::new(path)));
+    instance.label = session_label(&instance.kind, instance.cwd.as_deref(), title.as_deref());
     if let Some(value) = snapshot.as_ref().and_then(|v| v["model"].as_str()) {
         instance.model = Some(value.into());
     }
@@ -1623,6 +1630,27 @@ fn enrich_claude(instance: &mut AgentInstance, analyzer: &mut SessionAnalyzer) {
 
 fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_reader(std::fs::File::open(path).ok()?).ok()
+}
+
+/// A Claude conversation's title, from the `ai-title` records Claude Code keeps
+/// appending to its transcript. The newest record names the conversation, so the
+/// tail is read and the last one wins; the first line may be cut by the window
+/// and simply fails to parse.
+fn claude_title(transcript: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(transcript).ok()?;
+    let size = file.metadata().ok()?.len();
+    let window = 256 * 1024;
+    file.seek(SeekFrom::Start(size.saturating_sub(window)))
+        .ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    text.lines().rev().find_map(|line| {
+        let entry: Value = serde_json::from_str(line).ok()?;
+        let title = entry["aiTitle"].as_str()?.trim();
+        (!title.is_empty()).then(|| title.to_owned())
+    })
 }
 
 /// Why the DeepSeek Harness desktop application is or is not being reported.
@@ -1845,30 +1873,17 @@ fn display_name(kind: &str) -> &str {
     }
 }
 
-/// A terminal agent's row label: the agent, its form, and the project it runs in.
-///
-/// A DeepSeek Harness terminal row also names the conversation it is driving, so
-/// the terminal and desktop forms show which conversation each of them reports
-/// rather than looking like two rows for the same thing.
+/// A terminal agent's row label. The project is always named, and a DeepSeek
+/// Harness terminal row also names the conversation it is driving, because the
+/// CLI reads its project's session log. Every other agent's title arrives from
+/// its own enrichment pass; a row with no title yet still shows its project, so
+/// the shape never changes between sources or states.
 fn terminal_label(kind: &str, display: &str, cwd: Option<&Path>) -> String {
-    let project = cwd
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty());
-    if kind != "deepseek" {
-        return match project {
-            Some(project) => format!("{display} ({project})"),
-            None => display.to_owned(),
-        };
-    }
-    let form = crate::i18n::deepseek_form(false);
-    let title = cwd.and_then(crate::deepseek::session_title_for);
-    match (project, title.as_deref()) {
-        (Some(project), Some(title)) => format!("{display} · {form} ({project}) · {title}"),
-        (Some(project), None) => format!("{display} · {form} ({project})"),
-        (None, Some(title)) => format!("{display} · {form} · {title}"),
-        (None, None) => format!("{display} · {form}"),
-    }
+    let title = match kind {
+        "deepseek" => cwd.and_then(crate::deepseek::session_title_for),
+        _ => None,
+    };
+    session_label(display, cwd, title.as_deref())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2158,26 +2173,51 @@ mod tests {
         assert_eq!(rows[0].kind, "ChatGPT");
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn conversation_labels_add_the_thread_title() {
+    fn every_row_label_names_the_project_and_the_title() {
         let cwd = Path::new("/Users/me/code/nita");
         assert_eq!(
-            conversation_label("ChatGPT", Some(cwd), Some("看看git状态")),
+            session_label("ChatGPT", Some(cwd), Some("看看git状态")),
             "ChatGPT (nita) · 看看git状态"
         );
+        assert_eq!(session_label("ChatGPT", Some(cwd), None), "ChatGPT (nita)");
         assert_eq!(
-            conversation_label("ChatGPT", Some(cwd), None),
-            "ChatGPT (nita)"
-        );
-        assert_eq!(
-            conversation_label("ChatGPT", None, Some("在吗")),
+            session_label("ChatGPT", None, Some("在吗")),
             "ChatGPT · 在吗"
         );
         assert_eq!(
-            conversation_label("ChatGPT", Some(cwd), Some(&"标".repeat(40))),
+            session_label("ChatGPT", Some(cwd), Some(&"标".repeat(40))),
             format!("ChatGPT (nita) · {}", "标".repeat(24))
         );
+        // Every agent renders through the same shape.
+        assert_eq!(
+            session_label("DeepSeek Harness", Some(cwd), Some("同步代码")),
+            "DeepSeek Harness (nita) · 同步代码"
+        );
+        assert_eq!(session_label("Pi", Some(cwd), None), "Pi (nita)");
+        assert_eq!(session_label("Claude", None, None), "Claude");
+    }
+
+    #[test]
+    fn claude_titles_come_from_the_newest_ai_title_record() {
+        let dir = std::env::temp_dir().join(format!("asi-claude-title-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("transcript.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\"}}\n",
+                "{\"type\":\"ai-title\",\"aiTitle\":\"旧标题\"}\n",
+                "{\"type\":\"ai-title\",\"aiTitle\":\"  检查 node 环境配置  \"}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(claude_title(&path).as_deref(), Some("检查 node 环境配置"));
+        // A transcript with no title record yields nothing rather than an error.
+        let bare = dir.join("bare.jsonl");
+        std::fs::write(&bare, "{\"type\":\"user\"}\n").unwrap();
+        assert_eq!(claude_title(&bare), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[cfg(target_os = "macos")]
@@ -2325,7 +2365,7 @@ mod tests {
         assert_eq!(rows.len(), 1, "a conversation is listed on its own");
         assert_eq!(rows[0].pid, 0, "there is no window to activate");
         assert_eq!(rows[0].uptime, Duration::ZERO);
-        assert_eq!(rows[0].label, "DeepSeek Harness · 同步代码");
+        assert_eq!(rows[0].label, "DeepSeek Harness (nita) · 同步代码");
 
         // With no conversation in range there is nothing to describe, so a host
         // that is not running gets no row at all — "ready" would be a claim about
@@ -2395,28 +2435,24 @@ mod tests {
     #[test]
     fn a_terminal_row_names_its_project_and_conversation() {
         let path = Path::new("/Users/me/code/AgentIndicator");
-        // Non-DeepSeek agents keep their long-standing shape.
+        // Every agent shares one shape: the project, then the title once it is
+        // known. A title-less row is still the same shape minus the title.
         assert_eq!(
             terminal_label("pi", "Pi", Some(path)),
             "Pi (AgentIndicator)"
         );
         assert_eq!(terminal_label("claude", "Claude", None), "Claude");
-        // DeepSeek names the form, then the project. The conversation comes from
-        // the log of this project, so it is asserted separately.
+        // A DeepSeek terminal row names the conversation the CLI is driving. The
+        // title comes from the profile on disk, so only its prefix is asserted.
         let label = terminal_label("deepseek", "DeepSeek Harness", Some(path));
         assert!(
-            label.starts_with(&format!(
-                "DeepSeek Harness · {} (AgentIndicator)",
-                crate::i18n::deepseek_form(false)
-            )),
+            label.starts_with("DeepSeek Harness (AgentIndicator)"),
             "{label}"
         );
-        // With no project there is still a form, never a bare duplicate.
+        // With no project the agent is still named rather than a bare title.
         let bare = terminal_label("deepseek", "DeepSeek Harness", None);
-        assert!(bare.contains(crate::i18n::deepseek_form(false)));
-        assert_ne!(bare, crate::i18n::deepseek_form(false));
+        assert!(bare.starts_with("DeepSeek Harness"), "{bare}");
     }
-
 
     #[test]
     fn stopped_instances_have_no_focus_pid() {
@@ -2459,12 +2495,11 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_ne!(rows[0].key, rows[1].key, "each conversation owns its row");
         assert_eq!(rows[0].kind, "DeepSeek Harness");
-        // The form is named, so a desktop row cannot be mistaken for a terminal
-        // one: the two report the same agent through different machinery.
         // One row per conversation, with no form marker: the terminal and the
-        // desktop application share a profile, so the conversation is the unit
-        // and its destination is decided when it is clicked.
-        assert_eq!(rows[0].label, "DeepSeek Harness · 同步代码");
+        // desktop application share a profile, so the conversation is the unit,
+        // it renders like every other agent's row, and its destination is
+        // decided when it is clicked.
+        assert_eq!(rows[0].label, "DeepSeek Harness (nita) · 同步代码");
         assert_eq!(rows[0].pid, 43958, "clicking brings the app forward");
         assert_eq!(rows[0].state, AgentState::Working);
         assert_eq!(rows[1].state, AgentState::WaitingReply);

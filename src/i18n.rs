@@ -274,17 +274,6 @@ pub fn failure_undecidable() -> &'static str {
     text("failure_undecidable")
 }
 
-/// How a DeepSeek Harness row identifies which form it reports. The terminal
-/// (`dsh` per project) and the desktop application (one process hosting every
-/// conversation) are different things to the user and must not look identical.
-pub fn deepseek_form(desktop: bool) -> &'static str {
-    text(if desktop {
-        "desktop_form"
-    } else {
-        "terminal_form"
-    })
-}
-
 /// Row label reporting conversations the menu cap left out.
 pub fn hidden_sessions(count: usize) -> String {
     let suffix = text("hidden_sessions");
@@ -1874,34 +1863,6 @@ fn text_for(locale: &str, key: &str) -> &'static str {
         (_, "install") => "安装",
         (_, "uninstall") => "卸载",
         (_, "hidden_sessions") => "個會話未顯示",
-        ("en", "terminal_form") => "Terminal",
-        ("en", "desktop_form") => "Desktop app",
-        ("zh-Hant", "terminal_form") => "終端",
-        ("zh-Hant", "desktop_form") => "桌面端",
-        ("ja", "terminal_form") => "ターミナル",
-        ("ja", "desktop_form") => "デスクトップ",
-        ("ko", "terminal_form") => "터미널",
-        ("ko", "desktop_form") => "데스크톱 앱",
-        ("id", "terminal_form") => "Terminal",
-        ("id", "desktop_form") => "Aplikasi desktop",
-        ("ms", "terminal_form") => "Terminal",
-        ("ms", "desktop_form") => "Aplikasi desktop",
-        ("vi", "terminal_form") => "Terminal",
-        ("vi", "desktop_form") => "Ứng dụng máy tính",
-        ("es", "terminal_form") => "Terminal",
-        ("es", "desktop_form") => "Aplicación de escritorio",
-        ("fr", "terminal_form") => "Terminal",
-        ("fr", "desktop_form") => "Application de bureau",
-        ("it", "terminal_form") => "Terminal",
-        ("it", "desktop_form") => "App desktop",
-        ("de", "terminal_form") => "Terminal",
-        ("de", "desktop_form") => "Desktop-App",
-        ("ru", "terminal_form") => "Терминал",
-        ("ru", "desktop_form") => "Приложение",
-        ("tr", "terminal_form") => "Terminal",
-        ("tr", "desktop_form") => "Masaüstü uygulaması",
-        (_, "terminal_form") => "终端",
-        (_, "desktop_form") => "桌面端",
         (_, "profile_format_changed") => "DeepSeek Harness 設定檔格式已變更",
         (_, "profile_missing") => "找不到 DeepSeek Harness 設定檔",
         (_, "failure_undecidable") => "部分失敗無法判定",
@@ -1972,7 +1933,7 @@ mod tests {
         "automation",
     ];
 
-    const TEXT_KEYS: [&str; 83] = [
+    const TEXT_KEYS: [&str; 81] = [
         "disable_notifications",
         "enable_notifications",
         "disable_startup",
@@ -1998,8 +1959,6 @@ mod tests {
         "window_24h",
         "window_all",
         "hidden_sessions",
-        "terminal_form",
-        "desktop_form",
         "profile_format_changed",
         "profile_missing",
         "failure_undecidable",

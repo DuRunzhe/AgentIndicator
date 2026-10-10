@@ -22,6 +22,9 @@ pub struct PiFacts {
     pub state: Option<AgentState>,
     pub model: Option<String>,
     pub context: Option<ContextUsage>,
+    /// The conversation title: pi does not name a session, so the first user
+    /// message stands in, matching how the other agents label their rows.
+    pub title: Option<String>,
 }
 
 /// One live pi process that the detector found in a directory.
@@ -107,7 +110,8 @@ impl PiAnalyzer {
                 return Some(cached.facts.clone());
             }
         }
-        let facts = parse_signals(&read_tail(session)?, agent_dir);
+        let mut facts = parse_signals(&read_tail(session)?, agent_dir);
+        facts.title = session_title(session);
         self.cache.insert(
             session.to_path_buf(),
             Cached {
@@ -345,6 +349,39 @@ fn civil_seconds(year: i64, month: i64, day: i64, hour: i64, minute: i64, second
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     let days = era * 146097 + day_of_era - 719468;
     days * 86_400 + hour * 3_600 + minute * 60 + second
+}
+
+/// The conversation title for a pi session: its first user message.
+///
+/// Pi writes the message that opens a conversation near the top of the file and
+/// never repeats it, so a long conversation's 2 MB tail no longer reaches it.
+/// Only the head is read, and only when the session file changed.
+fn session_title(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut bytes = vec![0u8; 64 * 1024];
+    let read = file.read(&mut bytes).ok()?;
+    bytes.truncate(read);
+    let text = String::from_utf8_lossy(&bytes);
+    for line in text.lines() {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if entry["type"] != "message" || entry["message"]["role"] != "user" {
+            continue;
+        }
+        let content = &entry["message"]["content"];
+        let text = content.as_str().map(str::to_owned).or_else(|| {
+            content
+                .as_array()?
+                .iter()
+                .find_map(|block| block["text"].as_str().map(str::to_owned))
+        })?;
+        let title = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !title.is_empty() {
+            return Some(title.chars().take(24).collect());
+        }
+    }
+    None
 }
 
 fn read_tail(path: &Path) -> Option<String> {
@@ -605,6 +642,32 @@ mod tests {
             &dir,
         );
         assert_eq!(facts.context.map(|c| c.window_tokens), Some(400_000));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_title_is_the_first_user_message() {
+        let dir = scratch_dir("pi-title");
+        let path = dir.join("session.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"session","id":"x"}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"  修复   登录   标题  "}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"第二条"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(session_title(&path).as_deref(), Some("修复 登录 标题"));
+        // A session still at the empty prompt has no title to show.
+        let bare = dir.join("bare.jsonl");
+        std::fs::write(&bare, "{\"type\":\"session\"}\n").unwrap();
+        assert_eq!(session_title(&bare), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
