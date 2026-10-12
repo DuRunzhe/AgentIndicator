@@ -6,6 +6,16 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.31] - 2026-10-12
+
+### 修复
+
+- Key every settings menu symbol by its owning submenu
+
+### 文档
+
+- Add an English changelog alongside the Chinese one
+
 ## [0.2.30] - 2026-10-10
 
 ### 新增

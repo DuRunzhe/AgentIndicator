@@ -8,6 +8,16 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.31] - 2026-10-12
+
+### Fixed
+
+- Key every settings menu symbol by its owning submenu
+
+### Documentation
+
+- Add an English changelog alongside the Chinese one
+
 ## [0.2.30] - 2026-10-10
 
 ### Added
