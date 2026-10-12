@@ -151,67 +151,86 @@ fn make_symbol(key: &SymbolKey) -> Retained<NSImage> {
 
 fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
     let mut symbols: HashMap<SymbolTarget, SymbolKey> = HashMap::new();
-    // A top-level item has no owning submenu.
+    // Every entry is keyed by its owning submenu's title plus its own title.
+    // An empty owner means a top-level item (only the Settings submenu today);
+    // a row nested inside a submenu must register that submenu's title, or the
+    // AppKit walk in `apply_to_menu` will not find it. The conversation ranges
+    // share their five labels, so this owner is also what keeps the hosted and
+    // DeepSeek checks from overwriting each other.
     fn add(
         symbols: &mut HashMap<SymbolTarget, SymbolKey>,
+        owner: &str,
         title: String,
         name: &'static str,
         color: Option<[u8; 3]>,
     ) {
         symbols.insert(
             SymbolTarget {
-                owner: String::new(),
+                owner: owner.to_owned(),
                 item: title,
             },
             SymbolKey { name, color },
         );
     }
-    // Ranges share their five labels, so they are keyed by owning submenu.
-    fn add_owned(
-        symbols: &mut HashMap<SymbolTarget, SymbolKey>,
-        owner: &'static str,
-        title: &'static str,
-        name: &'static str,
-        color: Option<[u8; 3]>,
-    ) {
-        symbols.insert(
-            SymbolTarget {
-                owner: owner.to_owned(),
-                item: title.to_owned(),
-            },
-            SymbolKey { name, color },
-        );
-    }
 
+    let settings_owner = i18n::menu("settings");
+    let startup_owner = i18n::menu("startup");
+    let notifications_owner = i18n::menu("notifications");
+    let browser_owner = i18n::menu("browser");
+    let language_owner = i18n::menu("language");
+    let display_owner = i18n::menu("display");
+    let hosted_owner = i18n::menu("chatgpt_window");
+    let deepseek_owner = i18n::menu("deepseek_window");
+
+    add(&mut symbols, "", settings_owner.into(), "gearshape", None);
+    // Submenu titles are rows of their parent, so each one is owned by the
+    // submenu it is appended to (every one of these lives under Settings).
     add(
         &mut symbols,
-        i18n::menu("settings").into(),
-        "gearshape",
+        settings_owner,
+        startup_owner.into(),
+        "power",
         None,
     );
-    add(&mut symbols, i18n::menu("startup").into(), "power", None);
     add(
         &mut symbols,
-        i18n::menu("notifications").into(),
+        settings_owner,
+        notifications_owner.into(),
         "bell",
         None,
     );
     add(
         &mut symbols,
-        i18n::menu("browser").into(),
+        settings_owner,
+        browser_owner.into(),
         "rectangle.on.rectangle",
         None,
     );
-    add(&mut symbols, i18n::menu("language").into(), "globe", None);
     add(
         &mut symbols,
-        i18n::menu("chatgpt_window").into(),
+        settings_owner,
+        hosted_owner.into(),
         "clock.arrow.circlepath",
         None,
     );
     add(
         &mut symbols,
-        i18n::menu("display").into(),
+        settings_owner,
+        deepseek_owner.into(),
+        "clock.arrow.circlepath",
+        None,
+    );
+    add(
+        &mut symbols,
+        settings_owner,
+        language_owner.into(),
+        "globe",
+        None,
+    );
+    add(
+        &mut symbols,
+        settings_owner,
+        display_owner.into(),
         "slider.horizontal.3",
         None,
     );
@@ -227,6 +246,7 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
     let (name, color) = toggle_symbol(startup_enabled);
     add(
         &mut symbols,
+        startup_owner,
         startup_action_label(startup_enabled).into(),
         name,
         color,
@@ -239,24 +259,28 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
     };
     add(
         &mut symbols,
+        notifications_owner,
         notification_action_label(config.notifications_enabled).into(),
         name,
         color,
     );
     add(
         &mut symbols,
+        notifications_owner,
         i18n::menu("test_notification").into(),
         "bell.badge",
         Some([0, 122, 255]),
     );
     add(
         &mut symbols,
+        notifications_owner,
         i18n::text("open_notifications").into(),
         "gearshape",
         None,
     );
     add(
         &mut symbols,
+        notifications_owner,
         i18n::text("notification_app").into(),
         "app.badge",
         None,
@@ -265,18 +289,21 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
     let (name, color) = toggle_symbol(config.browser_tab_reuse);
     add(
         &mut symbols,
+        browser_owner,
         browser_tab_action_label(config.browser_tab_reuse).into(),
         name,
         color,
     );
     add(
         &mut symbols,
+        browser_owner,
         i18n::menu("automation").into(),
         "gearshape",
         None,
     );
     add(
         &mut symbols,
+        browser_owner,
         i18n::menu("permission").into(),
         "lock.shield",
         None,
@@ -287,6 +314,7 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
     let (name, color) = toggle_symbol(claude_installed);
     add(
         &mut symbols,
+        settings_owner,
         claude_action_label(claude_installed).into(),
         name,
         color,
@@ -303,35 +331,51 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
             _ => false,
         };
         let (name, color) = toggle_symbol(enabled);
-        add(&mut symbols, toggle_label(enabled, label), name, color);
-    }
-    for (_, label, enabled) in notification_preferences(config) {
-        let (name, color) = toggle_symbol(enabled);
-        add(&mut symbols, toggle_label(enabled, label), name, color);
-    }
-    for value in i18n::LANGUAGES {
-        let selected = config.locale == value;
-        let (name, color) = toggle_symbol(selected);
-        add(&mut symbols, i18n::language_name(value), name, color);
-    }
-    let hosted_owner = i18n::menu("chatgpt_window");
-    for (key, _) in CONVERSATION_WINDOWS {
-        let (name, color) = toggle_symbol(config.conversation_window == key);
-        add_owned(
+        add(
             &mut symbols,
-            hosted_owner,
-            i18n::conversation_window_label(key),
+            display_owner,
+            toggle_label(enabled, label),
             name,
             color,
         );
     }
-    let deepseek_owner = i18n::menu("deepseek_window");
+    for (_, label, enabled) in notification_preferences(config) {
+        let (name, color) = toggle_symbol(enabled);
+        add(
+            &mut symbols,
+            notifications_owner,
+            toggle_label(enabled, label),
+            name,
+            color,
+        );
+    }
+    for value in i18n::LANGUAGES {
+        let selected = config.locale == value;
+        let (name, color) = toggle_symbol(selected);
+        add(
+            &mut symbols,
+            language_owner,
+            i18n::language_name(value),
+            name,
+            color,
+        );
+    }
+    for (key, _) in CONVERSATION_WINDOWS {
+        let (name, color) = toggle_symbol(config.conversation_window == key);
+        add(
+            &mut symbols,
+            hosted_owner,
+            i18n::conversation_window_label(key).into(),
+            name,
+            color,
+        );
+    }
     for (key, _) in CONVERSATION_WINDOWS {
         let (name, color) = toggle_symbol(config.deepseek_desktop_window == key);
-        add_owned(
+        add(
             &mut symbols,
             deepseek_owner,
-            i18n::conversation_window_label(key),
+            i18n::conversation_window_label(key).into(),
             name,
             color,
         );
@@ -401,6 +445,75 @@ mod tests {
             Some("checkmark.circle.fill"),
             "the DeepSeek range must not follow the hosted one"
         );
+    }
+
+    /// Every row inside the Settings submenu must be keyed by that submenu's
+    /// title. A regression made `add` hard-code an empty owner, so only the
+    /// two range submenus (which used a different helper) kept their icons and
+    /// every other nested row silently lost its check mark or header symbol.
+    #[test]
+    fn every_settings_row_is_keyed_by_its_owning_submenu() {
+        let config = Config::default();
+        let symbols = menu_symbols(&config);
+        let settings = i18n::menu("settings");
+
+        let assert_keyed = |owner: &str, item: &str| {
+            assert!(
+                symbols.contains_key(&SymbolTarget {
+                    owner: owner.to_owned(),
+                    item: item.to_owned(),
+                }),
+                "missing symbol for owner {owner:?} item {item:?}"
+            );
+        };
+
+        // Top-level Settings header, then the submenu headers it contains.
+        assert_keyed("", settings);
+        for owner in [
+            i18n::menu("startup"),
+            i18n::menu("notifications"),
+            i18n::menu("browser"),
+            i18n::menu("chatgpt_window"),
+            i18n::menu("deepseek_window"),
+            i18n::menu("language"),
+            i18n::menu("display"),
+        ] {
+            assert_keyed(settings, owner);
+        }
+
+        // Rows nested one level deeper, owned by their own submenu.
+        assert_keyed(
+            settings,
+            claude_action_label(claude_statusline::is_installed()),
+        );
+        assert_keyed(
+            i18n::menu("startup"),
+            startup_action_label(startup::is_enabled()),
+        );
+        for item in [
+            notification_action_label(config.notifications_enabled),
+            i18n::menu("test_notification"),
+            i18n::text("open_notifications"),
+            i18n::text("notification_app"),
+        ] {
+            assert_keyed(i18n::menu("notifications"), item);
+        }
+        for item in [
+            browser_tab_action_label(config.browser_tab_reuse),
+            i18n::menu("automation"),
+            i18n::menu("permission"),
+        ] {
+            assert_keyed(i18n::menu("browser"), item);
+        }
+        for (_, label) in display_settings() {
+            assert_keyed(i18n::menu("display"), label);
+        }
+        for (_, label, _) in notification_preferences(&config) {
+            assert_keyed(i18n::menu("notifications"), label);
+        }
+        for value in i18n::LANGUAGES {
+            assert_keyed(i18n::menu("language"), &i18n::language_name(value));
+        }
     }
 
     #[test]
