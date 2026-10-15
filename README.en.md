@@ -18,11 +18,7 @@ The current release is **v0.2.32-alpha.2** (macOS arm64, Developer ID signed and
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
-Without `VERSION` the script automatically resolves the latest release, trying the GitHub API, the `releases/latest` redirect and the npm registry in turn; you only need to pin a version when none of those is reachable. Updating: just re-run the install command (it resolves the latest version). On macOS (Apple Silicon) it also downloads the notarized `.app` from the release and installs it into your Applications folder (the `.app` asset ships with releases cut after this workflow change; if a version lacks the asset, the script prints a notice and installs the CLI binary only).
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
-```
+Without `VERSION` the script automatically resolves the latest release, trying the GitHub API, the `releases/latest` redirect and the npm registry in turn; you only need to pin a version when none of those is reachable. To update, re-run the install command above (it resolves the latest version). On macOS (Apple Silicon) it also downloads the notarized `.app` from the release and installs it into your Applications folder (the `.app` asset ships with releases cut after this workflow change; if a version lacks the asset, the script prints a notice and installs the CLI binary only).
 
 Pin a version:
 

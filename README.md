@@ -18,11 +18,7 @@
 curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
 ```
 
-不带 `VERSION` 时脚本会依次从 GitHub API、releases 重定向与 npm registry 自动查找最新版本；只有三者都不可达时才需要手动指定。更新：重新运行安装命令即可（默认取最新）。macOS（Apple Silicon）下除命令行二进制外，脚本还会一并从 Release 下载公证的 `.app` 装进“应用程序”（该 `.app` 资产随 workflow 改动后的新版本发布；若某版本未发布此资产，脚本会打印提示并仅安装命令行二进制）。
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | sh
-```
+不带 `VERSION` 时脚本会依次从 GitHub API、releases 重定向与 npm registry 自动查找最新版本；只有三者都不可达时才需要手动指定。更新：重新运行上面的安装命令即可（默认取最新版本）。macOS（Apple Silicon）下除命令行二进制外，脚本还会一并从 Release 下载公证的 `.app` 装进“应用程序”（该 `.app` 资产随 workflow 改动后的新版本发布；若某版本未发布此资产，脚本会打印提示并仅安装命令行二进制）。
 
 指定版本：
 
