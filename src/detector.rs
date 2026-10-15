@@ -1137,6 +1137,7 @@ fn sysinfo_tree_usage(root: Pid, system: &System, shared: bool) -> ProcessUsage 
     tree_usage(root.as_u32(), &entries, shared)
 }
 
+#[cfg(target_os = "macos")]
 fn process_tree_pids(root: u32, processes: &[ProcessRecord]) -> Vec<u32> {
     let parents: HashMap<_, _> = processes
         .iter()
