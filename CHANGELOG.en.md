@@ -8,6 +8,12 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.32-alpha.2] - 2026-10-15
+
+### Fixed
+
+- Gate process_tree_pids to macOS
+
 ## [0.2.32-alpha.1] - 2026-10-15
 
 ### Added
