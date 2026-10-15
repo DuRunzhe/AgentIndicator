@@ -1,7 +1,7 @@
 use crate::codex_state::CodexTitles;
 #[cfg(target_os = "macos")]
 use crate::macos_process::{MacProcessSource, ProcessMetadata, ProcessRecord};
-use crate::model::{AgentInstance, AgentState};
+use crate::model::{AgentInstance, AgentState, ProcessUsage};
 use crate::session::{SessionAnalyzer, SessionFacts};
 use serde_json::Value;
 use std::{
@@ -154,6 +154,9 @@ impl Detector {
             .map(|(pid, process, kind)| {
                 let cwd = process.cwd().map(PathBuf::from);
                 let active = has_task_descendant(pid, kind, &self.system);
+                // A desktop application is one process serving every open
+                // conversation, so its usage is host-level and marked shared.
+                let usage = sysinfo_tree_usage(pid, &self.system, is_desktop_host(process));
                 let mut instance = AgentInstance {
                     key: pid.as_u32().to_string(),
                     // The terminal form carries its own kind so that its absence
@@ -177,6 +180,7 @@ impl Detector {
                     open_url: None,
                     automatic_confirmation_mode: false,
                     informational: false,
+                    usage: Some(usage),
                 };
                 if kind == "claude" {
                     enrich_claude(&mut instance, &mut self.sessions);
@@ -202,8 +206,9 @@ impl Detector {
         // application is running; with it closed the terminal `dsh` rows above
         // are the live source, and with neither the agent stays stopped.
         if let Some((pid, uptime, home)) = desktop_hosts.first() {
+            let usage = sysinfo_tree_usage(Pid::from_u32(*pid), &self.system, true);
             let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
-            instances.extend(desktop_rows(Some((*pid, *uptime)), &sessions, &[]));
+            instances.extend(desktop_rows(Some((*pid, *uptime, usage)), &sessions, &[]));
             instances.extend(desktop_overflow_row(*pid, hidden));
             instances.extend(desktop_alert_row(*pid, alert));
         }
@@ -282,6 +287,10 @@ impl Detector {
                     .iter()
                     .filter_map(|pid| metadata.get(pid))
                     .collect::<Vec<_>>();
+                // Usage of the row's process tree. A GUI host serves many
+                // conversations in one process, so its figures are host-level
+                // and marked shared.
+                let usage = usage_for_root(process.pid, &processes, host.is_some());
                 // A GUI application drives every conversation it has open
                 // through one app-server process. Report the recently active
                 // conversations instead of collapsing them into a single row.
@@ -298,13 +307,14 @@ impl Detector {
                         // conversation would show the user a session they have
                         // moved on from as if it were live.
                         return if conversations.is_empty() {
-                            vec![hosted_application_instance(process, host.display)]
+                            vec![hosted_application_instance(process, host.display, usage)]
                         } else {
                             hosted_codex_instances(
                                 process,
                                 host.display,
                                 &mut self.codex_titles,
                                 conversations,
+                                usage,
                             )
                         };
                     }
@@ -368,6 +378,7 @@ impl Detector {
                     },
                     automatic_confirmation_mode: false,
                     informational: false,
+                    usage: Some(usage),
                 };
                 match kind {
                     "claude" => enrich_claude(&mut instance, &mut self.sessions),
@@ -426,9 +437,10 @@ impl Detector {
             }
         } else {
             for (process, home) in desktop_hosts {
+                let usage = usage_for_root(process.pid, &processes, true);
                 let (sessions, hidden, alert) = self.deepseek_desktop_overview(home.as_deref());
                 instances.extend(desktop_rows(
-                    Some((process.pid, process.uptime)),
+                    Some((process.pid, process.uptime, usage)),
                     &sessions,
                     &drivers,
                 ));
@@ -467,6 +479,7 @@ fn stopped_instance(kind: &str) -> AgentInstance {
         open_url: None,
         automatic_confirmation_mode: false,
         informational: false,
+        usage: None,
     }
 }
 
@@ -532,12 +545,16 @@ struct DeepSeekDriver {
 /// With no conversation inside the configured range the application still gets
 /// a row: the user has the window open, and "ready" is the truth about it.
 fn desktop_rows(
-    host: Option<(u32, Duration)>,
+    host: Option<(u32, Duration, ProcessUsage)>,
     sessions: &[crate::deepseek_desktop::DesktopSession],
     drivers: &[DeepSeekDriver],
 ) -> Vec<AgentInstance> {
     let display = display_name("deepseek");
-    let pid = host.map_or(0, |(pid, _)| pid);
+    let pid = host.map_or(0, |(pid, _, _)| pid);
+    // The desktop application is one process serving every open conversation,
+    // so each of its rows reports the host's usage, marked shared. A CLI-driven
+    // conversation has no host process of its own, so it carries none.
+    let host_usage = host.map(|(_, _, usage)| usage);
     // Whether a window exists to bring forward, which decides where a
     // conversation the CLI is not currently writing navigates.
     let host_running = host.is_some();
@@ -545,7 +562,7 @@ fn desktop_rows(
         // With no conversations in range the application still gets a row, but
         // only while it is running: "ready" describes a window that is open, and
         // a row with no process behind it would be a row for nothing.
-        let Some((pid, uptime)) = host else {
+        let Some((pid, uptime, usage)) = host else {
             return Vec::new();
         };
         return vec![AgentInstance {
@@ -561,6 +578,7 @@ fn desktop_rows(
             open_url: None,
             automatic_confirmation_mode: false,
             informational: false,
+            usage: Some(usage),
         }];
     }
     sessions
@@ -589,6 +607,7 @@ fn desktop_rows(
             open_url: session_target(session, drivers, host_running),
             automatic_confirmation_mode: session.automatic_confirmation_mode,
             informational: false,
+            usage: host_usage,
         })
         .collect()
 }
@@ -614,6 +633,7 @@ fn desktop_overflow_row(pid: u32, hidden: usize) -> Option<AgentInstance> {
         open_url: None,
         automatic_confirmation_mode: false,
         informational: true,
+        usage: None,
     })
 }
 
@@ -648,6 +668,7 @@ fn desktop_alert_row(
         open_url: None,
         automatic_confirmation_mode: false,
         informational: true,
+        usage: None,
     })
 }
 
@@ -1045,7 +1066,77 @@ fn has_process_agent_parent(
     false
 }
 
+/// One process as `(pid, parent, cpu percent, rss bytes)`, the shape both
+/// platform sources project their snapshots into.
+type ProcessUsageEntry = (u32, Option<u32>, f32, u64);
+
+/// CPU and resident memory summed over `root`'s process tree. Using the whole
+/// tree rather than the launcher process accounts for an agent that hands its
+/// work to a child. Pure so it can be unit-tested on every platform.
+fn tree_usage(root: u32, processes: &[ProcessUsageEntry], shared: bool) -> ProcessUsage {
+    let parents: HashMap<u32, Option<u32>> = processes
+        .iter()
+        .map(|(pid, parent, _, _)| (*pid, *parent))
+        .collect();
+    let mut usage = ProcessUsage {
+        shared,
+        ..ProcessUsage::default()
+    };
+    for (pid, _, cpu, memory) in processes {
+        let mut cursor = Some(*pid);
+        let mut seen = HashSet::new();
+        while let Some(current) = cursor {
+            if current == root {
+                usage.cpu += *cpu;
+                usage.memory_bytes = usage.memory_bytes.saturating_add(*memory);
+                break;
+            }
+            if !seen.insert(current) {
+                break;
+            }
+            cursor = parents.get(&current).copied().flatten();
+        }
+    }
+    usage
+}
+
+/// CPU and resident memory of a macOS session's process tree, from the `ps`
+/// snapshot the scan already read.
 #[cfg(target_os = "macos")]
+fn usage_for_root(root: u32, processes: &[ProcessRecord], shared: bool) -> ProcessUsage {
+    let entries: Vec<ProcessUsageEntry> = processes
+        .iter()
+        .map(|process| {
+            (
+                process.pid,
+                Some(process.ppid),
+                process.cpu,
+                process.memory_bytes,
+            )
+        })
+        .collect();
+    tree_usage(root, &entries, shared)
+}
+
+/// CPU and resident memory of a sysinfo session's process tree, from the
+/// snapshot the scan already refreshed. No extra process is spawned.
+#[cfg(not(target_os = "macos"))]
+fn sysinfo_tree_usage(root: Pid, system: &System, shared: bool) -> ProcessUsage {
+    let entries: Vec<ProcessUsageEntry> = system
+        .processes()
+        .iter()
+        .map(|(pid, process)| {
+            (
+                pid.as_u32(),
+                process.parent().map(Pid::as_u32),
+                process.cpu_usage(),
+                process.memory(),
+            )
+        })
+        .collect();
+    tree_usage(root.as_u32(), &entries, shared)
+}
+
 fn process_tree_pids(root: u32, processes: &[ProcessRecord]) -> Vec<u32> {
     let parents: HashMap<_, _> = processes
         .iter()
@@ -1151,7 +1242,11 @@ fn select_conversations(
 /// range (or none open at all). It has no thread to open, so clicking only
 /// activates the application.
 #[cfg(target_os = "macos")]
-fn hosted_application_instance(process: &ProcessRecord, display: &str) -> AgentInstance {
+fn hosted_application_instance(
+    process: &ProcessRecord,
+    display: &str,
+    usage: ProcessUsage,
+) -> AgentInstance {
     AgentInstance {
         key: process.pid.to_string(),
         kind: display.into(),
@@ -1165,6 +1260,7 @@ fn hosted_application_instance(process: &ProcessRecord, display: &str) -> AgentI
         open_url: None,
         automatic_confirmation_mode: false,
         informational: false,
+        usage: Some(usage),
     }
 }
 
@@ -1205,6 +1301,7 @@ fn hosted_codex_instances(
     display: &str,
     titles: &mut CodexTitles,
     conversations: Vec<(PathBuf, SessionFacts)>,
+    usage: ProcessUsage,
 ) -> Vec<AgentInstance> {
     conversations
         .into_iter()
@@ -1227,6 +1324,7 @@ fn hosted_codex_instances(
                 open_url: codex_thread_url(&rollout),
                 automatic_confirmation_mode: facts.automatic_confirmation_mode,
                 informational: false,
+                usage: Some(usage),
             }
         })
         .collect()
@@ -1950,6 +2048,21 @@ fn has_task_descendant(root: Pid, kind: &str, system: &System) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn tree_usage_sums_only_the_rooted_subtree() {
+        // 2 and 3 descend from 1; 4 is unrelated and must not be counted.
+        let entries = [
+            (1, None, 1.0, 100),
+            (2, Some(1), 2.0, 200),
+            (3, Some(2), 3.0, 300),
+            (4, Some(0), 4.0, 400),
+        ];
+        let usage = tree_usage(1, &entries, true);
+        assert_eq!(usage.cpu, 6.0);
+        assert_eq!(usage.memory_bytes, 600);
+        assert!(usage.shared);
+    }
+
     #[cfg(target_os = "macos")]
     fn record(pid: u32, ppid: u32, executable: &str, args: &str) -> ProcessRecord {
         ProcessRecord {
@@ -1958,6 +2071,8 @@ mod tests {
             uptime: Duration::ZERO,
             executable: executable.into(),
             command: format!("{executable} {args}").trim_end().to_owned(),
+            cpu: 0.0,
+            memory_bytes: 0,
         }
     }
 
@@ -2138,7 +2253,7 @@ mod tests {
             "/Applications/ChatGPT.app/Contents/Resources/codex",
             "",
         );
-        let row = hosted_application_instance(&process, "ChatGPT");
+        let row = hosted_application_instance(&process, "ChatGPT", ProcessUsage::default());
         assert_eq!(row.kind, "ChatGPT");
         assert_eq!(row.label, "ChatGPT");
         assert_eq!(row.key, "233");
@@ -2173,6 +2288,7 @@ mod tests {
                     2,
                 ),
             ],
+            ProcessUsage::default(),
         );
         assert_eq!(rows.len(), 2);
         assert_ne!(rows[0].key, rows[1].key, "each conversation owns its row");
@@ -2383,7 +2499,11 @@ mod tests {
         // a window that does not exist.
         assert!(desktop_rows(None, &[], &[]).is_empty());
         // A running host still reports itself.
-        let host_only = desktop_rows(Some((43958, Duration::from_secs(60))), &[], &[]);
+        let host_only = desktop_rows(
+            Some((43958, Duration::from_secs(60), ProcessUsage::default())),
+            &[],
+            &[],
+        );
         assert_eq!(host_only.len(), 1);
         assert_eq!(host_only[0].pid, 43958);
     }
@@ -2499,7 +2619,7 @@ mod tests {
         let session = desktop_session("session-0c3f162a", AgentState::Working);
         let waiting = desktop_session("session-106ec104", AgentState::WaitingReply);
         let rows = desktop_rows(
-            Some((43958, Duration::from_secs(417))),
+            Some((43958, Duration::from_secs(417), ProcessUsage::default())),
             &[session, waiting],
             &[],
         );
@@ -2522,7 +2642,11 @@ mod tests {
         // The measured run wins when the log provided one.
         let mut measured = desktop_session("session-measured", AgentState::Working);
         measured.run = Some(Duration::from_secs(125));
-        let measured_rows = desktop_rows(Some((43958, Duration::from_secs(417))), &[measured], &[]);
+        let measured_rows = desktop_rows(
+            Some((43958, Duration::from_secs(417), ProcessUsage::default())),
+            &[measured],
+            &[],
+        );
         assert_eq!(measured_rows[0].uptime, Duration::from_secs(125));
     }
 
@@ -2530,7 +2654,11 @@ mod tests {
     fn descriptor_rows_carry_the_auto_confirmation_mode() {
         let mut session = desktop_session("session-auto", AgentState::Ready);
         session.automatic_confirmation_mode = true;
-        let rows = desktop_rows(Some((43958, Duration::from_secs(30))), &[session], &[]);
+        let rows = desktop_rows(
+            Some((43958, Duration::from_secs(30), ProcessUsage::default())),
+            &[session],
+            &[],
+        );
         assert!(rows[0].automatic_confirmation_mode);
         assert!(!rows[0].informational);
     }
@@ -2760,7 +2888,11 @@ mod tests {
 
     #[test]
     fn a_desktop_app_without_conversations_still_gets_a_row() {
-        let rows = desktop_rows(Some((43958, Duration::from_secs(30))), &[], &[]);
+        let rows = desktop_rows(
+            Some((43958, Duration::from_secs(30), ProcessUsage::default())),
+            &[],
+            &[],
+        );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].key, "desktop:43958");
         assert_eq!(rows[0].label, "DeepSeek Harness");

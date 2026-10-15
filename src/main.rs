@@ -227,6 +227,9 @@ struct MenuView {
     menu: Menu,
     signature: Vec<(u32, AgentState)>,
     instances: Vec<MenuItem>,
+    /// The two per-agent resource rows (names, then CPU/memory). Empty when the
+    /// summary is turned off.
+    resource: Vec<MenuItem>,
     notifications: IconMenuItem,
     notification_preferences: Vec<IconMenuItem>,
     test_notification: IconMenuItem,
@@ -290,6 +293,12 @@ impl App {
             let menu = self.create_menu(signature);
             #[cfg(target_os = "macos")]
             self.macos_menu_symbols.apply(&menu.menu, &self.config);
+            // The summary's columns only line up in a monospaced font.
+            #[cfg(target_os = "macos")]
+            if self.config.show_resources {
+                let (names, values) = resource_rows(&self.current);
+                macos_menu_symbols::apply_monospaced(&menu.menu, &[names, values]);
+            }
             if let Some(tray) = &self.tray {
                 // A new root NSMenu avoids AppKit retaining titles from the prior
                 // status-item menu after a resumed session changes state.
@@ -316,6 +325,17 @@ impl App {
             {
                 item.set_text(format_instance(instance, &self.config));
                 item.set_enabled(!instance.informational && instance.state != AgentState::Stopped);
+            }
+            if !menu.resource.is_empty() {
+                let (names, values) = resource_rows(&self.current);
+                for (item, text) in menu.resource.iter().zip([names, values]) {
+                    item.set_text(text);
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    let (names, values) = resource_rows(&self.current);
+                    macos_menu_symbols::apply_monospaced(&menu.menu, &[names, values]);
+                }
             }
             menu.notifications
                 .set_text(notification_action_label(self.config.notifications_enabled));
@@ -386,6 +406,22 @@ impl App {
         if visible.is_empty() {
             let item = MenuItem::new(i18n::text("no_agents"), false, None);
             let _ = menu.append(&item);
+        }
+        // A per-agent resource summary sits below the sessions and above the
+        // Settings menu: the names on one row and the CPU/memory under each on
+        // the next. Turned off it contributes no rows at all.
+        let mut resource_items = Vec::new();
+        if self.config.show_resources {
+            // Separate the summary from the session list above it, so it reads
+            // as its own block; the second separator below closes it off from
+            // the Settings menu.
+            let _ = menu.append(&PredefinedMenuItem::separator());
+            let (names, values) = resource_rows(&self.current);
+            for text in [names, values] {
+                let item = MenuItem::new(text, false, None);
+                let _ = menu.append(&item);
+                resource_items.push(item);
+            }
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
         let settings = Submenu::new(i18n::menu("settings"), true);
@@ -555,6 +591,7 @@ impl App {
             menu,
             signature,
             instances: instance_items,
+            resource: resource_items,
             notifications: notification_item,
             notification_preferences: notification_preference_items,
             test_notification,
@@ -1059,13 +1096,16 @@ fn visible_instances<'a>(
         .filter(move |instance| instance.state != AgentState::Stopped || show_stopped)
 }
 
-fn display_settings() -> [(&'static str, &'static str); 6] {
+fn display_settings() -> [(&'static str, &'static str); 9] {
     [
         ("duration", i18n::text("show_duration")),
         ("model", i18n::text("show_model")),
         ("context_percent", i18n::text("show_context_percent")),
         ("context_used", i18n::text("show_context_used")),
         ("context_total", i18n::text("show_context_total")),
+        ("cpu", i18n::text("show_cpu")),
+        ("memory", i18n::text("show_memory")),
+        ("resources", i18n::text("show_resources")),
         ("stopped_agents", i18n::text("show_stopped_agents")),
     ]
 }
@@ -1113,6 +1153,9 @@ fn config_value(config: &Config, key: &str) -> bool {
         "context_percent" => config.show_context_percent,
         "context_used" => config.show_context_used,
         "context_total" => config.show_context_total,
+        "cpu" => config.show_cpu,
+        "memory" => config.show_memory,
+        "resources" => config.show_resources,
         "stopped_agents" => config.show_stopped_agents,
         _ => false,
     }
@@ -1125,6 +1168,9 @@ fn toggle_config(config: &mut Config, key: &str) {
         "context_percent" => config.show_context_percent = !config.show_context_percent,
         "context_used" => config.show_context_used = !config.show_context_used,
         "context_total" => config.show_context_total = !config.show_context_total,
+        "cpu" => config.show_cpu = !config.show_cpu,
+        "memory" => config.show_memory = !config.show_memory,
+        "resources" => config.show_resources = !config.show_resources,
         "stopped_agents" => config.show_stopped_agents = !config.show_stopped_agents,
         _ => {}
     }
@@ -1174,7 +1220,116 @@ fn format_instance(instance: &AgentInstance, config: &Config) -> String {
             _ => {}
         }
     }
+    if let Some(usage) = &instance.usage {
+        // A GUI host serves many sessions in one process, so its figures are
+        // host-level: mark them so the number is not read as this session's.
+        // The marker only qualifies numbers, so it appears only when one does.
+        if usage.shared && (config.show_cpu || config.show_memory) {
+            text.push_str(&format!(" · {}", i18n::text("shared_host")));
+        }
+        if config.show_cpu {
+            text.push_str(&format!(" · CPU {:.1}%", usage.cpu));
+        }
+        if config.show_memory {
+            text.push_str(&format!(" · {}", short_bytes(usage.memory_bytes)));
+        }
+    }
     text
+}
+
+/// Two menu rows summarizing per-agent resource usage: the agent names, then
+/// the CPU/memory under each. Columns are padded to the wider of a name and its
+/// value so the numbers line up as closely as a proportional menu font allows.
+/// An agent with no live process reads `--/--` instead of `0`.
+fn resource_rows(instances: &[AgentInstance]) -> (String, String) {
+    let totals = model::resource_totals(instances);
+    // The first column is the total over every agent, then one column per
+    // agent. Rows a host process shares are already de-duplicated per agent, so
+    // summing the columns cannot double count them.
+    let mut labels: Vec<String> = vec![i18n::text("resource_total").to_owned()];
+    labels.extend(
+        model::RESOURCE_AGENTS
+            .iter()
+            .map(|agent| (*agent).to_owned()),
+    );
+    let total_cpu: f32 = totals.iter().map(|total| total.cpu).sum();
+    let total_memory = totals
+        .iter()
+        .fold(0u64, |sum, total| sum.saturating_add(total.memory_bytes));
+    let mut values: Vec<String> = Vec::with_capacity(labels.len());
+    values.push(usage_text(
+        totals.iter().any(|total| total.used),
+        total_cpu,
+        total_memory,
+    ));
+    values.extend(
+        totals
+            .iter()
+            .map(|total| usage_text(total.used, total.cpu, total.memory_bytes)),
+    );
+    let mut names = String::new();
+    let mut numbers = String::new();
+    for (index, (label, value)) in labels.iter().zip(&values).enumerate() {
+        let width = display_width(label).max(display_width(value));
+        if index > 0 {
+            names.push_str("  ");
+            numbers.push_str("  ");
+        }
+        names.push_str(&pad_to(label, width));
+        numbers.push_str(&pad_to(value, width));
+    }
+    (names, numbers)
+}
+
+/// `CPU/memory` for one column, or `--/--` when the agent has no live process.
+fn usage_text(used: bool, cpu: f32, memory_bytes: u64) -> String {
+    if used {
+        format!("{cpu:.1}%/{}", short_bytes(memory_bytes))
+    } else {
+        "--/--".to_owned()
+    }
+}
+
+/// Pad `value` with spaces to `width` monospace cells. Padding by cell count
+/// rather than `char` count keeps a localized label such as “总计” aligned with
+/// its column, because CJK glyphs occupy two cells each.
+fn pad_to(value: &str, width: usize) -> String {
+    let mut text = value.to_owned();
+    text.push_str(&" ".repeat(width.saturating_sub(display_width(value))));
+    text
+}
+
+/// Display width of `value` in monospace cells: East Asian wide characters take
+/// two cells, everything else one.
+fn display_width(value: &str) -> usize {
+    value
+        .chars()
+        .map(|character| match character as u32 {
+            0x1100..=0x115F
+            | 0x2E80..=0xA4CF
+            | 0xAC00..=0xD7A3
+            | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE4F
+            | 0xFF00..=0xFF60
+            | 0xFFE0..=0xFFE6
+            | 0x20000..=0x3FFFD => 2,
+            _ => 1,
+        })
+        .sum()
+}
+
+fn short_bytes(value: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let value = value as f64;
+    if value >= GIB {
+        format!("{:.1}G", value / GIB)
+    } else if value >= MIB {
+        format!("{:.0}M", value / MIB)
+    } else {
+        format!("{:.0}K", value / KIB)
+    }
 }
 
 fn short_tokens(value: u64) -> String {
@@ -1577,6 +1732,7 @@ mod summary_tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: false,
+            usage: None,
         }
     }
 
@@ -1604,6 +1760,7 @@ mod summary_tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: true,
+            usage: None,
         };
         assert_eq!(summary_state(&[instance.clone()]), AgentState::Stopped);
         assert_eq!(summary(&[instance.clone()]), i18n::no_activity());
@@ -1629,6 +1786,7 @@ mod summary_tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: true,
+            usage: None,
         };
         assert!(!notifications::should_notify(&instance, &config));
         instance.informational = false;
@@ -1667,6 +1825,7 @@ mod stopped_visibility_tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: false,
+            usage: None,
         }
     }
 
@@ -1694,12 +1853,114 @@ mod stopped_visibility_tests {
     #[test]
     fn display_settings_include_stopped_agents_toggle() {
         let keys = display_settings();
-        assert_eq!(keys.len(), 6);
+        assert_eq!(keys.len(), 9);
         assert!(keys.iter().any(|(key, _)| *key == "stopped_agents"));
+        assert!(keys.iter().any(|(key, _)| *key == "cpu"));
+        assert!(keys.iter().any(|(key, _)| *key == "memory"));
+        assert!(keys.iter().any(|(key, _)| *key == "resources"));
         let hidden = Config {
             show_stopped_agents: false,
             ..Config::default()
         };
         assert!(!config_value(&hidden, "stopped_agents"));
+    }
+}
+
+#[cfg(test)]
+mod usage_format_tests {
+    use super::*;
+    use crate::model::ProcessUsage;
+
+    fn instance(usage: ProcessUsage) -> AgentInstance {
+        AgentInstance {
+            key: "1".into(),
+            kind: "Pi".into(),
+            label: "Pi (project)".into(),
+            pid: 1,
+            cwd: None,
+            state: AgentState::Working,
+            uptime: Duration::ZERO,
+            model: None,
+            context: None,
+            open_url: None,
+            automatic_confirmation_mode: false,
+            informational: false,
+            usage: Some(usage),
+        }
+    }
+
+    #[test]
+    fn cpu_and_memory_render_for_a_session_private_process() {
+        let config = Config::default();
+        let row = instance(ProcessUsage {
+            cpu: 12.5,
+            memory_bytes: 300 * 1024 * 1024,
+            shared: false,
+        });
+        let text = format_instance(&row, &config);
+        assert!(text.contains("CPU 12.5%"), "{text}");
+        assert!(text.contains("300M"), "{text}");
+        assert!(!text.contains(i18n::text("shared_host")), "{text}");
+    }
+
+    #[test]
+    fn a_shared_host_row_marks_its_usage() {
+        let config = Config::default();
+        let row = instance(ProcessUsage {
+            cpu: 1.0,
+            memory_bytes: 1024 * 1024,
+            shared: true,
+        });
+        let text = format_instance(&row, &config);
+        assert!(text.contains(i18n::text("shared_host")), "{text}");
+    }
+
+    #[test]
+    fn hidden_resource_rows_render_no_numbers() {
+        let config = Config {
+            show_cpu: false,
+            show_memory: false,
+            ..Config::default()
+        };
+        let row = instance(ProcessUsage {
+            cpu: 9.0,
+            memory_bytes: 5 * 1024 * 1024,
+            shared: true,
+        });
+        let text = format_instance(&row, &config);
+        assert!(!text.contains("CPU"), "{text}");
+        assert!(!text.contains("5M"), "{text}");
+        // The shared marker qualifies numbers, so it goes with them.
+        assert!(!text.contains(i18n::text("shared_host")), "{text}");
+    }
+
+    #[test]
+    fn resource_rows_place_every_agent_with_placeholders_for_idle_ones() {
+        let (names, values) = resource_rows(&[]);
+        // The total column comes first, then one per agent.
+        assert!(names.contains(i18n::text("resource_total")), "{names}");
+        assert!(names.contains("Claude"), "{names}");
+        assert!(names.contains("DeepSeek"), "{names}");
+        assert_eq!(
+            values.matches("--/--").count(),
+            model::RESOURCE_AGENTS.len() + 1
+        );
+    }
+
+    #[test]
+    fn resource_rows_show_a_used_agents_cpu_and_memory() {
+        let row = instance(ProcessUsage {
+            cpu: 12.5,
+            memory_bytes: 300 * 1024 * 1024,
+            shared: false,
+        });
+        let (names, values) = resource_rows(&[row]);
+        // The total equals the only used agent, and the idle agents stay blank.
+        assert_eq!(values.matches("12.5%/300M").count(), 2, "{values}");
+        assert_eq!(
+            values.matches("--/--").count(),
+            model::RESOURCE_AGENTS.len() - 1
+        );
+        assert!(names.contains(i18n::text("resource_total")), "{names}");
     }
 }

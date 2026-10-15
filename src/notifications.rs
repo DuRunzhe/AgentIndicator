@@ -162,6 +162,7 @@ mod tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: false,
+            usage: None,
         };
         assert!(should_notify(&instance(AgentState::Waiting), &config));
         assert!(should_notify(&instance(AgentState::WaitingReply), &config));
@@ -195,6 +196,7 @@ mod tests {
                 open_url: Some("http://127.0.0.1:3000".into()),
                 automatic_confirmation_mode: false,
                 informational: false,
+                usage: None,
             },
             0,
         )
@@ -224,6 +226,7 @@ mod tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: false,
+            usage: None,
         };
         let mut config = crate::config::Config::default();
         config.notifications_enabled = true;
@@ -252,6 +255,7 @@ mod tests {
             open_url: None,
             automatic_confirmation_mode: true,
             informational: false,
+            usage: None,
         };
         assert!(!should_notify(&waiting, &config));
         let reply = AgentInstance {

@@ -11,11 +11,44 @@ use crate::{
     display_settings, i18n, notification_action_label, notification_preferences, startup,
     startup_action_label, toggle_label,
 };
-use objc2::{rc::Retained, AnyThread};
-use objc2_app_kit::{NSColor, NSImage, NSImageSymbolConfiguration, NSMenu};
-use objc2_foundation::NSString;
+use objc2::{rc::Retained, runtime::AnyObject, AnyThread};
+use objc2_app_kit::{
+    NSColor, NSFont, NSFontAttributeName, NSImage, NSImageSymbolConfiguration, NSMenu,
+};
+use objc2_foundation::{NSAttributedString, NSAttributedStringKey, NSDictionary, NSString};
 use std::collections::HashMap;
 use tray_icon::menu::{ContextMenu, Menu};
+
+/// Draw the given top-level rows in a monospaced font so the resource summary's
+/// columns line up. Space padding alone cannot align them, because the menu's
+/// proportional font gives a name and its value different pixel widths.
+pub fn apply_monospaced(menu: &Menu, titles: &[String]) {
+    // `Menu::ns_menu` is supplied by muda's public ContextMenu trait; see
+    // `SymbolCache::apply` for the lifetime and main-thread reasoning.
+    let native_menu = unsafe { &*(menu.ns_menu().cast::<NSMenu>()) };
+    let size = NSFont::systemFontSize();
+    let font =
+        NSFont::userFixedPitchFontOfSize(size).unwrap_or_else(|| NSFont::systemFontOfSize(size));
+    // Reading an extern static is unsafe; the symbol is always present on the
+    // platforms this binary supports.
+    let key = unsafe { NSFontAttributeName };
+    let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> =
+        NSDictionary::from_retained_objects(&[key], &[font.into()]);
+    for item in native_menu.itemArray().iter() {
+        let title = item.title().to_string();
+        if !titles.iter().any(|candidate| *candidate == title) {
+            continue;
+        }
+        let attributed = unsafe {
+            NSAttributedString::initWithString_attributes(
+                NSAttributedString::alloc(),
+                &NSString::from_str(&title),
+                Some(&attributes),
+            )
+        };
+        item.setAttributedTitle(Some(&attributed));
+    }
+}
 
 #[derive(Default)]
 pub struct SymbolCache {
@@ -47,6 +80,9 @@ struct SettingsSignature {
     show_context_percent: bool,
     show_context_used: bool,
     show_context_total: bool,
+    show_cpu: bool,
+    show_memory: bool,
+    show_resources: bool,
     show_stopped_agents: bool,
     locale: String,
     conversation_window: String,
@@ -120,6 +156,9 @@ impl SettingsSignature {
             show_context_percent: config.show_context_percent,
             show_context_used: config.show_context_used,
             show_context_total: config.show_context_total,
+            show_cpu: config.show_cpu,
+            show_memory: config.show_memory,
+            show_resources: config.show_resources,
             show_stopped_agents: config.show_stopped_agents,
             locale: config.locale.clone(),
             conversation_window: config.conversation_window.clone(),
@@ -327,6 +366,9 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
             "context_percent" => config.show_context_percent,
             "context_used" => config.show_context_used,
             "context_total" => config.show_context_total,
+            "cpu" => config.show_cpu,
+            "memory" => config.show_memory,
+            "resources" => config.show_resources,
             "stopped_agents" => config.show_stopped_agents,
             _ => false,
         };

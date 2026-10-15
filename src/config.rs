@@ -31,6 +31,9 @@ pub struct Config {
     pub show_context_percent: bool,
     pub show_context_used: bool,
     pub show_context_total: bool,
+    pub show_cpu: bool,
+    pub show_memory: bool,
+    pub show_resources: bool,
     pub show_stopped_agents: bool,
     pub browser_tab_reuse: bool,
     pub locale: String,
@@ -56,6 +59,9 @@ impl Default for Config {
             show_context_percent: true,
             show_context_used: true,
             show_context_total: true,
+            show_cpu: true,
+            show_memory: true,
+            show_resources: true,
             show_stopped_agents: true,
             browser_tab_reuse: false,
             locale: "auto".into(),
@@ -138,6 +144,9 @@ mod tests {
         assert!(config.show_context_percent);
         assert!(config.show_context_used);
         assert!(config.show_context_total);
+        assert!(config.show_cpu);
+        assert!(config.show_memory);
+        assert!(config.show_resources);
         assert!(config.show_stopped_agents);
         assert_eq!(config.conversation_window, DEFAULT_CONVERSATION_WINDOW);
     }

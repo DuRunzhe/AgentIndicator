@@ -17,6 +17,11 @@ pub struct ProcessRecord {
     /// meaningful; its leading token can end mid-path when the path contains a
     /// space.
     pub command: String,
+    /// CPU usage percentage from `ps pcpu=`. On macOS this is a decaying
+    /// average over roughly the last minute, which is fine for a tray monitor.
+    pub cpu: f32,
+    /// Resident set size in bytes, converted from `ps rss=` (1024-byte blocks).
+    pub memory_bytes: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -48,7 +53,7 @@ const ROLLOUT_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 impl MacProcessSource {
     pub fn processes(&self) -> Vec<ProcessRecord> {
         let Ok(output) = Command::new("/bin/ps")
-            .args(["-axo", "pid=,ppid=,etime=,tty=,command="])
+            .args(["-axo", "pid=,ppid=,etime=,pcpu=,rss=,tty=,command="])
             .output()
         else {
             return vec![];
@@ -171,6 +176,9 @@ fn parse_process_line(line: &str, executables: &HashMap<u32, String>) -> Option<
     let pid = fields.next()?.parse().ok()?;
     let ppid = fields.next()?.parse().ok()?;
     let uptime = parse_etime(fields.next()?)?;
+    let cpu = fields.next()?.parse().unwrap_or(0.0);
+    // `rss` is reported in 1024-byte blocks on macOS/BSD.
+    let memory_bytes = fields.next()?.parse::<u64>().ok()?.saturating_mul(1024);
     let _tty = fields.next()?;
     let command = fields.collect::<Vec<_>>().join(" ");
     if command.is_empty() {
@@ -191,6 +199,8 @@ fn parse_process_line(line: &str, executables: &HashMap<u32, String>) -> Option<
         uptime,
         executable,
         command,
+        cpu,
+        memory_bytes,
     })
 }
 
@@ -259,7 +269,7 @@ mod tests {
     fn parses_ps_snapshot_line() {
         let executables = HashMap::from([(42, "/opt/bin/codex".to_owned())]);
         let record = parse_process_line(
-            "42 1 01:02 ttys001 /opt/bin/codex resume thread-id",
+            "42 1 01:02 3.5 20480 ttys001 /opt/bin/codex resume thread-id",
             &executables,
         )
         .unwrap();
@@ -268,12 +278,14 @@ mod tests {
         assert_eq!(record.uptime, Duration::from_secs(62));
         assert_eq!(record.executable, "/opt/bin/codex");
         assert_eq!(record.command, "/opt/bin/codex resume thread-id");
+        assert_eq!(record.cpu, 3.5);
+        assert_eq!(record.memory_bytes, 20480 * 1024);
     }
 
     #[test]
     fn falls_back_to_the_command_token_when_comm_is_missing() {
         let record =
-            parse_process_line("42 1 01:02 ttys001 /opt/bin/codex", &HashMap::new()).unwrap();
+            parse_process_line("42 1 01:02 0.0 0 ttys001 /opt/bin/codex", &HashMap::new()).unwrap();
         assert_eq!(record.executable, "/opt/bin/codex");
     }
 
