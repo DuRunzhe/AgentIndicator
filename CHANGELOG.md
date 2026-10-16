@@ -6,7 +6,7 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
-## [0.2.32-alpha.3] - 2026-10-16
+## [0.2.32-alpha.4] - 2026-10-16
 
 ### 新增
 

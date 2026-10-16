@@ -8,7 +8,7 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
-## [0.2.32-alpha.3] - 2026-10-16
+## [0.2.32-alpha.4] - 2026-10-16
 
 ### Added
 
