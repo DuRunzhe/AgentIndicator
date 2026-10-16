@@ -1221,32 +1221,34 @@ fn format_instance(instance: &AgentInstance, config: &Config) -> String {
         }
     }
     if let Some(usage) = &instance.usage {
-        // A GUI host serves many sessions in one process, so its figures are
-        // host-level: mark them so the number is not read as this session's.
-        // The marker only qualifies numbers, so it appears only when one does.
-        if usage.shared && (config.show_cpu || config.show_memory) {
-            text.push_str(&format!(" · {}", i18n::text("shared_host")));
-        }
-        if config.show_cpu {
-            text.push_str(&format!(" · CPU {:.1}%", usage.cpu));
-        }
-        if config.show_memory {
-            text.push_str(&format!(" · {}", short_bytes(usage.memory_bytes)));
+        // DeepSeek conversations run through one host process whose figures are
+        // host-level, and any other GUI host shared by sibling sessions is the
+        // same: leave them to the summary and never show them on a session row.
+        if !usage.shared && !instance.kind.starts_with("DeepSeek") {
+            if config.show_cpu {
+                text.push_str(&format!(" · CPU {:.1}%", usage.cpu));
+            }
+            if config.show_memory {
+                text.push_str(&format!(" · {}", short_bytes(usage.memory_bytes)));
+            }
         }
     }
     text
 }
 
-/// Two menu rows summarizing per-agent resource usage: the agent names, then
-/// the CPU/memory under each. Columns are padded to the wider of a name and its
-/// value so the numbers line up as closely as a proportional menu font allows.
-/// An agent with no live process reads `--/--` instead of `0`.
+/// Two menu rows summarizing per-agent resource usage. The first row carries
+/// the column titles and the second the CPU/memory under each, led by a
+/// `CPU/memory` stub so the numbers are self-describing. Columns are padded to
+/// the wider of a name and its value so the numbers line up as closely as a
+/// proportional menu font allows. An agent with no live process reads `--/--`
+/// instead of `0`. Host-level figures are summarized here only; a session row
+/// never renders them.
 fn resource_rows(instances: &[AgentInstance]) -> (String, String) {
     let totals = model::resource_totals(instances);
-    // The first column is the total over every agent, then one column per
-    // agent. Rows a host process shares are already de-duplicated per agent, so
-    // summing the columns cannot double count them.
-    let mut labels: Vec<String> = vec![i18n::text("resource_total").to_owned()];
+    // The leading stub names the value row; its header stays blank so the total
+    // and every agent line up with the figures below them.
+    let mut labels: Vec<String> = vec![String::new()];
+    labels.push(i18n::text("resource_total").to_owned());
     labels.extend(
         model::RESOURCE_AGENTS
             .iter()
@@ -1256,7 +1258,7 @@ fn resource_rows(instances: &[AgentInstance]) -> (String, String) {
     let total_memory = totals
         .iter()
         .fold(0u64, |sum, total| sum.saturating_add(total.memory_bytes));
-    let mut values: Vec<String> = Vec::with_capacity(labels.len());
+    let mut values: Vec<String> = vec![i18n::text("resource_stub").to_owned()];
     values.push(usage_text(
         totals.iter().any(|total| total.used),
         total_cpu,
@@ -1900,19 +1902,39 @@ mod usage_format_tests {
         let text = format_instance(&row, &config);
         assert!(text.contains("CPU 12.5%"), "{text}");
         assert!(text.contains("300M"), "{text}");
-        assert!(!text.contains(i18n::text("shared_host")), "{text}");
     }
 
     #[test]
-    fn a_shared_host_row_marks_its_usage() {
+    fn a_shared_host_row_hides_its_usage_and_carries_no_marker() {
         let config = Config::default();
         let row = instance(ProcessUsage {
             cpu: 1.0,
             memory_bytes: 1024 * 1024,
             shared: true,
         });
+        // Host-level figures stay in the summary, so the row shows no numbers
+        // and needs no marker to qualify them.
         let text = format_instance(&row, &config);
-        assert!(text.contains(i18n::text("shared_host")), "{text}");
+        assert!(!text.contains("CPU"), "{text}");
+        assert!(!text.contains("1M"), "{text}");
+        let (names, _) = resource_rows(&[row]);
+        assert!(!names.contains("宿主级"), "{names}");
+    }
+
+    #[test]
+    fn deepseek_rows_show_no_usage_even_without_a_shared_host() {
+        let config = Config::default();
+        let mut row = instance(ProcessUsage {
+            cpu: 2.0,
+            memory_bytes: 8 * 1024 * 1024,
+            shared: false,
+        });
+        row.kind = "DeepSeek Harness (terminal)".into();
+        // DeepSeek figures are only meaningful in the summary, so even a
+        // session-private row leaves them out.
+        let text = format_instance(&row, &config);
+        assert!(!text.contains("CPU"), "{text}");
+        assert!(!text.contains("8M"), "{text}");
     }
 
     #[test]
@@ -1930,8 +1952,6 @@ mod usage_format_tests {
         let text = format_instance(&row, &config);
         assert!(!text.contains("CPU"), "{text}");
         assert!(!text.contains("5M"), "{text}");
-        // The shared marker qualifies numbers, so it goes with them.
-        assert!(!text.contains(i18n::text("shared_host")), "{text}");
     }
 
     #[test]
@@ -1941,6 +1961,8 @@ mod usage_format_tests {
         assert!(names.contains(i18n::text("resource_total")), "{names}");
         assert!(names.contains("Claude"), "{names}");
         assert!(names.contains("DeepSeek"), "{names}");
+        // The value row leads with the CPU/memory stub describing its figures.
+        assert!(values.starts_with(i18n::text("resource_stub")), "{values}");
         assert_eq!(
             values.matches("--/--").count(),
             model::RESOURCE_AGENTS.len() + 1

@@ -10,7 +10,7 @@
 
 ## 安装
 
-当前已发布 **v0.2.32-alpha.2**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
+当前已发布 **v0.2.32-alpha.3**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
 
 ### curl（macOS / Linux）
 
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.32-alpha.2 sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.32-alpha.3 sh
 ```
 
 指定安装目录：
@@ -219,8 +219,8 @@ agent-status-indicator --check-update
 - `--check-update`：向 GitHub 查询最新版本并打印结果，不启动托盘。
 - 单击托盘图标展开菜单：每行以统一格式 `Kind (项目) · 标题` 显示会话（Claude、Codex、ChatGPT、OpenCode、DeepSeek Harness、Pi 均如此，标题缺失时只保留 `Kind (项目)`），并按“等待确认 → 等待回复 → 进行中 → 就绪”排序，附带模型、上下文、时长与 CPU/内存占用；点击存活实例可跳回对应终端、浏览器会话或把 DeepSeek Harness 桌面端窗口带到前台。
 - 系统通知默认关闭，可在“设置”中开启，并调整等待确认、等待回复及自动确认模式下的通知。
-- 会话列表下方、设置上方按 Agent 汇总一行「资源汇总」：最左一列为所有 Agent 的总计，其余为 Claude / Codex / OpenCode / DeepSeek / Pi 各一列；第一行是列名，第二行是对应的 `CPU/内存`，横向并排；两行使用等宽字体以保证列对齐，未运行的 Agent 仍占位显示 `--/--`。宿主的多个会话（ChatGPT 与 DeepSeek 桌面端）按进程去重，不会重复累加，Codex 与 ChatGPT 合并为「Codex」一列。可在“设置”里用“资源汇总”开关关闭。
-- “设置”提供九项显示选项（时长、模型、上下文占比/已用/总量、CPU、内存、资源汇总、已停止 Agent）、语言、开机自启及 DeepSeek 浏览器标签页复用。CPU 与内存按会话的**整棵进程树**汇总（macOS 从已有的 `ps` 采样读取 `pcpu`/`rss`，Windows/Linux 复用已刷新的 `sysinfo` 快照），无额外进程拉起；ChatGPT 与 DeepSeek Harness 桌面端这类**一个进程承载多个会话**的宿主行，其数值为宿主级、无法拆分到单个会话，行内会显式标注“宿主级(共享)”。会话显示范围按来源**分成两组独立配置**：「ChatGPT 会话显示范围」与「DeepSeek Harness 会话显示范围」，各自支持 15 分钟、1 小时、12 小时、24 小时（默认）或全部；进行中、等待确认/回复或异常的会话始终保留。二者分别持久化、分别作用，改变其中一组不影响另一组。
+- 会话列表下方、设置上方按 Agent 汇总一行「资源汇总」：最左侧是 `CPU/内存` 数值说明，其后第一列为所有 Agent 的总计，其余为 Claude / Codex / OpenCode / DeepSeek / Pi 各一列；第一行是列名，第二行是对应的 `CPU/内存`，横向并排；两行使用等宽字体以保证列对齐，未运行的 Agent 仍占位显示 `--/--`。宿主的多个会话（ChatGPT 与 DeepSeek 桌面端）按进程去重，不会重复累加，Codex 与 ChatGPT 合并为「Codex」一列。可在“设置”里用“资源汇总”开关关闭。
+- “设置”提供九项显示选项（时长、模型、上下文占比/已用/总量、CPU、内存、资源汇总、已停止 Agent）、语言、开机自启及 DeepSeek 浏览器标签页复用。CPU 与内存按会话的**整棵进程树**汇总（macOS 从已有的 `ps` 采样读取 `pcpu`/`rss`，Windows/Linux 复用已刷新的 `sysinfo` 快照），无额外进程拉起；ChatGPT 与 DeepSeek Harness 桌面端这类**一个进程承载多个会话**的宿主行，其数值为宿主级、无法拆分到单个会话；DeepSeek 的各个会话条目以及这类宿主行都不再显示 CPU 与内存，数值只在汇总中出现。会话显示范围按来源**分成两组独立配置**：「ChatGPT 会话显示范围」与「DeepSeek Harness 会话显示范围」，各自支持 15 分钟、1 小时、12 小时、24 小时（默认）或全部；进行中、等待确认/回复或异常的会话始终保留。二者分别持久化、分别作用，改变其中一组不影响另一组。
 - 点击“设置”中的 Claude 上下文采集菜单项可安装或卸载采集器。安装会配置 Claude 的 `statusLine`，保留并转发原有命令；卸载会还原原配置。
 - “关于”面板每次打开都会检查 GitHub 最新版本；有新版本时按钮变为“更新到 x.y.z”，点击后显示进度并在下载完成后自动安装、重启。
 - 已按上文加入系统应用后，也可以直接从图形启动器启动。
@@ -349,7 +349,7 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 - [x] OpenCode SQLite 状态、模型和上下文读取
 - [x] 等待态原生通知与 0/60/180 秒提醒；点击通知聚焦对应终端或 DeepSeek 浏览器会话
 - [x] macOS 按 TTY 精确定位 Terminal/iTerm 标签页
-- [x] 原生设置菜单、九项显示配置（含 CPU/内存、宿主级共享标注与按 Agent 的资源汇总）和 macOS 登录启动设置
+- [x] 原生设置菜单、九项显示配置（含 CPU/内存与按 Agent 的资源汇总）和 macOS 登录启动设置
 - [x] macOS LaunchAgent、Windows Startup、Linux XDG autostart 登录启动
 - [ ] Windows/Linux 对既有终端窗口的精确聚焦（实现已合入：Windows 直接走 Win32 还原并置前所属终端窗口，Linux 沿进程树定位终端模拟器窗口；待真机验收后勾选）
 
