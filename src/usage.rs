@@ -207,11 +207,21 @@ pub fn window_start(period: Period, now: SystemTime) -> i64 {
     let now = OffsetDateTime::from_unix_timestamp_nanos(epoch_millis(now) as i128 * 1_000_000)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH);
     let offset = UtcOffset::local_offset_at(now).unwrap_or(UtcOffset::UTC);
-    window_start_at(period, now, offset)
+    let boundary = boundary_at(period, now, offset);
+    // A DST change between local midnight and "now" moves the boundary by an
+    // hour, so the offset is resolved once more at the boundary itself.
+    let midnight = OffsetDateTime::from_unix_timestamp_nanos(boundary as i128 * 1_000_000).ok();
+    match midnight.map(UtcOffset::local_offset_at) {
+        Some(Ok(boundary_offset)) if boundary_offset != offset => {
+            boundary_at(period, now, boundary_offset)
+        }
+        _ => boundary,
+    }
 }
 
-/// The same boundary for an explicit offset, which is what the tests exercise.
-fn window_start_at(period: Period, now: OffsetDateTime, offset: UtcOffset) -> i64 {
+/// The boundary for an explicit offset. Kept free of system-timezone lookups so
+/// the tests below do not depend on the machine the suite runs on.
+fn boundary_at(period: Period, now: OffsetDateTime, offset: UtcOffset) -> i64 {
     let local = now.to_offset(offset);
     let mut date = local.date();
     match period {
@@ -232,11 +242,10 @@ fn window_start_at(period: Period, now: OffsetDateTime, offset: UtcOffset) -> i6
             }
         }
     }
-    let midnight = date.with_time(Time::MIDNIGHT);
-    // Resolve the offset again at the boundary so a DST change between midnight
-    // and "now" cannot slide the window by an hour.
-    let offset = UtcOffset::local_offset_at(midnight.assume_utc()).unwrap_or(offset);
-    midnight.assume_offset(offset).unix_timestamp() * 1_000
+    date.with_time(Time::MIDNIGHT)
+        .assume_offset(offset)
+        .unix_timestamp()
+        * 1_000
 }
 
 /// A scan that keeps its parsed files between calls.
@@ -432,10 +441,26 @@ struct Totals {
 #[derive(Default)]
 struct Offsets {
     by_hour: HashMap<i64, i64>,
+    /// A fixed offset for the tests: the day buckets they assert on must not
+    /// move with the timezone of the machine running the suite.
+    #[cfg(test)]
+    fixed: Option<i64>,
 }
 
 impl Offsets {
+    #[cfg(test)]
+    fn fixed(seconds: i32) -> Self {
+        Self {
+            by_hour: HashMap::new(),
+            fixed: Some(i64::from(seconds) * 1_000),
+        }
+    }
+
     fn millis(&mut self, at: i64) -> i64 {
+        #[cfg(test)]
+        if let Some(fixed) = self.fixed {
+            return fixed;
+        }
         let hour = at.div_euclid(3_600_000);
         *self.by_hour.entry(hour).or_insert_with(|| {
             OffsetDateTime::from_unix_timestamp_nanos(at as i128 * 1_000_000)
@@ -942,7 +967,7 @@ mod tests {
     /// day buckets are compared without depending on the machine's timezone.
     fn totals(kind: Kind, root: &Path, end: i64) -> Totals {
         let mut scanner = Scanner::new();
-        let mut offsets = Offsets::default();
+        let mut offsets = Offsets::fixed(0);
         let last_day = offsets.day(end);
         scanner.jsonl_totals(kind, root, 0, 0, last_day, &mut offsets)
     }
@@ -951,7 +976,7 @@ mod tests {
     fn day_window_starts_at_local_midnight() {
         let now = utc("2026-10-17T05:30:00Z");
         let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
-        let start = window_start_at(Period::Day, now, offset);
+        let start = boundary_at(Period::Day, now, offset);
         assert_eq!(start, 1_792_166_400_000, "2026-10-17T00:00+08:00");
     }
 
@@ -960,7 +985,7 @@ mod tests {
         // 2026-10-17 is a Saturday, so the week starts on Monday the 12th.
         let now = utc("2026-10-17T05:30:00Z");
         let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
-        let start = window_start_at(Period::Week, now, offset);
+        let start = boundary_at(Period::Week, now, offset);
         assert_eq!(start, 1_791_734_400_000, "2026-10-12T00:00+08:00");
     }
 
@@ -968,7 +993,7 @@ mod tests {
     fn month_window_starts_on_the_first() {
         let now = utc("2026-10-17T05:30:00Z");
         let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
-        let start = window_start_at(Period::Month, now, offset);
+        let start = boundary_at(Period::Month, now, offset);
         assert_eq!(start, 1_790_784_000_000, "2026-10-01T00:00+08:00");
     }
 
@@ -978,8 +1003,8 @@ mod tests {
         // midnight — the boundary must not be derived from the UTC date.
         let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
         assert_eq!(
-            window_start_at(Period::Day, utc("2026-10-17T15:30:00Z"), offset),
-            window_start_at(Period::Day, utc("2026-10-17T00:00:01Z"), offset)
+            boundary_at(Period::Day, utc("2026-10-17T15:30:00Z"), offset),
+            boundary_at(Period::Day, utc("2026-10-17T00:00:01Z"), offset)
         );
     }
 
@@ -1098,7 +1123,7 @@ mod tests {
         // From the 17th on, only the last two turns count: the earlier deltas
         // stay in their own day bucket instead of inflating today.
         let mut scanner = Scanner::new();
-        let mut offsets = Offsets::default();
+        let mut offsets = Offsets::fixed(0);
         let start = parse_rfc3339_millis("2026-10-17T00:00:00Z").unwrap();
         let start_day = offsets.day(start);
         let last_day = offsets.day(end);
@@ -1208,7 +1233,7 @@ mod tests {
             ),
         );
         let mut scanner = Scanner::new();
-        let mut offsets = Offsets::default();
+        let mut offsets = Offsets::fixed(0);
         assert_eq!(scanner.files.len(), 0);
         let first = scanner
             .bucket(Kind::Pi, &path, &mut offsets)
