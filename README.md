@@ -10,7 +10,7 @@
 
 ## 安装
 
-当前已发布 **v0.2.32-alpha.4**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
+当前已发布 **v0.2.32-alpha.5**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
 
 ### curl（macOS / Linux）
 
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.32-alpha.4 sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.32-alpha.5 sh
 ```
 
 指定安装目录：
@@ -209,18 +209,21 @@ winget upgrade --id DuRunzhe.AgentStatusIndicator
 agent-status-indicator
 agent-status-indicator --diagnose
 agent-status-indicator --diagnose-deepseek-desktop
+agent-status-indicator --diagnose-usage
 agent-status-indicator --debug-ui
 agent-status-indicator --check-update
 ```
 
 - `--diagnose`：打印当前探测到的 Agent、会话与状态，不启动托盘。
 - `--diagnose-deepseek-desktop`：只诊断 DeepSeek Harness 桌面端：识别到的宿主进程、所用 `DSH_HOME`、读到的会话，以及一次会话缓存扫描（冷读/稳态）的耗时，不启动托盘。
+- `--diagnose-usage`：打印当前维度的 Token 用量（加 `--usage-period week|month` 换维度，加 `--render` 输出与菜单完全一致的三列表格），不启动托盘。
 - `--debug-ui`：调试模式，把托盘 UI 状态写入 `~/.agent-status-indicator-ui.json`。
 - `--check-update`：向 GitHub 查询最新版本并打印结果，不启动托盘。
 - 单击托盘图标展开菜单：每行以统一格式 `Kind (项目) · 标题` 显示会话（Claude、Codex、ChatGPT、OpenCode、DeepSeek Harness、Pi 均如此，标题缺失时只保留 `Kind (项目)`），并按“等待确认 → 等待回复 → 进行中 → 就绪”排序，附带模型、上下文、时长与 CPU/内存占用；点击存活实例可跳回对应终端、浏览器会话或把 DeepSeek Harness 桌面端窗口带到前台。
 - 系统通知默认关闭，可在“设置”中开启，并调整等待确认、等待回复及自动确认模式下的通知。
 - 会话列表下方、设置上方按 Agent 汇总一行「资源汇总」：最左侧是 `CPU/内存` 数值说明，其后第一列为所有 Agent 的总计，其余为 Claude / Codex / OpenCode / DeepSeek / Pi 各一列；第一行是列名，第二行是对应的 `CPU/内存`，横向并排；两行使用等宽字体以保证列对齐，未运行的 Agent 仍占位显示 `--/--`。宿主的多个会话（ChatGPT 与 DeepSeek 桌面端）按进程去重，不会重复累加，Codex 与 ChatGPT 合并为「Codex」一列。可在“设置”里用“资源汇总”开关关闭。
-- “设置”提供九项显示选项（时长、模型、上下文占比/已用/总量、CPU、内存、资源汇总、已停止 Agent）、语言、开机自启及 DeepSeek 浏览器标签页复用。CPU 与内存按会话的**整棵进程树**汇总（macOS 从已有的 `ps` 采样读取 `pcpu`/`rss`，Windows/Linux 复用已刷新的 `sysinfo` 快照），无额外进程拉起；ChatGPT 与 DeepSeek Harness 桌面端这类**一个进程承载多个会话**的宿主行，其数值为宿主级、无法拆分到单个会话；DeepSeek 的各个会话条目以及这类宿主行都不再显示 CPU 与内存，数值只在汇总中出现。会话显示范围按来源**分成两组独立配置**：「ChatGPT 会话显示范围」与「DeepSeek Harness 会话显示范围」，各自支持 15 分钟、1 小时、12 小时、24 小时（默认）或全部；进行中、等待确认/回复或异常的会话始终保留。二者分别持久化、分别作用，改变其中一组不影响另一组。
+- 资源汇总下方是 **Token 用量表**：表头上方一行是「日 / 周 / 月」单选切换，列为 `输入/命中`、`输出/命中`、`费用`，每行一个 Agent，末行为当前维度总计。数字全部从各 Agent 自身会话记录重算，不额外落盘（详见下文「Token 用量表」）。
+- “设置”提供十项显示选项（时长、模型、上下文占比/已用/总量、CPU、内存、资源汇总、Token 用量、已停止 Agent）、语言、开机自启及 DeepSeek 浏览器标签页复用。CPU 与内存按会话的**整棵进程树**汇总（macOS 从已有的 `ps` 采样读取 `pcpu`/`rss`，Windows/Linux 复用已刷新的 `sysinfo` 快照），无额外进程拉起；ChatGPT 与 DeepSeek Harness 桌面端这类**一个进程承载多个会话**的宿主行，其数值为宿主级、无法拆分到单个会话；DeepSeek 的各个会话条目以及这类宿主行都不再显示 CPU 与内存，数值只在汇总中出现。会话显示范围按来源**分成两组独立配置**：「ChatGPT 会话显示范围」与「DeepSeek Harness 会话显示范围」，各自支持 15 分钟、1 小时、12 小时、24 小时（默认）或全部；进行中、等待确认/回复或异常的会话始终保留。二者分别持久化、分别作用，改变其中一组不影响另一组。
 - 点击“设置”中的 Claude 上下文采集菜单项可安装或卸载采集器。安装会配置 Claude 的 `statusLine`，保留并转发原有命令；卸载会还原原配置。
 - “关于”面板每次打开都会检查 GitHub 最新版本；有新版本时按钮变为“更新到 x.y.z”，点击后显示进度并在下载完成后自动安装、重启。
 - 已按上文加入系统应用后，也可以直接从图形启动器启动。
@@ -302,6 +305,20 @@ DeepSeek Harness 终端会话与桌面端走两条路径：终端 `dsh` 进程�
 - **未知事件被计数而非静默忽略**：事件类型表对照 `dsh-session` 的官方清单（59 类）逐项覆盖，`--diagnose-deepseek-desktop` 会输出每个会话的 `unknownEvents`；上游新增事件类型时会显示为非零数字，而不是变成一次静默误判。
 - **格式变动可见**：解析容错（不因一份坏文档让托盘失效），但每一次偏离预期形状都被计数成"格式健康度"：投影版本不符、结构改名、JSON 不可读、重试预算字段缺失、profile 目录不存在。健康度不达标时菜单里会出现一行灰色告警（如「DeepSeek Harness 设定档格式已变更 (N)」），而不是安静地少几个会话——这正是"空列表"和"应用空闲"无法区分的问题。`scripts/verify-format-mutations.sh` 用 6 种上游格式变异验证这套机制。
 - 终端与桌面两条读取器**共用同一份**事件分类与时间线实现，不各自维护一套规则。
+
+### Token 用量表
+
+托盘在 CPU/内存汇总下方展示一张用量表：表头上方一行是 **日 / 周 / 月** 单选切换（单行三态，点击前进），表格列为 `输入/命中`、`输出/命中`、`费用`，每行一个 Agent（Claude / Codex / OpenCode / DeepSeek / Pi），最后一行是当前维度总计。所有数字都由每 10 秒一轮的重算从各 Agent 自己的会话记录推导，**不额外写入任何账本**；进程内只缓存"已解析文件的按本地日分桶结果"，以 mtime + 文件长度失效，稳态一轮约 2 ms。
+
+| Agent | 数据来源 | 周期归属 |
+|---|---|---|
+| Codex | rollout 的 `token_count`（线程累计值取差） | 事件时间戳 |
+| Claude Code | transcript 每条 assistant 的 `usage`（按 `message.id` 去重） | 记录时间戳 |
+| Pi | session JSONL 每条 assistant 的 `usage` / `cost`（按 `responseId` 去重） | 记录时间戳 |
+| OpenCode | `opencode.db` 的 `message` 表一条聚合 SQL（含真实 `cost`） | `time_created` |
+| DeepSeek Harness | 投影缓存 `rows.tokenUsage.totals` | 会话最后活跃时间（源只有会话累计值） |
+
+口径统一为：`输入` 含缓存读/写，`命中` 为其中的缓存读；`输出` 含推理 token。金额只有 OpenCode 与 Pi 会给出真实数字，Claude / Codex / DeepSeek 的记录里没有计费字段，显示 `—`。`--diagnose-usage [--usage-period week|month] [--render]` 可打印与本表完全一致的内容，便于与各 Agent 自带的 `/stats` 对数。
 
 ### 依赖
 

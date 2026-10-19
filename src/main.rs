@@ -23,6 +23,7 @@ mod session;
 mod startup;
 mod terminal;
 mod update;
+mod usage;
 mod web;
 
 use anyhow::Result;
@@ -49,7 +50,7 @@ use tray_icon::{
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::WindowId,
 };
 
@@ -90,6 +91,30 @@ fn main() -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&detector::diagnose_deepseek_desktop())?
         );
+        return Ok(());
+    }
+    // The token table's own numbers, for checking them against what each agent
+    // reports for itself: `--diagnose-usage [--usage-period week|month]`.
+    if arguments
+        .iter()
+        .any(|argument| argument == "--diagnose-usage")
+    {
+        let period = arguments
+            .iter()
+            .position(|argument| argument == "--usage-period")
+            .and_then(|index| arguments.get(index + 1))
+            .map(|value| usage::Period::from_key(value))
+            .unwrap_or(usage::Period::Day);
+        let snapshot = usage::scan(period);
+        if arguments.iter().any(|argument| argument == "--render") {
+            // The menu rows exactly as the tray would show them.
+            println!("{}", usage_period_label(snapshot.period));
+            for line in usage_lines(&snapshot) {
+                println!("{line}");
+            }
+        } else {
+            println!("{}", serde_json::to_string_pretty(&snapshot)?);
+        }
         return Ok(());
     }
     if arguments
@@ -147,7 +172,13 @@ fn main() -> Result<()> {
             }
         }
     });
-    let mut app = App::new(refresh_tx, latest_snapshot, debug_ui, instance_lock);
+    let mut app = App::new(
+        refresh_tx,
+        latest_snapshot,
+        debug_ui,
+        instance_lock,
+        event_loop.create_proxy(),
+    );
     event_loop.run_app(&mut app)?;
     if let Some(executable) = app.take_restart_target() {
         // Release the single-instance lock before the replacement starts.
@@ -173,6 +204,8 @@ struct App {
     notification_permission_tx: Sender<bool>,
     notification_permission_rx: Receiver<bool>,
     pending_notification_test: bool,
+    /// Recomputes the token table in the background; the menu only reads it.
+    usage: usage::Worker,
     config: Config,
     menu: Option<MenuView>,
     #[cfg(target_os = "macos")]
@@ -189,6 +222,8 @@ struct App {
 
 enum UserEvent {
     Scan,
+    /// A fresh token table is available in [`App::usage`].
+    Usage,
 }
 enum WorkerCommand {
     Refresh,
@@ -230,6 +265,12 @@ struct MenuView {
     /// The two per-agent resource rows (names, then CPU/memory). Empty when the
     /// summary is turned off.
     resource: Vec<MenuItem>,
+    /// The day/week/month switch above the token table. Absent when the table
+    /// is turned off.
+    usage_period: Option<IconMenuItem>,
+    /// The token table itself: column titles, one row per agent, and the total.
+    /// Empty when the table is turned off.
+    usage: Vec<MenuItem>,
     notifications: IconMenuItem,
     notification_preferences: Vec<IconMenuItem>,
     test_notification: IconMenuItem,
@@ -245,9 +286,13 @@ impl App {
         latest_snapshot: Arc<Mutex<Option<Vec<AgentInstance>>>>,
         debug_ui: bool,
         instance_lock: fs::File,
+        usage_proxy: EventLoopProxy<UserEvent>,
     ) -> Self {
         let config = Config::load();
         i18n::set_locale(&config.locale);
+        let usage = usage::Worker::spawn(config.usage_period(), move || {
+            let _ = usage_proxy.send_event(UserEvent::Usage);
+        });
         let (action_tx, action_rx) = unbounded();
         let (notification_action_tx, notification_action_rx) = unbounded();
         let (notification_permission_tx, notification_permission_rx) = unbounded();
@@ -267,6 +312,7 @@ impl App {
             notification_permission_tx,
             notification_permission_rx,
             pending_notification_test: false,
+            usage,
             config,
             menu: None,
             #[cfg(target_os = "macos")]
@@ -281,6 +327,22 @@ impl App {
             restart_target: None,
         }
     }
+    /// The menu rows that need a fixed-pitch font to line up: the resource
+    /// summary and the token table, in the order they appear. Used only for the
+    /// macOS attributed-title pass.
+    #[cfg(target_os = "macos")]
+    fn table_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.config.show_resources {
+            let (names, values) = resource_rows(&self.current);
+            lines.push(names);
+            lines.push(values);
+        }
+        if self.config.show_usage {
+            lines.extend(usage_lines(&self.usage.snapshot()));
+        }
+        lines
+    }
     fn rebuild(&mut self) {
         let signature: Vec<_> = visible_instances(&self.current, &self.config)
             .map(|instance| (instance.pid, instance.state))
@@ -293,11 +355,14 @@ impl App {
             let menu = self.create_menu(signature);
             #[cfg(target_os = "macos")]
             self.macos_menu_symbols.apply(&menu.menu, &self.config);
-            // The summary's columns only line up in a monospaced font.
+            // The summary's and the token table's columns only line up in a
+            // monospaced font.
             #[cfg(target_os = "macos")]
-            if self.config.show_resources {
-                let (names, values) = resource_rows(&self.current);
-                macos_menu_symbols::apply_monospaced(&menu.menu, &[names, values]);
+            {
+                let lines = self.table_lines();
+                if !lines.is_empty() {
+                    macos_menu_symbols::apply_monospaced(&menu.menu, &lines);
+                }
             }
             if let Some(tray) = &self.tray {
                 // A new root NSMenu avoids AppKit retaining titles from the prior
@@ -317,6 +382,10 @@ impl App {
             self.update_tray_status(true);
             return;
         }
+        // Built before the menu is borrowed: the fixed-pitch pass needs the
+        // title of every row it applies to.
+        #[cfg(target_os = "macos")]
+        let table_lines = self.table_lines();
         if let Some(menu) = &mut self.menu {
             for (item, instance) in menu
                 .instances
@@ -331,11 +400,21 @@ impl App {
                 for (item, text) in menu.resource.iter().zip([names, values]) {
                     item.set_text(text);
                 }
-                #[cfg(target_os = "macos")]
-                {
-                    let (names, values) = resource_rows(&self.current);
-                    macos_menu_symbols::apply_monospaced(&menu.menu, &[names, values]);
+            }
+            if !menu.usage.is_empty() {
+                let snapshot = self.usage.snapshot();
+                for (item, text) in menu.usage.iter().zip(usage_lines(&snapshot)) {
+                    item.set_text(text);
                 }
+                if let Some(item) = &menu.usage_period {
+                    item.set_text(usage_period_label(snapshot.period));
+                }
+            }
+            // Applying the fixed-pitch font is a menu traversal per refresh, so
+            // it happens once and only while a table row exists.
+            #[cfg(target_os = "macos")]
+            if !menu.resource.is_empty() || !menu.usage.is_empty() {
+                macos_menu_symbols::apply_monospaced(&menu.menu, &table_lines);
             }
             menu.notifications
                 .set_text(notification_action_label(self.config.notifications_enabled));
@@ -422,6 +501,29 @@ impl App {
                 let _ = menu.append(&item);
                 resource_items.push(item);
             }
+        }
+        // The token table sits below the CPU/memory summary: a day/week/month
+        // switch, a header row, one row per agent and a total. Its numbers come
+        // from the agents' own session records, recomputed in the background.
+        let mut usage_rows = Vec::new();
+        let mut usage_period_item = None;
+        if self.config.show_usage {
+            let _ = menu.append(&PredefinedMenuItem::separator());
+            let snapshot = self.usage.snapshot();
+            let switch = IconMenuItem::with_id(
+                "usage_period",
+                usage_period_label(snapshot.period),
+                true,
+                None,
+                None,
+            );
+            let _ = menu.append(&switch);
+            for text in usage_lines(&snapshot) {
+                let item = MenuItem::new(text, false, None);
+                let _ = menu.append(&item);
+                usage_rows.push(item);
+            }
+            usage_period_item = Some(switch);
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
         let settings = Submenu::new(i18n::menu("settings"), true);
@@ -592,6 +694,8 @@ impl App {
             signature,
             instances: instance_items,
             resource: resource_items,
+            usage_period: usage_period_item,
+            usage: usage_rows,
             notifications: notification_item,
             notification_preferences: notification_preference_items,
             test_notification,
@@ -833,6 +937,16 @@ impl ApplicationHandler<UserEvent> for App {
                 let _ = self.refresh_tx.try_send(WorkerCommand::Refresh);
             } else if id == "restart_detector" {
                 let _ = self.refresh_tx.try_send(WorkerCommand::Restart);
+            } else if id == "usage_period" {
+                // The switch is one row with three states: each click advances
+                // day -> week -> month, and the background worker rescans at
+                // once instead of waiting for its next tick.
+                let next = self.config.usage_period().next();
+                self.config.usage_period = next.key().into();
+                self.config.save();
+                self.usage.set_period(next);
+                self.menu = None;
+                self.rebuild();
             } else if let Some(key) = id.strip_prefix("display:") {
                 toggle_config(&mut self.config, key);
                 self.config.save();
@@ -893,7 +1007,19 @@ impl ApplicationHandler<UserEvent> for App {
         ));
     }
     fn user_event(&mut self, _: &ActiveEventLoop, event: UserEvent) {
-        let UserEvent::Scan = event;
+        match event {
+            // The table's rows already exist; only their text changed.
+            UserEvent::Usage => self.rebuild(),
+            UserEvent::Scan => self.apply_scan(),
+        }
+    }
+    fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+}
+
+impl App {
+    /// Take the newest status snapshot, notify on what needs attention, and
+    /// redraw the menu.
+    fn apply_scan(&mut self) {
         let Some(latest) = self.latest_snapshot.lock().expect("snapshot lock").take() else {
             return;
         };
@@ -908,7 +1034,6 @@ impl ApplicationHandler<UserEvent> for App {
             write_ui_diagnosis(&self.current);
         }
     }
-    fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
 }
 
 impl App {
@@ -1096,7 +1221,7 @@ fn visible_instances<'a>(
         .filter(move |instance| instance.state != AgentState::Stopped || show_stopped)
 }
 
-fn display_settings() -> [(&'static str, &'static str); 9] {
+fn display_settings() -> [(&'static str, &'static str); 10] {
     [
         ("duration", i18n::text("show_duration")),
         ("model", i18n::text("show_model")),
@@ -1106,6 +1231,7 @@ fn display_settings() -> [(&'static str, &'static str); 9] {
         ("cpu", i18n::text("show_cpu")),
         ("memory", i18n::text("show_memory")),
         ("resources", i18n::text("show_resources")),
+        ("usage", i18n::text("show_usage")),
         ("stopped_agents", i18n::text("show_stopped_agents")),
     ]
 }
@@ -1156,6 +1282,7 @@ fn config_value(config: &Config, key: &str) -> bool {
         "cpu" => config.show_cpu,
         "memory" => config.show_memory,
         "resources" => config.show_resources,
+        "usage" => config.show_usage,
         "stopped_agents" => config.show_stopped_agents,
         _ => false,
     }
@@ -1171,6 +1298,7 @@ fn toggle_config(config: &mut Config, key: &str) {
         "cpu" => config.show_cpu = !config.show_cpu,
         "memory" => config.show_memory = !config.show_memory,
         "resources" => config.show_resources = !config.show_resources,
+        "usage" => config.show_usage = !config.show_usage,
         "stopped_agents" => config.show_stopped_agents = !config.show_stopped_agents,
         _ => {}
     }
@@ -1290,6 +1418,117 @@ fn usage_text(used: bool, cpu: f32, memory_bytes: u64) -> String {
     } else {
         "--/--".to_owned()
     }
+}
+
+/// What a column reads when a source has nothing to report for the window.
+const USAGE_EMPTY: &str = "—";
+
+/// The token table, one string per menu row: the column titles, one row per
+/// agent and the total. Cells are padded to fixed widths so the numbers line up
+/// under their headers the way the CPU/memory summary above already does.
+fn usage_lines(snapshot: &usage::UsageSnapshot) -> Vec<String> {
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(snapshot.agents.len() + 2);
+    rows.push(vec![
+        String::new(),
+        i18n::text("usage_input").to_owned(),
+        i18n::text("usage_output").to_owned(),
+        i18n::text("usage_cost").to_owned(),
+    ]);
+    for agent in &snapshot.agents {
+        rows.push(match agent.counts {
+            Some(counts) => vec![
+                agent.kind.to_owned(),
+                usage_pair(counts.input, counts.input_cached),
+                usage_pair(counts.output, counts.output_cached),
+                usage_cost(counts.cost),
+            ],
+            None => vec![
+                agent.kind.to_owned(),
+                USAGE_EMPTY.into(),
+                USAGE_EMPTY.into(),
+                USAGE_EMPTY.into(),
+            ],
+        });
+    }
+    let total = &snapshot.total;
+    rows.push(if snapshot.has_data {
+        vec![
+            i18n::text("resource_total").to_owned(),
+            usage_pair(total.input, total.input_cached),
+            usage_pair(total.output, total.output_cached),
+            usage_cost(total.cost),
+        ]
+    } else {
+        vec![
+            i18n::text("resource_total").to_owned(),
+            USAGE_EMPTY.into(),
+            USAGE_EMPTY.into(),
+            USAGE_EMPTY.into(),
+        ]
+    });
+    align_usage_table(&rows)
+}
+
+/// A `total/hit` cell: the column's full count and how much of it was served
+/// from cache.
+fn usage_pair(total: u64, cached: u64) -> String {
+    format!("{}/{}", short_tokens(total), short_tokens(cached))
+}
+
+fn usage_cost(cost: Option<f64>) -> String {
+    match cost {
+        Some(value) => format!("${value:.2}"),
+        None => USAGE_EMPTY.into(),
+    }
+}
+
+/// The day/week/month switch above the table. One row carries all three options
+/// so the control reads as a single radio group; clicking it advances the
+/// selection.
+fn usage_period_label(period: usage::Period) -> String {
+    let options: Vec<String> = usage::Period::ALL
+        .iter()
+        .map(|candidate| {
+            let mark = if *candidate == period { "●" } else { "○" };
+            format!("{mark} {}", candidate.label())
+        })
+        .collect();
+    format!("{}:  {}", i18n::text("usage_period"), options.join("   "))
+}
+
+/// Pad every cell to its column width. The agent column is left-aligned and the
+/// numbers are right-aligned, so digits stack under their headers.
+fn align_usage_table(rows: &[Vec<String>]) -> Vec<String> {
+    let columns = rows.first().map(Vec::len).unwrap_or(0);
+    let mut widths = vec![0; columns];
+    for row in rows {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(display_width(cell));
+        }
+    }
+    rows.iter()
+        .map(|row| {
+            let mut line = String::new();
+            for (index, cell) in row.iter().enumerate() {
+                if index > 0 {
+                    line.push_str("  ");
+                }
+                if index == 0 {
+                    line.push_str(&pad_to(cell, widths[index]));
+                } else {
+                    line.push_str(&pad_start(cell, widths[index]));
+                }
+            }
+            line.trim_end().to_owned()
+        })
+        .collect()
+}
+
+/// The mirror of [`pad_to`] used by the numeric columns.
+fn pad_start(value: &str, width: usize) -> String {
+    let mut text = " ".repeat(width.saturating_sub(display_width(value)));
+    text.push_str(value);
+    text
 }
 
 /// Pad `value` with spaces to `width` monospace cells. Padding by cell count
@@ -1855,7 +2094,8 @@ mod stopped_visibility_tests {
     #[test]
     fn display_settings_include_stopped_agents_toggle() {
         let keys = display_settings();
-        assert_eq!(keys.len(), 9);
+        assert_eq!(keys.len(), 10);
+        assert!(keys.iter().any(|(key, _)| *key == "usage"));
         assert!(keys.iter().any(|(key, _)| *key == "stopped_agents"));
         assert!(keys.iter().any(|(key, _)| *key == "cpu"));
         assert!(keys.iter().any(|(key, _)| *key == "memory"));
@@ -1865,6 +2105,123 @@ mod stopped_visibility_tests {
             ..Config::default()
         };
         assert!(!config_value(&hidden, "stopped_agents"));
+    }
+}
+
+#[cfg(test)]
+mod usage_table_tests {
+    use super::*;
+    use crate::usage::{TokenCounts, UsageSnapshot};
+
+    fn counts(input: u64, cached: u64, output: u64, cost: Option<f64>) -> TokenCounts {
+        TokenCounts {
+            input,
+            input_cached: cached,
+            output,
+            output_cached: 0,
+            cost,
+        }
+    }
+
+    fn snapshot(agents: Vec<Option<TokenCounts>>) -> UsageSnapshot {
+        let mut snapshot = UsageSnapshot::empty(usage::Period::Day);
+        for (agent, counts) in snapshot.agents.iter_mut().zip(agents) {
+            agent.counts = counts;
+        }
+        snapshot.has_data = snapshot.agents.iter().any(|agent| agent.counts.is_some());
+        if snapshot.has_data {
+            let mut total = TokenCounts::default();
+            for agent in &snapshot.agents {
+                if let Some(counts) = agent.counts {
+                    total.input += counts.input;
+                    total.input_cached += counts.input_cached;
+                    total.output += counts.output;
+                    total.cost = Some(total.cost.unwrap_or(0.0) + counts.cost.unwrap_or(0.0));
+                }
+            }
+            snapshot.total = total;
+        }
+        snapshot
+    }
+
+    fn fill() -> UsageSnapshot {
+        snapshot(vec![
+            Some(counts(22_600_000, 21_800_000, 313_000, None)),
+            Some(counts(1_200_000, 900_000, 40_000, None)),
+            None,
+            None,
+            Some(counts(8_900_000, 8_845_696, 66_652, Some(0.148))),
+        ])
+    }
+
+    #[test]
+    fn the_table_has_a_header_five_agents_and_a_total() {
+        let lines = usage_lines(&fill());
+        assert_eq!(lines.len(), 7);
+        assert!(lines[0].contains(i18n::text("usage_input")));
+        assert!(lines[0].contains(i18n::text("usage_output")));
+        assert!(lines[0].contains(i18n::text("usage_cost")));
+        assert!(lines[6].starts_with(i18n::text("resource_total")));
+        // The agent column carries the same names as the CPU/memory summary.
+        for (line, kind) in lines[1..6].iter().zip(crate::model::RESOURCE_AGENTS) {
+            assert!(line.starts_with(kind), "{line}");
+        }
+    }
+
+    #[test]
+    fn every_row_is_padded_to_the_same_width() {
+        // Right-aligning the numbers only helps if the last column ends at the
+        // same cell on every row, so the widths are asserted in display cells
+        // (a CJK header is two cells per glyph).
+        let lines = usage_lines(&fill());
+        let widest = lines.iter().map(|line| display_width(line)).max().unwrap();
+        for line in &lines {
+            assert_eq!(display_width(line), widest, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_pair_cell_carries_the_total_and_its_cache_hits() {
+        let lines = usage_lines(&fill());
+        assert!(lines[1].contains("22.6m/21.8m"), "{}", lines[1]);
+        assert!(lines[1].contains("313k/0"), "{}", lines[1]);
+        assert!(lines[5].contains("$0.15"), "{}", lines[5]);
+        // An agent without records in the window reads as no data, not zeros.
+        assert_eq!(lines[3].matches(USAGE_EMPTY).count(), 3, "{}", lines[3]);
+    }
+
+    #[test]
+    fn the_total_row_sums_the_agents_that_reported() {
+        let lines = usage_lines(&fill());
+        let total = &fill().total;
+        assert_eq!(total.input, 22_600_000 + 1_200_000 + 8_900_000);
+        assert_eq!(total.input_cached, 21_800_000 + 900_000 + 8_845_696);
+        assert!(lines[6].contains("32.7m/31.5m"), "{}", lines[6]);
+        assert!(lines[6].contains("$0.15"), "{}", lines[6]);
+    }
+
+    #[test]
+    fn an_empty_table_reports_no_data_in_every_cell() {
+        let lines = usage_lines(&snapshot(vec![None; 5]));
+        assert_eq!(lines.len(), 7);
+        assert_eq!(lines[6].matches(USAGE_EMPTY).count(), 3);
+        let widest = lines.iter().map(|line| display_width(line)).max().unwrap();
+        for line in &lines {
+            assert_eq!(display_width(line), widest, "{line}");
+        }
+    }
+
+    #[test]
+    fn the_switch_marks_exactly_one_period() {
+        for period in usage::Period::ALL {
+            let label = usage_period_label(period);
+            assert_eq!(label.matches('●').count(), 1, "{label}");
+            assert_eq!(label.matches('○').count(), 2, "{label}");
+            assert!(label.contains(period.label()), "{label}");
+        }
+        // Clicking advances day -> week -> month and wraps.
+        assert_eq!(usage::Period::Day.next(), usage::Period::Week);
+        assert_eq!(usage::Period::Month.next(), usage::Period::Day);
     }
 }
 

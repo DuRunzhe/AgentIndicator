@@ -735,7 +735,24 @@ pub fn text(key: &str) -> &'static str {
     text_for(&locale(), key)
 }
 
+/// The token table's labels, kept out of the `text_for` match: eight short
+/// labels across fourteen languages would double an already long table, and
+/// they are only ever read together.
+pub const USAGE_KEYS: [&str; 8] = [
+    "show_usage",
+    "usage_input",
+    "usage_output",
+    "usage_cost",
+    "usage_period",
+    "usage_day",
+    "usage_week",
+    "usage_month",
+];
+
 fn text_for(locale: &str, key: &str) -> &'static str {
+    if USAGE_KEYS.contains(&key) {
+        return usage_label_for(locale, key);
+    }
     match (locale, key) {
         ("en", "disable_notifications") => "Click to disable notifications",
         ("en", "enable_notifications") => "Click to enable notifications",
@@ -1959,6 +1976,126 @@ fn text_for(locale: &str, key: &str) -> &'static str {
     }
 }
 
+/// Labels for the token usage table. Simplified Chinese is the fallback, so it
+/// is written once as the wildcard arm.
+fn usage_label_for(locale: &str, key: &str) -> &'static str {
+    match (locale, key) {
+        ("en", "show_usage") => "Token usage",
+        ("en", "usage_input") => "Input/Hit",
+        ("en", "usage_output") => "Output/Hit",
+        ("en", "usage_cost") => "Cost",
+        ("en", "usage_period") => "Period",
+        ("en", "usage_day") => "Day",
+        ("en", "usage_week") => "Week",
+        ("en", "usage_month") => "Month",
+        ("zh-Hant", "show_usage") => "Token 用量",
+        ("zh-Hant", "usage_input") => "輸入/命中",
+        ("zh-Hant", "usage_output") => "輸出/命中",
+        ("zh-Hant", "usage_cost") => "費用",
+        ("zh-Hant", "usage_period") => "週期",
+        ("zh-Hant", "usage_day") => "日",
+        ("zh-Hant", "usage_week") => "週",
+        ("zh-Hant", "usage_month") => "月",
+        ("ja", "show_usage") => "トークン使用量",
+        ("ja", "usage_input") => "入力/ヒット",
+        ("ja", "usage_output") => "出力/ヒット",
+        ("ja", "usage_cost") => "費用",
+        ("ja", "usage_period") => "期間",
+        ("ja", "usage_day") => "日",
+        ("ja", "usage_week") => "週",
+        ("ja", "usage_month") => "月",
+        ("ko", "show_usage") => "토큰 사용량",
+        ("ko", "usage_input") => "입력/캐시 적중",
+        ("ko", "usage_output") => "출력/캐시 적중",
+        ("ko", "usage_cost") => "비용",
+        ("ko", "usage_period") => "기간",
+        ("ko", "usage_day") => "일",
+        ("ko", "usage_week") => "주",
+        ("ko", "usage_month") => "월",
+        ("id", "show_usage") => "Penggunaan token",
+        ("id", "usage_input") => "Masukan/Hit",
+        ("id", "usage_output") => "Keluaran/Hit",
+        ("id", "usage_cost") => "Biaya",
+        ("id", "usage_period") => "Periode",
+        ("id", "usage_day") => "Hari",
+        ("id", "usage_week") => "Minggu",
+        ("id", "usage_month") => "Bulan",
+        ("ms", "show_usage") => "Penggunaan token",
+        ("ms", "usage_input") => "Input/Hit",
+        ("ms", "usage_output") => "Output/Hit",
+        ("ms", "usage_cost") => "Kos",
+        ("ms", "usage_period") => "Tempoh",
+        ("ms", "usage_day") => "Hari",
+        ("ms", "usage_week") => "Minggu",
+        ("ms", "usage_month") => "Bulan",
+        ("vi", "show_usage") => "Mức dùng token",
+        ("vi", "usage_input") => "Đầu vào/Trúng",
+        ("vi", "usage_output") => "Đầu ra/Trúng",
+        ("vi", "usage_cost") => "Chi phí",
+        ("vi", "usage_period") => "Kỳ",
+        ("vi", "usage_day") => "Ngày",
+        ("vi", "usage_week") => "Tuần",
+        ("vi", "usage_month") => "Tháng",
+        ("es", "show_usage") => "Uso de tokens",
+        ("es", "usage_input") => "Entrada/Acierto",
+        ("es", "usage_output") => "Salida/Acierto",
+        ("es", "usage_cost") => "Coste",
+        ("es", "usage_period") => "Periodo",
+        ("es", "usage_day") => "Día",
+        ("es", "usage_week") => "Semana",
+        ("es", "usage_month") => "Mes",
+        ("fr", "show_usage") => "Utilisation des tokens",
+        ("fr", "usage_input") => "Entrée/Cache",
+        ("fr", "usage_output") => "Sortie/Cache",
+        ("fr", "usage_cost") => "Coût",
+        ("fr", "usage_period") => "Période",
+        ("fr", "usage_day") => "Jour",
+        ("fr", "usage_week") => "Semaine",
+        ("fr", "usage_month") => "Mois",
+        ("it", "show_usage") => "Uso dei token",
+        ("it", "usage_input") => "Ingresso/Hit",
+        ("it", "usage_output") => "Uscita/Hit",
+        ("it", "usage_cost") => "Costo",
+        ("it", "usage_period") => "Periodo",
+        ("it", "usage_day") => "Giorno",
+        ("it", "usage_week") => "Settimana",
+        ("it", "usage_month") => "Mese",
+        ("de", "show_usage") => "Token-Nutzung",
+        ("de", "usage_input") => "Eingabe/Treffer",
+        ("de", "usage_output") => "Ausgabe/Treffer",
+        ("de", "usage_cost") => "Kosten",
+        ("de", "usage_period") => "Zeitraum",
+        ("de", "usage_day") => "Tag",
+        ("de", "usage_week") => "Woche",
+        ("de", "usage_month") => "Monat",
+        ("ru", "show_usage") => "Расход токенов",
+        ("ru", "usage_input") => "Вход/кэш",
+        ("ru", "usage_output") => "Выход/кэш",
+        ("ru", "usage_cost") => "Стоимость",
+        ("ru", "usage_period") => "Период",
+        ("ru", "usage_day") => "День",
+        ("ru", "usage_week") => "Неделя",
+        ("ru", "usage_month") => "Месяц",
+        ("tr", "show_usage") => "Token kullanımı",
+        ("tr", "usage_input") => "Giriş/Önbellek",
+        ("tr", "usage_output") => "Çıkış/Önbellek",
+        ("tr", "usage_cost") => "Maliyet",
+        ("tr", "usage_period") => "Dönem",
+        ("tr", "usage_day") => "Gün",
+        ("tr", "usage_week") => "Hafta",
+        ("tr", "usage_month") => "Ay",
+        (_, "show_usage") => "Token 用量",
+        (_, "usage_input") => "输入/命中",
+        (_, "usage_output") => "输出/命中",
+        (_, "usage_cost") => "费用",
+        (_, "usage_period") => "周期",
+        (_, "usage_day") => "日",
+        (_, "usage_week") => "周",
+        (_, "usage_month") => "月",
+        _ => "周期",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1981,7 +2118,13 @@ mod tests {
     ];
     /// Keys that are genuinely the same word in the translated language and
     /// Simplified Chinese, so the fallback check below must not flag them.
-    const SHARED_WITH_CHINESE: [(&str, &str); 1] = [("ja", "notifications")];
+    const SHARED_WITH_CHINESE: [(&str, &str); 3] = [
+        ("ja", "notifications"),
+        // 日 and 月 are the same word in Japanese and Simplified Chinese; the
+        // collision is the translation, not a missing arm.
+        ("ja", "usage_day"),
+        ("ja", "usage_month"),
+    ];
 
     const MENU_KEYS: [&str; 17] = [
         "settings",
@@ -2003,7 +2146,7 @@ mod tests {
         "automation",
     ];
 
-    const TEXT_KEYS: [&str; 86] = [
+    const TEXT_KEYS: [&str; 94] = [
         "disable_notifications",
         "enable_notifications",
         "disable_startup",
@@ -2090,6 +2233,14 @@ mod tests {
         "update_failed",
         "close",
         "notifications_disabled",
+        "show_usage",
+        "usage_input",
+        "usage_output",
+        "usage_cost",
+        "usage_period",
+        "usage_day",
+        "usage_week",
+        "usage_month",
     ];
 
     #[test]
@@ -2146,6 +2297,9 @@ mod tests {
                 }
             }
             for key in TEXT_KEYS {
+                if SHARED_WITH_CHINESE.contains(&(locale, key)) {
+                    continue;
+                }
                 assert_ne!(
                     text_for(locale, key),
                     text_for("zh-Hans", key),

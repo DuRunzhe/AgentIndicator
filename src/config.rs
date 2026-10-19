@@ -18,6 +18,9 @@ pub const CONVERSATION_WINDOWS: [(&str, Option<u64>); 5] = [
 
 pub const DEFAULT_CONVERSATION_WINDOW: &str = "24h";
 
+/// The widest table that is still useful on first launch: today's usage.
+pub const DEFAULT_USAGE_PERIOD: &str = "day";
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
@@ -34,6 +37,10 @@ pub struct Config {
     pub show_cpu: bool,
     pub show_memory: bool,
     pub show_resources: bool,
+    /// The token table below the resource summary.
+    pub show_usage: bool,
+    /// Which [`crate::usage::Period`] the token table covers.
+    pub usage_period: String,
     pub show_stopped_agents: bool,
     pub browser_tab_reuse: bool,
     pub locale: String,
@@ -62,6 +69,8 @@ impl Default for Config {
             show_cpu: true,
             show_memory: true,
             show_resources: true,
+            show_usage: true,
+            usage_period: DEFAULT_USAGE_PERIOD.into(),
             show_stopped_agents: true,
             browser_tab_reuse: false,
             locale: "auto".into(),
@@ -83,6 +92,12 @@ impl Config {
     /// Independent of [`Self::conversation_window_duration`].
     pub fn deepseek_desktop_window_duration(&self) -> Option<Duration> {
         window_duration(&self.deepseek_desktop_window)
+    }
+
+    /// The calendar window the token table currently shows. An unknown value,
+    /// such as one written by an older build, falls back to the day view.
+    pub fn usage_period(&self) -> crate::usage::Period {
+        crate::usage::Period::from_key(&self.usage_period)
     }
 
     pub fn load() -> Self {
@@ -147,6 +162,8 @@ mod tests {
         assert!(config.show_cpu);
         assert!(config.show_memory);
         assert!(config.show_resources);
+        assert!(config.show_usage);
+        assert_eq!(config.usage_period, DEFAULT_USAGE_PERIOD);
         assert!(config.show_stopped_agents);
         assert_eq!(config.conversation_window, DEFAULT_CONVERSATION_WINDOW);
     }

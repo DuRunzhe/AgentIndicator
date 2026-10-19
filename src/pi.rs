@@ -247,7 +247,12 @@ fn assign_sessions(live: &[LiveSession], candidates: &[Candidate]) -> Vec<Option
             .iter()
             .position(|candidate| written_while_alive(&candidates[*candidate], &live[index]))
         {
-            claims[index] = Some(free.remove(position));
+            // Mark the file claimed: the `/new` pass below asks the same
+            // question, and a file that step 2 took without recording it looked
+            // free again there, so one session could end up on two processes.
+            let candidate = free.remove(position);
+            claimed[candidate] = true;
+            claims[index] = Some(candidate);
         }
     }
 
@@ -823,6 +828,39 @@ mod tests {
             .as_secs();
         assert_eq!(epoch, 1788880355);
         assert!(session_created(Path::new("not-a-session.jsonl")).is_none());
+    }
+
+    #[test]
+    fn a_resumed_session_is_not_shared_by_two_processes() {
+        // The reported shape: an old pi process anchored its startup session, a
+        // newer process resumed the session that is being written now, and a
+        // third session sits in between. The `/new` pass gives the old process
+        // the intermediate file; before the recency pass recorded its claim it
+        // could also hand it the resumed one, and both rows then showed the same
+        // title, model and context.
+        let day = 86_400;
+        let sessions = [
+            candidate(4 * day + 3_600, 4 * day), // c0: dead conversation
+            candidate(4 * day, 4 * day - 120),   // c1: the old process's own session
+            candidate(3 * day, 3 * day),         // c2: the one it moved to later
+            candidate(2 * day, 1),               // c3: resumed and written right now
+        ];
+        let processes = [live(4 * day), live(3 * 3_600)];
+        let claims = assign_sessions(&processes, &sessions);
+        assert_eq!(
+            claims[0],
+            Some(2),
+            "the old process keeps its later session"
+        );
+        assert_eq!(
+            claims[1],
+            Some(3),
+            "the resumed session stays with its writer"
+        );
+        assert_ne!(
+            claims[0], claims[1],
+            "two live processes must never report one session"
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ Source and releases: <https://github.com/DuRunzhe/AgentIndicator>
 
 ## Installation
 
-The current release is **v0.2.32-alpha.4** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
+The current release is **v0.2.32-alpha.5** (macOS arm64, Developer ID signed and notarized). x86_64 macOS / Windows / Linux artifacts are produced automatically for later versions by the [release workflow](.github/workflows/release.yml).
 
 ### curl (macOS / Linux)
 
@@ -23,7 +23,7 @@ Without `VERSION` the script automatically resolves the latest release, trying t
 Pin a version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.32-alpha.4 sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.32-alpha.5 sh
 ```
 
 Install elsewhere:
@@ -214,13 +214,15 @@ agent-status-indicator --check-update
 ```
 
 - `--diagnose`: prints the detected agents, sessions and states without starting the tray.
+- `--diagnose-usage [--usage-period week|month] [--render]`: prints the token table for the current window (JSON, or the exact menu rows with `--render`) without starting the tray.
 - `--diagnose-deepseek-desktop`: diagnoses only the DeepSeek Harness desktop app — the host process it was recognized as, the `DSH_HOME` in use, the conversations read, and what one scan of that cache costs (cold and steady state) — without starting the tray.
 - `--debug-ui`: debug mode; writes the tray UI state to `~/.agent-status-indicator-ui.json`.
 - `--check-update`: asks GitHub for the newest release and prints the result without starting the tray.
 - Click the tray icon to open the menu: every row reads `Kind (project) · title` (Claude, Codex, ChatGPT, OpenCode, DeepSeek Harness and Pi alike; a row with no title keeps `Kind (project)`), ordered “waiting for confirmation → waiting for reply → working → ready” with model, context, uptime and CPU/memory usage; clicking a live instance jumps to its terminal, browser session or DeepSeek Harness desktop window.
 - Notifications are disabled by default. Enable them in Settings and choose whether to notify for confirmation, reply and automatic confirmation mode.
 - A “resource summary” sits below the session list and above Settings: a leading `CPU/memory` stub labels the value row, the first value column totals every agent, followed by one column each for Claude / Codex / OpenCode / DeepSeek / Pi. The column names are on the first row and their `CPU/memory` on the second, side by side. Both rows use a monospaced font so the columns line up; an agent that is not running still shows `--/--` as a placeholder. Sessions of one host (ChatGPT and the DeepSeek desktop) are de-duplicated by process so they are not summed once per conversation, and ChatGPT folds into the Codex column. It can be turned off with the “Resource summary” toggle in Settings.
-- Settings includes nine display options (duration, model, context percentage/used/total, CPU, memory, resource summary, stopped agents), language, start-at-login and DeepSeek browser tab reuse. CPU and memory are summed over the session's whole process tree (macOS reads `pcpu`/`rss` from the existing `ps` sample, Windows/Linux reuse the refreshed `sysinfo` snapshot), with no extra process spawned. A GUI host that serves several sessions from one process — ChatGPT and the DeepSeek Harness desktop — reports host-level figures that cannot be attributed to a single session, and every DeepSeek row is treated the same way: they show no CPU or memory on the session row, and the figures appear only in the summary. Conversation display ranges are two independent settings — "ChatGPT conversation range" and "DeepSeek Harness conversation range" — each 15 minutes, 1 hour, 12 hours, 24 hours (default) or all conversations. They are independent in function and in data: persisted as separate keys (`conversation_window`, `deepseek_desktop_window`) and applied to their own conversations, so changing one never moves the other. A conversation that is working, waiting for the user or failed always keeps its row.
+- A token table sits below the resource summary: a `day / week / month` switch above it (one row, click to advance), a header row of `Input/Hit`, `Output/Hit` and `Cost`, one row per agent (Claude / Codex / OpenCode / DeepSeek / Pi) and a total row for the selected window. Every number is recomputed from the agents' own session records — nothing extra is written to disk. Codex differs its cumulative `token_count` counter and reads the thread totals from `state_*.sqlite`; Claude de-duplicates transcript `usage` blocks by message id; Pi de-duplicates by response id and reads the cost it recorded; OpenCode answers with one aggregate query over `opencode.db` (its `cost` is a real amount); the DeepSeek projection only carries a per-conversation total, so a conversation counts in the window where it was last active. Cost is a real amount only for OpenCode and Pi — the other records carry no billing field and show `—`. The per-file parse is cached in memory and invalidated by modification time and length, so a refresh costs about 2 ms once the logs are parsed. Turn the table off with the "Token usage" display option.
+- Settings includes ten display options (duration, model, context percentage/used/total, CPU, memory, resource summary, token usage, stopped agents), language, start-at-login and DeepSeek browser tab reuse. CPU and memory are summed over the session's whole process tree (macOS reads `pcpu`/`rss` from the existing `ps` sample, Windows/Linux reuse the refreshed `sysinfo` snapshot), with no extra process spawned. A GUI host that serves several sessions from one process — ChatGPT and the DeepSeek Harness desktop — reports host-level figures that cannot be attributed to a single session, and every DeepSeek row is treated the same way: they show no CPU or memory on the session row, and the figures appear only in the summary. Conversation display ranges are two independent settings — "ChatGPT conversation range" and "DeepSeek Harness conversation range" — each 15 minutes, 1 hour, 12 hours, 24 hours (default) or all conversations. They are independent in function and in data: persisted as separate keys (`conversation_window`, `deepseek_desktop_window`) and applied to their own conversations, so changing one never moves the other. A conversation that is working, waiting for the user or failed always keeps its row.
 - Click the Claude context collector row in Settings to install or uninstall it. Installation configures Claude's `statusLine`, preserving and forwarding an existing command; uninstalling restores the previous configuration.
 - The About panel checks GitHub for a newer release every time it opens; when one exists the button becomes “Update to x.y.z”, and installing shows a progress window before the app restarts itself.
 - If you added it to your applications as above, you can also launch it from the graphical launcher.
@@ -342,7 +344,8 @@ These are acceptance targets; the current release workflow does not automate mea
 - [x] OpenCode SQLite state, model and context reading
 - [x] Native notifications for waiting states with 0/60/180 s reminders; clicking focuses the terminal or the DeepSeek browser session
 - [x] Precise Terminal/iTerm tab focus by TTY on macOS
-- [x] Native settings menu, nine display options (including CPU/memory and the per-agent resource summary) and macOS login-startup settings
+- [x] Native settings menu, ten display options (including CPU/memory, the per-agent resource summary and the token usage table) and macOS login-startup settings
+- [x] Token usage table (input/hit, output/hit, cost) per agent with a day/week/month switch and a total row, recomputed from the agents' own records with no extra storage
 - [x] macOS LaunchAgent, Windows Startup and Linux XDG autostart entries
 - [ ] Precise focus of existing terminal windows on Windows/Linux (implemented: Windows restores and foregrounds the owning terminal window via Win32, Linux locates the terminal emulator window along the process tree; tick after on-device verification)
 

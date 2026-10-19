@@ -105,7 +105,6 @@ fn focus_existing_tab(url: &str) -> bool {
         .is_ok_and(|output| output.status.success() && !output.stdout.is_empty())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

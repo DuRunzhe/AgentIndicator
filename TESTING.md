@@ -5,7 +5,7 @@
 ### npm 本地安装
 
 ```bash
-npm install -g ./agent-status-indicator-0.2.32-alpha.4.tgz
+npm install -g ./agent-status-indicator-0.2.32-alpha.5.tgz
 agent-status-indicator
 ```
 
@@ -20,7 +20,7 @@ npm uninstall -g agent-status-indicator
 ### 独立二进制
 
 ```bash
-tar -xzf agent-status-indicator-0.2.32-alpha.4-aarch64-apple-darwin.tar.gz
+tar -xzf agent-status-indicator-0.2.32-alpha.5-aarch64-apple-darwin.tar.gz
 ./agent-status-indicator
 ```
 
@@ -55,6 +55,28 @@ tar -xzf agent-status-indicator-0.2.32-alpha.4-aarch64-apple-darwin.tar.gz
 15b. 让一个会话跑失败（例如在沙箱内触发一次失败命令，或断开网络让请求出错）：该行应变为红色“异常”并触发异常通知；随后在该会话里继续对话，新的事件写入日志后应恢复为“进行中/就绪”。
 15c. 把某会话的 `permissions.approval` 设为 `never`（自动确认）：关闭“自动确认模式仍通知”后，该会话进入等待态时不应再发通知。
 16. 关闭桌面端：所有桌面端会话行应消失，只剩“已停止”的灰色占位项。
+
+## Token 用量表验收
+
+先在终端核对数字，再核对菜单：
+
+```bash
+agent-status-indicator --diagnose-usage --render
+agent-status-indicator --diagnose-usage --render --usage-period week
+agent-status-indicator --diagnose-usage --render --usage-period month
+```
+
+1. 打印的三行表格应与菜单里的表格逐字一致：表头上方是 `周期: ● 日 ○ 周 ○ 月`，随后是 `输入/命中`、`输出/命中`、`费用` 表头、五行 Agent 与一行总计。
+2. 打开菜单，确认表格位于「资源汇总」下方，列之间对齐；点击周期行应在“日 → 周 → 月 → 日”之间循环，箭头所指项随之改变，表格数字按新维度重算（≤10 秒内，通常 1 秒内）。
+3. 与各 Agent 自带统计对数：
+   - Claude Code：在会话里运行 `/status`（或 `/cost`）对比本次会话的 input/output token；本表的 `输入` 为 `input_tokens + cache_creation + cache_read`。
+   - Codex：rollout 里最后一条 `token_count` 的 `total_token_usage` 与本表同一会话的累计一致（本表按事件差值累计，不是把多条累计值相加）。
+   - Pi：对比 `/stats` 或 `~/.pi/agent/sessions` 里 assistant 消息的 `usage` 之和；`费用` 应为各条 `usage.cost.total` 之和。
+   - OpenCode：`sqlite3 ~/.local/share/opencode/opencode.db "select sum(cost) from session"` 与本月/本周数字量级一致。
+   - DeepSeek Harness：投影缓存 `rows.tokenUsage.val.totals` 与当日行一致；该源只有会话累计值，因此计入“会话最后活跃”的那个维度。
+4. 用空闲机器观察 1 分钟：`ps -o pid,%cpu -p "$(pgrep -x agent-status-indicator)"`，空闲 CPU 应仍不高于 0.5%（稳态一轮重算约 2 ms，仅 stat 未变化的文件）。
+5. 在“设置 → 显示配置”关闭「Token 用量」：整块表格与周期行应立即消失，重启后保持关闭。
+6. 运行一个 Agent 若干轮后等待 10 秒：对应行数字应增长；把系统时间改到次日再观察，日视图应从零重新累计，周/月视图仍包含前一天的数据。
 
 ## DeepSeek Harness 桌面端验收
 
