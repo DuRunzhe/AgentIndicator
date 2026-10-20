@@ -1407,6 +1407,10 @@ fn usage_text(used: bool, cpu: f32, memory_bytes: u64) -> String {
 /// in both tables.
 const USAGE_EMPTY: &str = "--/--";
 
+/// The output column carries a count rather than a `total/hit` pair, so its
+/// empty cell is a single dash.
+const USAGE_EMPTY_OUTPUT: &str = "--";
+
 /// The token table, one string per menu row: the agents across the columns
 /// (closed by the total) and the three metrics down the rows. [`table_text`]
 /// turns the cells into rows whose columns line up the way the CPU/memory
@@ -1430,9 +1434,9 @@ fn usage_lines(snapshot: &usage::UsageSnapshot) -> Vec<String> {
                 rows[3].push(usage_cost(counts.cost));
             }
             None => {
-                for row in rows.iter_mut().skip(1) {
-                    row.push(USAGE_EMPTY.into());
-                }
+                rows[1].push(USAGE_EMPTY.into());
+                rows[2].push(USAGE_EMPTY_OUTPUT.into());
+                rows[3].push(USAGE_EMPTY.into());
             }
         }
     }
@@ -1444,9 +1448,9 @@ fn usage_lines(snapshot: &usage::UsageSnapshot) -> Vec<String> {
         rows[2].push(short_tokens(total.output));
         rows[3].push(usage_cost(total.cost));
     } else {
-        for row in rows.iter_mut().skip(1) {
-            row.push(USAGE_EMPTY.into());
-        }
+        rows[1].push(USAGE_EMPTY.into());
+        rows[2].push(USAGE_EMPTY_OUTPUT.into());
+        rows[3].push(USAGE_EMPTY.into());
     }
     table_text(&rows)
 }
@@ -2216,10 +2220,15 @@ mod usage_table_tests {
         assert!(lines[3].contains("$0.15"), "{}", lines[3]);
         // An agent without records in the window reads as no data, not zeros:
         // OpenCode and DeepSeek are empty in every metric row, and Claude and
-        // Codex report no cost so the cost row has two more.
-        for line in &lines[1..3] {
-            assert_eq!(line.matches(USAGE_EMPTY).count(), 2, "{line}");
-        }
+        // Codex report no cost so the cost row has two more. The output cell is
+        // a count, so its placeholder is a single dash.
+        assert_eq!(lines[1].matches(USAGE_EMPTY).count(), 2, "{}", lines[1]);
+        assert_eq!(
+            lines[2].matches(USAGE_EMPTY_OUTPUT).count(),
+            2,
+            "{}",
+            lines[2]
+        );
         assert_eq!(lines[3].matches(USAGE_EMPTY).count(), 4, "{}", lines[3]);
     }
 
@@ -2238,9 +2247,15 @@ mod usage_table_tests {
     fn an_empty_table_reports_no_data_in_every_cell() {
         let lines = usage_lines(&snapshot(vec![None; 5]));
         assert_eq!(lines.len(), 4);
-        for line in &lines[1..] {
+        for line in [&lines[1], &lines[3]] {
             assert_eq!(line.matches(USAGE_EMPTY).count(), 6, "{line}");
         }
+        assert_eq!(
+            lines[2].matches(USAGE_EMPTY_OUTPUT).count(),
+            6,
+            "{}",
+            lines[2]
+        );
         #[cfg(not(target_os = "macos"))]
         {
             let widest = lines.iter().map(|line| display_width(line)).max().unwrap();

@@ -318,7 +318,7 @@ DeepSeek Harness 终端会话与桌面端走两条路径：终端 `dsh` 进程�
 | OpenCode | `opencode.db` 的 `message` 表一条聚合 SQL（含真实 `cost`） | `time_created` |
 | DeepSeek Harness | 投影缓存 `rows.tokenUsage.totals` | 会话最后活跃时间（源只有会话累计值） |
 
-口径统一为：`输入` 含缓存读/写，`命中` 为其中的缓存读；`输出` 含推理 token，输出 token 不存在缓存命中（缓存只作用于输入侧），因此该列只给输出量，不写 `总量/命中`。金额只有 OpenCode 与 Pi 会给出真实数字，Claude / Codex / DeepSeek 的记录里没有计费字段，显示 `--/--`。`--diagnose-usage [--usage-period week|month] [--render]` 可打印与本表完全一致的内容，便于与各 Agent 自带的 `/stats` 对数。
+口径统一为：`输入` 含缓存读/写，`命中` 为其中的缓存读；`输出` 含推理 token，输出 token 不存在缓存命中（缓存只作用于输入侧），因此该列只给输出量，不写 `总量/命中`，无数据时显示 `--`（其余列仍是 `--/--`）。金额只有 OpenCode 与 Pi 会给出真实数字，Claude / Codex / DeepSeek 的记录里没有计费字段，显示 `--/--`。`--diagnose-usage [--usage-period week|month] [--render]` 可打印与本表完全一致的内容，便于与各 Agent 自带的 `/stats` 对数。
 
 ### 依赖
 
