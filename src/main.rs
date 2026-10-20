@@ -334,12 +334,16 @@ impl App {
         let Some(menu) = &self.menu else {
             return;
         };
-        if self.config.show_resources && menu.resource.len() == 2 {
+        if let Some(anchor) = menu.resource.first() {
             let (names, values) = resource_rows(&self.current);
-            macos_menu_symbols::apply_table(&menu.menu, &[names, values]);
+            macos_menu_symbols::apply_table(&menu.menu, anchor, &[names, values]);
         }
-        if self.config.show_usage && !menu.usage.is_empty() {
-            macos_menu_symbols::apply_table(&menu.menu, &usage_lines(&self.usage.snapshot()));
+        if let Some(anchor) = menu.usage.first() {
+            macos_menu_symbols::apply_table(
+                &menu.menu,
+                anchor,
+                &usage_lines(&self.usage.snapshot()),
+            );
         }
     }
     fn rebuild(&mut self) {

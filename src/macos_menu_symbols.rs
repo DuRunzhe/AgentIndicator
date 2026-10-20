@@ -21,7 +21,7 @@ use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSDictionary, NSString,
 };
 use std::collections::HashMap;
-use tray_icon::menu::{ContextMenu, Menu};
+use tray_icon::menu::{ContextMenu, Menu, MenuItem};
 
 /// Draw table rows with fixed tab stops so every column lines up. Rows arrive
 /// with their cells separated by `\t`. The menu font is proportional and its CJK
@@ -29,13 +29,24 @@ use tray_icon::menu::{ContextMenu, Menu};
 /// localized label up with the numbers after it; the tab stops carry the
 /// measurement instead. The leading label is left-aligned and the columns after
 /// it use right-aligned stops, so digits stack under their headers.
-pub fn apply_table(menu: &Menu, rows: &[String]) {
+///
+/// `anchor` is the first row of the table and identifies it by id rather than by
+/// title: the resource summary and the token table both start with the same
+/// header row, so matching on titles would give them each other's tab stops.
+pub fn apply_table(menu: &Menu, anchor: &MenuItem, rows: &[String]) {
     if rows.is_empty() {
         return;
     }
     // `Menu::ns_menu` is supplied by muda's public ContextMenu trait; see
     // `SymbolCache::apply` for the lifetime and main-thread reasoning.
     let native_menu = unsafe { &*(menu.ns_menu().cast::<NSMenu>()) };
+    let start = menu
+        .items()
+        .iter()
+        .position(|item| item.id() == anchor.id());
+    let Some(start) = start else {
+        return;
+    };
     let size = NSFont::systemFontSize();
     let font =
         NSFont::userFixedPitchFontOfSize(size).unwrap_or_else(|| NSFont::systemFontOfSize(size));
@@ -73,15 +84,17 @@ pub fn apply_table(menu: &Menu, rows: &[String]) {
             &[font_key, style_key],
             &[font.clone().into(), style.into()],
         );
-    for item in native_menu.itemArray().iter() {
-        let title = item.title().to_string();
-        if !rows.iter().any(|row| *row == title) {
-            continue;
+    let items = native_menu.itemArray();
+    for (offset, line) in rows.iter().enumerate() {
+        let index = start + offset;
+        if index >= items.count() {
+            break;
         }
+        let item = items.objectAtIndex(index);
         let attributed = unsafe {
             NSAttributedString::initWithString_attributes(
                 NSAttributedString::alloc(),
-                &NSString::from_str(&title),
+                &NSString::from_str(line),
                 Some(&attributes),
             )
         };
