@@ -1424,49 +1424,47 @@ fn usage_text(used: bool, cpu: f32, memory_bytes: u64) -> String {
 /// What a column reads when a source has nothing to report for the window.
 const USAGE_EMPTY: &str = "—";
 
-/// The token table, one string per menu row: the column titles, one row per
-/// agent and the total. Cells are padded to fixed widths so the numbers line up
-/// under their headers the way the CPU/memory summary above already does.
+/// The token table, one string per menu row: the agents across the columns
+/// (closed by the total) and the three metrics down the rows. Cells are padded
+/// to fixed widths so the numbers line up under their headers the way the
+/// CPU/memory summary above already does, and every column is right-aligned.
 fn usage_lines(snapshot: &usage::UsageSnapshot) -> Vec<String> {
-    let mut rows: Vec<Vec<String>> = Vec::with_capacity(snapshot.agents.len() + 2);
-    rows.push(vec![
-        String::new(),
-        i18n::text("usage_input").to_owned(),
-        i18n::text("usage_output").to_owned(),
-        i18n::text("usage_cost").to_owned(),
-    ]);
+    // The rows are the metrics: the first names the agents and the total, the
+    // three below it are input, output and cost. Each agent appends one cell to
+    // every row, so the agents run across the columns.
+    let mut rows: Vec<Vec<String>> = vec![
+        vec![String::new()],
+        vec![i18n::text("usage_input").to_owned()],
+        vec![i18n::text("usage_output").to_owned()],
+        vec![i18n::text("usage_cost").to_owned()],
+    ];
     for agent in &snapshot.agents {
-        rows.push(match agent.counts {
-            Some(counts) => vec![
-                agent.kind.to_owned(),
-                usage_pair(counts.input, counts.input_cached),
-                usage_pair(counts.output, counts.output_cached),
-                usage_cost(counts.cost),
-            ],
-            None => vec![
-                agent.kind.to_owned(),
-                USAGE_EMPTY.into(),
-                USAGE_EMPTY.into(),
-                USAGE_EMPTY.into(),
-            ],
-        });
+        rows[0].push(agent.kind.to_owned());
+        match agent.counts {
+            Some(counts) => {
+                rows[1].push(usage_pair(counts.input, counts.input_cached));
+                rows[2].push(usage_pair(counts.output, counts.output_cached));
+                rows[3].push(usage_cost(counts.cost));
+            }
+            None => {
+                for row in rows.iter_mut().skip(1) {
+                    row.push(USAGE_EMPTY.into());
+                }
+            }
+        }
     }
+    // The total closes the table, so it reads as the sum of the columns before it.
     let total = &snapshot.total;
-    rows.push(if snapshot.has_data {
-        vec![
-            i18n::text("resource_total").to_owned(),
-            usage_pair(total.input, total.input_cached),
-            usage_pair(total.output, total.output_cached),
-            usage_cost(total.cost),
-        ]
+    rows[0].push(i18n::text("resource_total").to_owned());
+    if snapshot.has_data {
+        rows[1].push(usage_pair(total.input, total.input_cached));
+        rows[2].push(usage_pair(total.output, total.output_cached));
+        rows[3].push(usage_cost(total.cost));
     } else {
-        vec![
-            i18n::text("resource_total").to_owned(),
-            USAGE_EMPTY.into(),
-            USAGE_EMPTY.into(),
-            USAGE_EMPTY.into(),
-        ]
-    });
+        for row in rows.iter_mut().skip(1) {
+            row.push(USAGE_EMPTY.into());
+        }
+    }
     align_usage_table(&rows)
 }
 
@@ -1497,8 +1495,9 @@ fn usage_period_label(period: usage::Period) -> String {
     format!("{}:  {}", i18n::text("usage_period"), options.join("   "))
 }
 
-/// Pad every cell to its column width. The agent column is left-aligned and the
-/// numbers are right-aligned, so digits stack under their headers.
+/// Pad every cell to its column width. The metric column on the left is
+/// left-aligned and the agent columns are right-aligned, so digits stack under
+/// their headers.
 fn align_usage_table(rows: &[Vec<String>]) -> Vec<String> {
     let columns = rows.first().map(Vec::len).unwrap_or(0);
     let mut widths = vec![0; columns];
@@ -2156,17 +2155,36 @@ mod usage_table_tests {
     }
 
     #[test]
-    fn the_table_has_a_header_five_agents_and_a_total() {
+    fn the_table_names_the_agents_across_the_top_and_the_metrics_down_the_side() {
         let lines = usage_lines(&fill());
-        assert_eq!(lines.len(), 7);
-        assert!(lines[0].contains(i18n::text("usage_input")));
-        assert!(lines[0].contains(i18n::text("usage_output")));
-        assert!(lines[0].contains(i18n::text("usage_cost")));
-        assert!(lines[6].starts_with(i18n::text("resource_total")));
-        // The agent column carries the same names as the CPU/memory summary.
-        for (line, kind) in lines[1..6].iter().zip(crate::model::RESOURCE_AGENTS) {
-            assert!(line.starts_with(kind), "{line}");
+        // A header row naming the agents and the total, then input, output, cost.
+        assert_eq!(lines.len(), 4);
+        assert!(
+            lines[1].starts_with(i18n::text("usage_input")),
+            "{}",
+            lines[1]
+        );
+        assert!(
+            lines[2].starts_with(i18n::text("usage_output")),
+            "{}",
+            lines[2]
+        );
+        assert!(
+            lines[3].starts_with(i18n::text("usage_cost")),
+            "{}",
+            lines[3]
+        );
+        assert!(lines[0].trim_start().starts_with("Claude"), "{}", lines[0]);
+        // The agent names match the CPU/memory summary above, and the total
+        // closes the row.
+        for kind in crate::model::RESOURCE_AGENTS {
+            assert!(lines[0].contains(kind), "{}", lines[0]);
         }
+        assert!(
+            lines[0].trim_end().ends_with(i18n::text("resource_total")),
+            "{}",
+            lines[0]
+        );
     }
 
     #[test]
@@ -2185,27 +2203,36 @@ mod usage_table_tests {
     fn a_pair_cell_carries_the_total_and_its_cache_hits() {
         let lines = usage_lines(&fill());
         assert!(lines[1].contains("22.6m/21.8m"), "{}", lines[1]);
-        assert!(lines[1].contains("313k/0"), "{}", lines[1]);
-        assert!(lines[5].contains("$0.15"), "{}", lines[5]);
-        // An agent without records in the window reads as no data, not zeros.
-        assert_eq!(lines[3].matches(USAGE_EMPTY).count(), 3, "{}", lines[3]);
+        assert!(lines[1].contains("8.9m/8.8m"), "{}", lines[1]);
+        assert!(lines[2].contains("313k/0"), "{}", lines[2]);
+        assert!(lines[3].contains("$0.15"), "{}", lines[3]);
+        // An agent without records in the window reads as no data, not zeros:
+        // OpenCode and DeepSeek are empty in every metric row, and Claude and
+        // Codex report no cost so the cost row has two more.
+        for line in &lines[1..3] {
+            assert_eq!(line.matches(USAGE_EMPTY).count(), 2, "{line}");
+        }
+        assert_eq!(lines[3].matches(USAGE_EMPTY).count(), 4, "{}", lines[3]);
     }
 
     #[test]
-    fn the_total_row_sums_the_agents_that_reported() {
+    fn the_total_column_sums_the_agents_that_reported() {
         let lines = usage_lines(&fill());
         let total = &fill().total;
         assert_eq!(total.input, 22_600_000 + 1_200_000 + 8_900_000);
         assert_eq!(total.input_cached, 21_800_000 + 900_000 + 8_845_696);
-        assert!(lines[6].contains("32.7m/31.5m"), "{}", lines[6]);
-        assert!(lines[6].contains("$0.15"), "{}", lines[6]);
+        assert!(lines[1].trim_end().ends_with("32.7m/31.5m"), "{}", lines[1]);
+        assert!(lines[2].trim_end().ends_with("419k/0"), "{}", lines[2]);
+        assert!(lines[3].trim_end().ends_with("$0.15"), "{}", lines[3]);
     }
 
     #[test]
     fn an_empty_table_reports_no_data_in_every_cell() {
         let lines = usage_lines(&snapshot(vec![None; 5]));
-        assert_eq!(lines.len(), 7);
-        assert_eq!(lines[6].matches(USAGE_EMPTY).count(), 3);
+        assert_eq!(lines.len(), 4);
+        for line in &lines[1..] {
+            assert_eq!(line.matches(USAGE_EMPTY).count(), 6, "{line}");
+        }
         let widest = lines.iter().map(|line| display_width(line)).max().unwrap();
         for line in &lines {
             assert_eq!(display_width(line), widest, "{line}");
