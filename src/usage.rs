@@ -25,6 +25,7 @@ use std::{
     fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     sync::{mpsc::RecvTimeoutError, Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -738,6 +739,9 @@ fn deepseek(root: &Path, start: i64, end: i64) -> Totals {
 pub struct Worker {
     period: std::sync::mpsc::Sender<Period>,
     snapshot: Arc<Mutex<UsageSnapshot>>,
+    /// True from a period switch (or the first scan) until the scan lands, so the
+    /// menu can show a spinner where the period name goes.
+    loading: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -745,6 +749,10 @@ impl Worker {
         let (sender, receiver) = std::sync::mpsc::channel();
         let snapshot = Arc::new(Mutex::new(UsageSnapshot::empty(period)));
         let shared = Arc::clone(&snapshot);
+        // The very first scan counts as loading: an empty table is on screen
+        // until it lands.
+        let loading = Arc::new(AtomicBool::new(true));
+        let flag = Arc::clone(&loading);
         thread::spawn(move || {
             let mut scanner = Scanner::new();
             let mut period = period;
@@ -756,6 +764,7 @@ impl Worker {
                 if let Ok(mut slot) = shared.lock() {
                     *slot = next;
                 }
+                flag.store(false, Ordering::Relaxed);
                 wake();
                 match receiver.recv_timeout(REFRESH_INTERVAL) {
                     Ok(mut requested) => {
@@ -774,6 +783,7 @@ impl Worker {
         Self {
             period: sender,
             snapshot,
+            loading,
         }
     }
 
@@ -785,7 +795,15 @@ impl Worker {
     }
 
     pub fn set_period(&self, period: Period) {
+        self.loading.store(true, Ordering::Relaxed);
         let _ = self.period.send(period);
+    }
+
+    /// Whether a scan that changes the window is still running. The periodic
+    /// refresh leaves this false, so the spinner only appears when the user
+    /// switches the window or the app has just started.
+    pub fn is_loading(&self) -> bool {
+        self.loading.load(Ordering::Relaxed)
     }
 }
 

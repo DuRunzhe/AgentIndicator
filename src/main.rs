@@ -206,6 +206,8 @@ struct App {
     pending_notification_test: bool,
     /// Recomputes the token table in the background; the menu only reads it.
     usage: usage::Worker,
+    /// Which spinner frame the period row shows while a scan is running.
+    loading_frame: usize,
     config: Config,
     menu: Option<MenuView>,
     #[cfg(target_os = "macos")]
@@ -313,6 +315,7 @@ impl App {
             notification_permission_rx,
             pending_notification_test: false,
             usage,
+            loading_frame: 0,
             config,
             menu: None,
             #[cfg(target_os = "macos")]
@@ -346,6 +349,35 @@ impl App {
             );
         }
     }
+    /// The period row's text: the spinner while a scan is running, the full
+    /// three-state switch once it lands.
+    fn usage_period_text(&self, period: usage::Period) -> String {
+        if self.usage.is_loading() {
+            usage_loading_label(period, self.loading_frame)
+        } else {
+            usage_period_label(period)
+        }
+    }
+
+    /// Advance the spinner frame and repaint the period row in place. The menu
+    /// stays untouched otherwise, so this is a single `set_text` per frame.
+    fn step_usage_spinner(&mut self) {
+        if !self.usage.is_loading() {
+            self.loading_frame = 0;
+            return;
+        }
+        self.loading_frame = self.loading_frame.wrapping_add(1);
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        if let Some(item) = &menu.usage_period {
+            item.set_text(usage_loading_label(
+                self.config.usage_period(),
+                self.loading_frame,
+            ));
+        }
+    }
+
     fn rebuild(&mut self) {
         let signature: Vec<_> = visible_instances(&self.current, &self.config)
             .map(|instance| (instance.pid, instance.state))
@@ -378,6 +410,9 @@ impl App {
             self.apply_table_fonts();
             return;
         }
+        // Built before the menu is borrowed: the label depends on the worker's
+        // loading flag, which needs an immutable borrow of the app.
+        let usage_period_text = self.usage_period_text(self.usage.snapshot().period);
         if let Some(menu) = &mut self.menu {
             for (item, instance) in menu
                 .instances
@@ -399,7 +434,7 @@ impl App {
                     item.set_text(text);
                 }
                 if let Some(item) = &menu.usage_period {
-                    item.set_text(usage_period_label(snapshot.period));
+                    item.set_text(usage_period_text.clone());
                 }
             }
             menu.notifications
@@ -502,7 +537,7 @@ impl App {
             let snapshot = self.usage.snapshot();
             let switch = IconMenuItem::with_id(
                 "usage_period",
-                usage_period_label(snapshot.period),
+                self.usage_period_text(snapshot.period),
                 true,
                 None,
                 None,
@@ -987,8 +1022,13 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.update_tray_status(false);
+        self.step_usage_spinner();
         let interval = if self.about.is_some() || self.update_rx.is_some() {
             80
+        } else if self.usage.is_loading() {
+            // Four frames per turn of the spinner; the scan itself is cached and
+            // usually lands well inside one revolution.
+            70
         } else {
             250
         };
@@ -1466,6 +1506,22 @@ fn usage_cost(cost: Option<f64>) -> String {
         Some(value) => format!("${value:.2}"),
         None => USAGE_EMPTY.into(),
     }
+}
+
+/// The frames of the load spinner. ASCII only, because the menu font is
+/// proportional and the 14 supported languages all render these four glyphs.
+const USAGE_SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
+
+/// The period row while a scan is running: the spinner takes the place of the
+/// period name, and the chosen period follows it so the click still reads as
+/// having landed somewhere.
+fn usage_loading_label(period: usage::Period, frame: usize) -> String {
+    format!(
+        "{}:  {} {}",
+        i18n::text("usage_period"),
+        USAGE_SPINNER[frame % USAGE_SPINNER.len()],
+        period.label()
+    )
 }
 
 /// The day/week/month switch above the table. One row carries all three options
@@ -2262,6 +2318,31 @@ mod usage_table_tests {
             for line in &lines {
                 assert_eq!(display_width(line), widest, "{line}");
             }
+        }
+    }
+
+    #[test]
+    fn the_loading_label_keeps_the_period_and_cycles_the_spinner() {
+        for period in usage::Period::ALL {
+            assert!(
+                usage_loading_label(period, 0).contains(period.label()),
+                "{}",
+                usage_loading_label(period, 0)
+            );
+            assert!(
+                usage_loading_label(period, 0).starts_with(i18n::text("usage_period")),
+                "{}",
+                usage_loading_label(period, 0)
+            );
+            // The frames wrap, so an ever-increasing counter keeps spinning.
+            assert_eq!(
+                usage_loading_label(period, 1),
+                usage_loading_label(period, 1 + USAGE_SPINNER.len())
+            );
+            assert_ne!(
+                usage_loading_label(period, 0),
+                usage_loading_label(period, 1)
+            );
         }
     }
 
