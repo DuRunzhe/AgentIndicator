@@ -327,21 +327,20 @@ impl App {
             restart_target: None,
         }
     }
-    /// The menu rows that need a fixed-pitch font to line up: the resource
-    /// summary and the token table, in the order they appear. Used only for the
-    /// macOS attributed-title pass.
+    /// Draw the resource summary and the token table with tab stops, so their
+    /// columns line up whatever the menu font does with a localized label.
     #[cfg(target_os = "macos")]
-    fn table_lines(&self) -> Vec<String> {
-        let mut lines = Vec::new();
-        if self.config.show_resources {
+    fn apply_table_fonts(&self) {
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        if self.config.show_resources && menu.resource.len() == 2 {
             let (names, values) = resource_rows(&self.current);
-            lines.push(names);
-            lines.push(values);
+            macos_menu_symbols::apply_table(&menu.menu, &[names, values]);
         }
-        if self.config.show_usage {
-            lines.extend(usage_lines(&self.usage.snapshot()));
+        if self.config.show_usage && !menu.usage.is_empty() {
+            macos_menu_symbols::apply_table(&menu.menu, &usage_lines(&self.usage.snapshot()));
         }
-        lines
     }
     fn rebuild(&mut self) {
         let signature: Vec<_> = visible_instances(&self.current, &self.config)
@@ -355,15 +354,6 @@ impl App {
             let menu = self.create_menu(signature);
             #[cfg(target_os = "macos")]
             self.macos_menu_symbols.apply(&menu.menu, &self.config);
-            // The summary's and the token table's columns only line up in a
-            // monospaced font.
-            #[cfg(target_os = "macos")]
-            {
-                let lines = self.table_lines();
-                if !lines.is_empty() {
-                    macos_menu_symbols::apply_monospaced(&menu.menu, &lines);
-                }
-            }
             if let Some(tray) = &self.tray {
                 // A new root NSMenu avoids AppKit retaining titles from the prior
                 // status-item menu after a resumed session changes state.
@@ -380,12 +370,10 @@ impl App {
             }
             self.menu = Some(menu);
             self.update_tray_status(true);
+            #[cfg(target_os = "macos")]
+            self.apply_table_fonts();
             return;
         }
-        // Built before the menu is borrowed: the fixed-pitch pass needs the
-        // title of every row it applies to.
-        #[cfg(target_os = "macos")]
-        let table_lines = self.table_lines();
         if let Some(menu) = &mut self.menu {
             for (item, instance) in menu
                 .instances
@@ -409,12 +397,6 @@ impl App {
                 if let Some(item) = &menu.usage_period {
                     item.set_text(usage_period_label(snapshot.period));
                 }
-            }
-            // Applying the fixed-pitch font is a menu traversal per refresh, so
-            // it happens once and only while a table row exists.
-            #[cfg(target_os = "macos")]
-            if !menu.resource.is_empty() || !menu.usage.is_empty() {
-                macos_menu_symbols::apply_monospaced(&menu.menu, &table_lines);
             }
             menu.notifications
                 .set_text(notification_action_label(self.config.notifications_enabled));
@@ -465,6 +447,10 @@ impl App {
                 .apply_if_settings_changed(&menu.menu, &self.config);
             self.update_tray_status(false);
         }
+        // Re-applied after the text changes: the tab stops belong to the rows as
+        // they are drawn now.
+        #[cfg(target_os = "macos")]
+        self.apply_table_fonts();
     }
 
     fn create_menu(&self, signature: Vec<(u32, AgentState)>) -> MenuView {
@@ -1367,10 +1353,9 @@ fn format_instance(instance: &AgentInstance, config: &Config) -> String {
 /// Two menu rows summarizing per-agent resource usage. The first row carries
 /// the column titles and the second the CPU/memory under each, led by a
 /// `CPU/memory` stub so the numbers are self-describing and closed by the
-/// total. Columns are padded to the wider of a name and its value so the
-/// numbers line up as closely as a proportional menu font allows. An agent
-/// with no live process reads `--/--` instead of `0`. Host-level figures are
-/// summarized here only; a session row never renders them.
+/// total. The cells are handed to [`table_text`], which lines the columns up. An
+/// agent with no live process reads `--/--` instead of `0`. Host-level figures
+/// are summarized here only; a session row never renders them.
 fn resource_rows(instances: &[AgentInstance]) -> (String, String) {
     let totals = model::resource_totals(instances);
     // The leading stub names the value row; its header stays blank so the total
@@ -1398,18 +1383,10 @@ fn resource_rows(instances: &[AgentInstance]) -> (String, String) {
         total_cpu,
         total_memory,
     ));
-    let mut names = String::new();
-    let mut numbers = String::new();
-    for (index, (label, value)) in labels.iter().zip(&values).enumerate() {
-        let width = display_width(label).max(display_width(value));
-        if index > 0 {
-            names.push_str("  ");
-            numbers.push_str("  ");
-        }
-        names.push_str(&pad_to(label, width));
-        numbers.push_str(&pad_to(value, width));
-    }
-    (names, numbers)
+    let mut lines = table_text(&[labels, values]);
+    let values = lines.pop().unwrap_or_default();
+    let names = lines.pop().unwrap_or_default();
+    (names, values)
 }
 
 /// `CPU/memory` for one column, or `--/--` when the agent has no live process.
@@ -1421,13 +1398,15 @@ fn usage_text(used: bool, cpu: f32, memory_bytes: u64) -> String {
     }
 }
 
-/// What a column reads when a source has nothing to report for the window.
-const USAGE_EMPTY: &str = "—";
+/// What a column reads when a source has nothing to report for the window. It
+/// matches the resource summary's `--/--`, so an idle agent reads the same way
+/// in both tables.
+const USAGE_EMPTY: &str = "--/--";
 
 /// The token table, one string per menu row: the agents across the columns
-/// (closed by the total) and the three metrics down the rows. Cells are padded
-/// to fixed widths so the numbers line up under their headers the way the
-/// CPU/memory summary above already does, and every column is right-aligned.
+/// (closed by the total) and the three metrics down the rows. [`table_text`]
+/// turns the cells into rows whose columns line up the way the CPU/memory
+/// summary above already does.
 fn usage_lines(snapshot: &usage::UsageSnapshot) -> Vec<String> {
     // The rows are the metrics: the first names the agents and the total, the
     // three below it are input, output and cost. Each agent appends one cell to
@@ -1465,7 +1444,7 @@ fn usage_lines(snapshot: &usage::UsageSnapshot) -> Vec<String> {
             row.push(USAGE_EMPTY.into());
         }
     }
-    align_usage_table(&rows)
+    table_text(&rows)
 }
 
 /// A `total/hit` cell: the column's full count and how much of it was served
@@ -1495,45 +1474,56 @@ fn usage_period_label(period: usage::Period) -> String {
     format!("{}:  {}", i18n::text("usage_period"), options.join("   "))
 }
 
-/// Pad every cell to its column width. The metric column on the left is
-/// left-aligned and the agent columns are right-aligned, so digits stack under
-/// their headers.
-fn align_usage_table(rows: &[Vec<String>]) -> Vec<String> {
-    let columns = rows.first().map(Vec::len).unwrap_or(0);
-    let mut widths = vec![0; columns];
-    for row in rows {
-        for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(display_width(cell));
-        }
+/// Join table cells into menu rows. macOS draws these rows with tab stops (see
+/// `macos_menu_symbols::apply_table`), so the cells travel tab-separated: the
+/// menu font is proportional and its CJK glyphs are not a whole number of cells
+/// wide, so padding a localized label with spaces can never line it up with the
+/// numbers after it. Everywhere else the menu is monospaced, so the cells are
+/// padded to fixed widths: the label column left-aligned and the rest right.
+fn table_text(rows: &[Vec<String>]) -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        rows.iter().map(|row| row.join("\t")).collect()
     }
-    rows.iter()
-        .map(|row| {
-            let mut line = String::new();
+    #[cfg(not(target_os = "macos"))]
+    {
+        let columns = rows.first().map(Vec::len).unwrap_or(0);
+        let mut widths = vec![0; columns];
+        for row in rows {
             for (index, cell) in row.iter().enumerate() {
-                if index > 0 {
-                    line.push_str("  ");
-                }
-                if index == 0 {
-                    line.push_str(&pad_to(cell, widths[index]));
-                } else {
-                    line.push_str(&pad_start(cell, widths[index]));
-                }
+                widths[index] = widths[index].max(display_width(cell));
             }
-            line.trim_end().to_owned()
-        })
-        .collect()
+        }
+        rows.iter()
+            .map(|row| {
+                let mut line = String::new();
+                for (index, cell) in row.iter().enumerate() {
+                    if index > 0 {
+                        line.push_str("  ");
+                    }
+                    if index == 0 {
+                        line.push_str(&pad_to(cell, widths[index]));
+                    } else {
+                        line.push_str(&pad_start(cell, widths[index]));
+                    }
+                }
+                line.trim_end().to_owned()
+            })
+            .collect()
+    }
 }
 
 /// The mirror of [`pad_to`] used by the numeric columns.
+#[cfg(not(target_os = "macos"))]
 fn pad_start(value: &str, width: usize) -> String {
     let mut text = " ".repeat(width.saturating_sub(display_width(value)));
     text.push_str(value);
     text
 }
 
-/// Pad `value` with spaces to `width` monospace cells. Padding by cell count
-/// rather than `char` count keeps a localized label such as “总计” aligned with
-/// its column, because CJK glyphs occupy two cells each.
+/// Pad `value` with spaces to `width` cells. Only the monospaced menus outside
+/// macOS need this; the macOS rows carry tab stops instead.
+#[cfg(not(target_os = "macos"))]
 fn pad_to(value: &str, width: usize) -> String {
     let mut text = value.to_owned();
     text.push_str(&" ".repeat(width.saturating_sub(display_width(value))));
@@ -1541,7 +1531,9 @@ fn pad_to(value: &str, width: usize) -> String {
 }
 
 /// Display width of `value` in monospace cells: East Asian wide characters take
-/// two cells, everything else one.
+/// two cells, everything else one. Only the monospaced menus outside macOS need
+/// this; the macOS rows carry tab stops instead.
+#[cfg(not(target_os = "macos"))]
 fn display_width(value: &str) -> usize {
     value
         .chars()
@@ -2188,14 +2180,25 @@ mod usage_table_tests {
     }
 
     #[test]
-    fn every_row_is_padded_to_the_same_width() {
-        // Right-aligning the numbers only helps if the last column ends at the
-        // same cell on every row, so the widths are asserted in display cells
-        // (a CJK header is two cells per glyph).
+    fn every_row_carries_the_same_columns() {
         let lines = usage_lines(&fill());
-        let widest = lines.iter().map(|line| display_width(line)).max().unwrap();
-        for line in &lines {
-            assert_eq!(display_width(line), widest, "{line}");
+        // macOS rows carry tab-separated cells and get their tab stops at draw
+        // time, so every row must have one cell per column.
+        #[cfg(target_os = "macos")]
+        {
+            let columns = crate::model::RESOURCE_AGENTS.len() + 2;
+            for line in &lines {
+                assert_eq!(line.split('\t').count(), columns, "{line}");
+            }
+        }
+        // Elsewhere the rows are space-padded for a monospaced menu, so they have
+        // to end on the same cell as well.
+        #[cfg(not(target_os = "macos"))]
+        {
+            let widest = lines.iter().map(|line| display_width(line)).max().unwrap();
+            for line in &lines {
+                assert_eq!(display_width(line), widest, "{line}");
+            }
         }
     }
 
@@ -2233,9 +2236,12 @@ mod usage_table_tests {
         for line in &lines[1..] {
             assert_eq!(line.matches(USAGE_EMPTY).count(), 6, "{line}");
         }
-        let widest = lines.iter().map(|line| display_width(line)).max().unwrap();
-        for line in &lines {
-            assert_eq!(display_width(line), widest, "{line}");
+        #[cfg(not(target_os = "macos"))]
+        {
+            let widest = lines.iter().map(|line| display_width(line)).max().unwrap();
+            for line in &lines {
+                assert_eq!(display_width(line), widest, "{line}");
+            }
         }
     }
 

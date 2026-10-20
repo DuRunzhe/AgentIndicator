@@ -14,29 +14,68 @@ use crate::{
 use objc2::{rc::Retained, runtime::AnyObject, AnyThread};
 use objc2_app_kit::{
     NSColor, NSFont, NSFontAttributeName, NSImage, NSImageSymbolConfiguration, NSMenu,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStringDrawing, NSTextAlignment,
+    NSTextTab,
 };
-use objc2_foundation::{NSAttributedString, NSAttributedStringKey, NSDictionary, NSString};
+use objc2_foundation::{
+    NSArray, NSAttributedString, NSAttributedStringKey, NSDictionary, NSString,
+};
 use std::collections::HashMap;
 use tray_icon::menu::{ContextMenu, Menu};
 
-/// Draw the given top-level rows in a monospaced font so the resource summary's
-/// columns line up. Space padding alone cannot align them, because the menu's
-/// proportional font gives a name and its value different pixel widths.
-pub fn apply_monospaced(menu: &Menu, titles: &[String]) {
+/// Draw table rows with fixed tab stops so every column lines up. Rows arrive
+/// with their cells separated by `\t`. The menu font is proportional and its CJK
+/// glyphs are not a whole number of cells wide, so space padding can never line a
+/// localized label up with the numbers after it; the tab stops carry the
+/// measurement instead. The leading label is left-aligned and the columns after
+/// it use right-aligned stops, so digits stack under their headers.
+pub fn apply_table(menu: &Menu, rows: &[String]) {
+    if rows.is_empty() {
+        return;
+    }
     // `Menu::ns_menu` is supplied by muda's public ContextMenu trait; see
     // `SymbolCache::apply` for the lifetime and main-thread reasoning.
     let native_menu = unsafe { &*(menu.ns_menu().cast::<NSMenu>()) };
     let size = NSFont::systemFontSize();
     let font =
         NSFont::userFixedPitchFontOfSize(size).unwrap_or_else(|| NSFont::systemFontOfSize(size));
-    // Reading an extern static is unsafe; the symbol is always present on the
-    // platforms this binary supports.
-    let key = unsafe { NSFontAttributeName };
+    // Measure every cell in the font that will draw it, so a CJK label and an
+    // ASCII number are compared in the same pixels rather than in cells.
+    let cells: Vec<Vec<&str>> = rows.iter().map(|line| line.split('\t').collect()).collect();
+    let columns = cells.iter().map(Vec::len).max().unwrap_or(0);
+    let mut widths = vec![0.0f64; columns];
+    for row in &cells {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(measure(&font, cell));
+        }
+    }
+    let gap = measure(&font, "  ");
+    let mut tabs = Vec::with_capacity(columns.saturating_sub(1));
+    let mut offset = widths.first().copied().unwrap_or(0.0);
+    for width in widths.iter().skip(1) {
+        offset += gap + width;
+        tabs.push(unsafe {
+            NSTextTab::initWithTextAlignment_location_options(
+                NSTextTab::alloc(),
+                // NSRightTextAlignment: the binding omits the right case.
+                NSTextAlignment(2),
+                offset,
+                &NSDictionary::new(),
+            )
+        });
+    }
+    let style = NSMutableParagraphStyle::new();
+    style.setTabStops(Some(&NSArray::from_retained_slice(&tabs)));
+    let font_key = unsafe { NSFontAttributeName };
+    let style_key = unsafe { NSParagraphStyleAttributeName };
     let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> =
-        NSDictionary::from_retained_objects(&[key], &[font.into()]);
+        NSDictionary::from_retained_objects(
+            &[font_key, style_key],
+            &[font.clone().into(), style.into()],
+        );
     for item in native_menu.itemArray().iter() {
         let title = item.title().to_string();
-        if !titles.iter().any(|candidate| *candidate == title) {
+        if !rows.iter().any(|row| *row == title) {
             continue;
         }
         let attributed = unsafe {
@@ -48,6 +87,17 @@ pub fn apply_monospaced(menu: &Menu, titles: &[String]) {
         };
         item.setAttributedTitle(Some(&attributed));
     }
+}
+
+/// Width of `text` in the pixels the menu will use for it.
+fn measure(font: &Retained<NSFont>, text: &str) -> f64 {
+    let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> =
+        NSDictionary::from_retained_objects(
+            &[unsafe { NSFontAttributeName }],
+            &[font.clone().into()],
+        );
+    let size = unsafe { NSString::from_str(text).sizeWithAttributes(Some(&attributes)) };
+    size.width
 }
 
 #[derive(Default)]
