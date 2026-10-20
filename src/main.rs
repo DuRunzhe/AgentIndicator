@@ -1262,7 +1262,7 @@ fn toggle_notification_preference(config: &mut Config, key: &str) {
     }
 }
 
-fn config_value(config: &Config, key: &str) -> bool {
+pub(crate) fn config_value(config: &Config, key: &str) -> bool {
     match key {
         "duration" => config.show_duration,
         "model" => config.show_model,

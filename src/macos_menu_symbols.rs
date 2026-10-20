@@ -146,6 +146,7 @@ struct SettingsSignature {
     show_cpu: bool,
     show_memory: bool,
     show_resources: bool,
+    show_usage: bool,
     show_stopped_agents: bool,
     locale: String,
     conversation_window: String,
@@ -222,6 +223,7 @@ impl SettingsSignature {
             show_cpu: config.show_cpu,
             show_memory: config.show_memory,
             show_resources: config.show_resources,
+            show_usage: config.show_usage,
             show_stopped_agents: config.show_stopped_agents,
             locale: config.locale.clone(),
             conversation_window: config.conversation_window.clone(),
@@ -423,18 +425,9 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
     );
 
     for (key, label) in display_settings() {
-        let enabled = match key {
-            "duration" => config.show_duration,
-            "model" => config.show_model,
-            "context_percent" => config.show_context_percent,
-            "context_used" => config.show_context_used,
-            "context_total" => config.show_context_total,
-            "cpu" => config.show_cpu,
-            "memory" => config.show_memory,
-            "resources" => config.show_resources,
-            "stopped_agents" => config.show_stopped_agents,
-            _ => false,
-        };
+        // Read through the same accessor the row uses, so a display option can
+        // never show the wrong check state because a match arm was forgotten.
+        let enabled = crate::config_value(config, key);
         let (name, color) = toggle_symbol(enabled);
         add(
             &mut symbols,
