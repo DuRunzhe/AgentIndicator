@@ -8,6 +8,23 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.33] - 2026-10-20
+
+### Added
+
+- Move the CPU/memory summary total to the last column
+- Lay the token usage table out with the agents in columns
+- Name the token periods today, this week and this month
+- Show the output count alone because output has no cache to hit
+- Show a spinner where the period name goes while the token table loads
+
+### Fixed
+
+- Line up the summary columns and read idle agents as --/--
+- Give each macOS table its own tab stops so its header lines up
+- Read an empty output cell as a single dash
+- Show the token usage switch with its real check state
+
 ## [0.2.32-alpha.5] - 2026-10-19
 
 ### Added

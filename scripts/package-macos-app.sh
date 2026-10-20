@@ -26,8 +26,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>com.durunzhe.agent-status-indicator</string>
   <key>CFBundleName</key><string>AgentStatusIndicator</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.2.32-alpha.5</string>
-  <key>CFBundleVersion</key><string>0.2.32-alpha.5</string>
+  <key>CFBundleShortVersionString</key><string>0.2.33</string>
+  <key>CFBundleVersion</key><string>0.2.33</string>
   <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
