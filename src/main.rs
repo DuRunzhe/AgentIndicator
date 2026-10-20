@@ -1366,37 +1366,38 @@ fn format_instance(instance: &AgentInstance, config: &Config) -> String {
 
 /// Two menu rows summarizing per-agent resource usage. The first row carries
 /// the column titles and the second the CPU/memory under each, led by a
-/// `CPU/memory` stub so the numbers are self-describing. Columns are padded to
-/// the wider of a name and its value so the numbers line up as closely as a
-/// proportional menu font allows. An agent with no live process reads `--/--`
-/// instead of `0`. Host-level figures are summarized here only; a session row
-/// never renders them.
+/// `CPU/memory` stub so the numbers are self-describing and closed by the
+/// total. Columns are padded to the wider of a name and its value so the
+/// numbers line up as closely as a proportional menu font allows. An agent
+/// with no live process reads `--/--` instead of `0`. Host-level figures are
+/// summarized here only; a session row never renders them.
 fn resource_rows(instances: &[AgentInstance]) -> (String, String) {
     let totals = model::resource_totals(instances);
     // The leading stub names the value row; its header stays blank so the total
     // and every agent line up with the figures below them.
     let mut labels: Vec<String> = vec![String::new()];
-    labels.push(i18n::text("resource_total").to_owned());
     labels.extend(
         model::RESOURCE_AGENTS
             .iter()
             .map(|agent| (*agent).to_owned()),
     );
+    // The total closes the row, so it reads as the sum of the columns before it.
+    labels.push(i18n::text("resource_total").to_owned());
     let total_cpu: f32 = totals.iter().map(|total| total.cpu).sum();
     let total_memory = totals
         .iter()
         .fold(0u64, |sum, total| sum.saturating_add(total.memory_bytes));
     let mut values: Vec<String> = vec![i18n::text("resource_stub").to_owned()];
-    values.push(usage_text(
-        totals.iter().any(|total| total.used),
-        total_cpu,
-        total_memory,
-    ));
     values.extend(
         totals
             .iter()
             .map(|total| usage_text(total.used, total.cpu, total.memory_bytes)),
     );
+    values.push(usage_text(
+        totals.iter().any(|total| total.used),
+        total_cpu,
+        total_memory,
+    ));
     let mut names = String::new();
     let mut numbers = String::new();
     for (index, (label, value)) in labels.iter().zip(&values).enumerate() {
@@ -2314,8 +2315,12 @@ mod usage_format_tests {
     #[test]
     fn resource_rows_place_every_agent_with_placeholders_for_idle_ones() {
         let (names, values) = resource_rows(&[]);
-        // The total column comes first, then one per agent.
+        // One column per agent, then the total last.
         assert!(names.contains(i18n::text("resource_total")), "{names}");
+        assert!(
+            names.trim_end().ends_with(i18n::text("resource_total")),
+            "{names}"
+        );
         assert!(names.contains("Claude"), "{names}");
         assert!(names.contains("DeepSeek"), "{names}");
         // The value row leads with the CPU/memory stub describing its figures.
