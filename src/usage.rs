@@ -101,16 +101,15 @@ impl Period {
 ///   into this sum rather than exposing the raw field.
 /// * `input_cached` — the share of `input` served from the prompt cache.
 /// * `output` — generated tokens, reasoning included where the source reports it
-///   separately.
-/// * `output_cached` — no agent has output caching yet; kept so a source that
-///   grows one lands in the table without a column change.
+///   separately. Output has no cache to hit: every output token is decoded, and
+///   the caching providers all offer lives on the input side. The table therefore
+///   shows the output count alone and keeps the `total/hit` shape for input.
 /// * `cost` — a real amount only where the agent records one (OpenCode, Pi).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct TokenCounts {
     pub input: u64,
     pub input_cached: u64,
     pub output: u64,
-    pub output_cached: u64,
     pub cost: Option<f64>,
 }
 
@@ -119,7 +118,6 @@ impl TokenCounts {
         self.input = self.input.saturating_add(other.input);
         self.input_cached = self.input_cached.saturating_add(other.input_cached);
         self.output = self.output.saturating_add(other.output);
-        self.output_cached = self.output_cached.saturating_add(other.output_cached);
         self.cost = match (self.cost, other.cost) {
             (None, None) => None,
             (left, right) => Some(left.unwrap_or(0.0) + right.unwrap_or(0.0)),
@@ -523,7 +521,6 @@ fn claude_file(path: &Path, offsets: &mut Offsets) -> Bucket {
                     .saturating_add(cached),
                 input_cached: cached,
                 output: u64_of(usage, "output_tokens"),
-                output_cached: 0,
                 cost: None,
             },
             offsets,
@@ -551,7 +548,6 @@ fn codex_file(path: &Path, offsets: &mut Offsets) -> Bucket {
             input: u64_of(usage, "input_tokens"),
             input_cached: u64_of(usage, "cached_input_tokens"),
             output: u64_of(usage, "output_tokens"),
-            output_cached: 0,
             cost: None,
         };
         let delta = match previous {
@@ -564,7 +560,6 @@ fn codex_file(path: &Path, offsets: &mut Offsets) -> Bucket {
                     input: u64_of(&info["last_token_usage"], "input_tokens"),
                     input_cached: u64_of(&info["last_token_usage"], "cached_input_tokens"),
                     output: u64_of(&info["last_token_usage"], "output_tokens"),
-                    output_cached: 0,
                     cost: None,
                 };
                 if last_turn.input == 0 && last_turn.output == 0 {
@@ -574,7 +569,6 @@ fn codex_file(path: &Path, offsets: &mut Offsets) -> Bucket {
                         input: current.input.min(last_turn.input),
                         input_cached: current.input_cached.min(last_turn.input_cached),
                         output: current.output.min(last_turn.output),
-                        output_cached: 0,
                         cost: None,
                     }
                 }
@@ -583,7 +577,6 @@ fn codex_file(path: &Path, offsets: &mut Offsets) -> Bucket {
                 input: current.input.saturating_sub(previous.input),
                 input_cached: current.input_cached.saturating_sub(previous.input_cached),
                 output: current.output.saturating_sub(previous.output),
-                output_cached: 0,
                 cost: None,
             },
         };
@@ -629,7 +622,6 @@ fn pi_file(path: &Path, offsets: &mut Offsets) -> Bucket {
                     .saturating_add(cached),
                 input_cached: cached,
                 output: u64_of(usage, "output"),
-                output_cached: 0,
                 cost: usage["cost"]["total"].as_f64(),
             },
             offsets,
@@ -675,7 +667,6 @@ fn opencode(database: &Path, start: i64, end: i64) -> Totals {
                 .saturating_add(cache_write.max(0) as u64),
             input_cached: cache_read.max(0) as u64,
             output: output.max(0) as u64,
-            output_cached: 0,
             cost: Some(cost),
         };
     }
@@ -733,7 +724,6 @@ fn deepseek(root: &Path, start: i64, end: i64) -> Totals {
                 .saturating_add(cached),
             input_cached: cached,
             output: u64_of(totals_row, "outputTokens"),
-            output_cached: 0,
             cost: None,
         });
     }

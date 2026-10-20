@@ -1426,7 +1426,7 @@ fn usage_lines(snapshot: &usage::UsageSnapshot) -> Vec<String> {
         match agent.counts {
             Some(counts) => {
                 rows[1].push(usage_pair(counts.input, counts.input_cached));
-                rows[2].push(usage_pair(counts.output, counts.output_cached));
+                rows[2].push(short_tokens(counts.output));
                 rows[3].push(usage_cost(counts.cost));
             }
             None => {
@@ -1441,7 +1441,7 @@ fn usage_lines(snapshot: &usage::UsageSnapshot) -> Vec<String> {
     rows[0].push(i18n::text("resource_total").to_owned());
     if snapshot.has_data {
         rows[1].push(usage_pair(total.input, total.input_cached));
-        rows[2].push(usage_pair(total.output, total.output_cached));
+        rows[2].push(short_tokens(total.output));
         rows[3].push(usage_cost(total.cost));
     } else {
         for row in rows.iter_mut().skip(1) {
@@ -2114,7 +2114,6 @@ mod usage_table_tests {
             input,
             input_cached: cached,
             output,
-            output_cached: 0,
             cost,
         }
     }
@@ -2211,7 +2210,9 @@ mod usage_table_tests {
         let lines = usage_lines(&fill());
         assert!(lines[1].contains("22.6m/21.8m"), "{}", lines[1]);
         assert!(lines[1].contains("8.9m/8.8m"), "{}", lines[1]);
-        assert!(lines[2].contains("313k/0"), "{}", lines[2]);
+        // Output has no cache to hit, so the cell carries the count alone.
+        assert!(lines[2].contains("313k"), "{}", lines[2]);
+        assert!(!lines[2].contains("313k/"), "{}", lines[2]);
         assert!(lines[3].contains("$0.15"), "{}", lines[3]);
         // An agent without records in the window reads as no data, not zeros:
         // OpenCode and DeepSeek are empty in every metric row, and Claude and
@@ -2229,7 +2230,7 @@ mod usage_table_tests {
         assert_eq!(total.input, 22_600_000 + 1_200_000 + 8_900_000);
         assert_eq!(total.input_cached, 21_800_000 + 900_000 + 8_845_696);
         assert!(lines[1].trim_end().ends_with("32.7m/31.5m"), "{}", lines[1]);
-        assert!(lines[2].trim_end().ends_with("419k/0"), "{}", lines[2]);
+        assert!(lines[2].trim_end().ends_with("419k"), "{}", lines[2]);
         assert!(lines[3].trim_end().ends_with("$0.15"), "{}", lines[3]);
     }
 

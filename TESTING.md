@@ -66,7 +66,7 @@ agent-status-indicator --diagnose-usage --render --usage-period week
 agent-status-indicator --diagnose-usage --render --usage-period month
 ```
 
-1. 打印的三行表格应与菜单里的表格逐字一致：表头上方是 `周期: ● 日 ○ 周 ○ 月`，随后是 `输入/命中`、`输出/命中`、`费用` 表头、五行 Agent 与一行总计。
+1. 打印的三行表格应与菜单里的表格逐字一致：表头上方是 `周期: ● 当日 ○ 当周 ○ 当月`，随后是 `输入/命中`、`输出`、`费用` 表头、五行 Agent 与一行总计。
 2. 打开菜单，确认表格位于「资源汇总」下方，列之间对齐；点击周期行应在“日 → 周 → 月 → 日”之间循环，箭头所指项随之改变，表格数字按新维度重算（≤10 秒内，通常 1 秒内）。
 3. 与各 Agent 自带统计对数：
    - Claude Code：在会话里运行 `/status`（或 `/cost`）对比本次会话的 input/output token；本表的 `输入` 为 `input_tokens + cache_creation + cache_read`。
