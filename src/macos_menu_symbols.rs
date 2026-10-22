@@ -478,6 +478,38 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
             color,
         );
     }
+    // The period selector is a submenu; a calendar marks it as the date-range
+    // control and hints that it opens more than one choice. The title carries a
+    // spinner while a scan runs, so every frame is registered too.
+    let period = config.usage_period();
+    add(
+        &mut symbols,
+        "",
+        crate::usage_period_title_text(period),
+        "calendar",
+        None,
+    );
+    // The selector is a submenu, so its rows are owned by the title that is
+    // currently on screen; every spinner frame is registered as an owner too,
+    // because the title carries the spinner while a scan runs.
+    let mut titles = vec![crate::usage_period_title_text(period)];
+    for frame in 0..crate::USAGE_SPINNER.len() {
+        add(
+            &mut symbols,
+            "",
+            crate::usage_period_loading_title(period, frame),
+            "calendar",
+            None,
+        );
+        titles.push(crate::usage_period_loading_title(period, frame));
+    }
+    for title in titles {
+        for candidate in crate::usage::Period::ALL {
+            let (name, color) = toggle_symbol(config.usage_period() == candidate);
+            add(&mut symbols, &title, candidate.label().into(), name, color);
+        }
+    }
+
     symbols
 }
 

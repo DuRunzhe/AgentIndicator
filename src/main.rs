@@ -107,8 +107,12 @@ fn main() -> Result<()> {
             .unwrap_or(usage::Period::Day);
         let snapshot = usage::scan(period);
         if arguments.iter().any(|argument| argument == "--render") {
-            // The menu rows exactly as the tray would show them.
-            println!("{}", usage_period_label(snapshot.period));
+            // The menu rows exactly as the tray would show them: the selector's
+            // title followed by its three choices.
+            println!("{}", usage_period_title_text(snapshot.period));
+            for line in usage_period_lines(snapshot.period) {
+                println!("{line}");
+            }
             for line in usage_lines(&snapshot) {
                 println!("{line}");
             }
@@ -267,9 +271,13 @@ struct MenuView {
     /// The two per-agent resource rows (names, then CPU/memory). Empty when the
     /// summary is turned off.
     resource: Vec<MenuItem>,
-    /// The day/week/month switch above the token table. Absent when the table
-    /// is turned off.
-    usage_period: Option<IconMenuItem>,
+    /// The day/week/month selector above the token table. It is a submenu like
+    /// Settings: hovering opens the three choices, and its own title echoes the
+    /// selected period. Absent when the table is off.
+    usage_period: Option<Submenu>,
+    /// The three rows inside [`Self::usage_period`], so their marks can follow
+    /// the selection and the spinner.
+    usage_period_rows: Vec<MenuItem>,
     /// The token table itself: column titles, one row per agent, and the total.
     /// Empty when the table is turned off.
     usage: Vec<MenuItem>,
@@ -349,13 +357,34 @@ impl App {
             );
         }
     }
-    /// The period row's text: the spinner while a scan is running, the full
-    /// three-state switch once it lands.
-    fn usage_period_text(&self, period: usage::Period) -> String {
-        if self.usage.is_loading() {
-            usage_loading_label(period, self.loading_frame)
-        } else {
-            usage_period_label(period)
+    /// Text of the three period rows, in menu order.
+    fn usage_period_texts(&self) -> Vec<String> {
+        let selected = self.config.usage_period();
+        // On macOS the check mark is the menu row's SF Symbol, the same one the
+        // other switches use; elsewhere the row has to spell the mark out.
+        usage::Period::ALL
+            .iter()
+            .map(|period| {
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = selected;
+                    period.label().to_owned()
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    usage_period_row(*period, *period == selected, None)
+                }
+            })
+            .collect()
+    }
+
+    /// The submenu's own title: the period it echoes, or the spinner while a
+    /// scan runs.
+    fn usage_period_title(&self) -> String {
+        let period = self.config.usage_period();
+        match self.usage.is_loading() {
+            true => usage_period_loading_title(period, self.loading_frame),
+            false => usage_period_title_text(period),
         }
     }
 
@@ -367,14 +396,16 @@ impl App {
             return;
         }
         self.loading_frame = self.loading_frame.wrapping_add(1);
+        let title = self.usage_period_title();
+        let texts = self.usage_period_texts();
         let Some(menu) = &self.menu else {
             return;
         };
-        if let Some(item) = &menu.usage_period {
-            item.set_text(usage_loading_label(
-                self.config.usage_period(),
-                self.loading_frame,
-            ));
+        if let Some(period) = &menu.usage_period {
+            period.set_text(title);
+        }
+        for (item, text) in menu.usage_period_rows.iter().zip(texts) {
+            item.set_text(text);
         }
     }
 
@@ -410,9 +441,10 @@ impl App {
             self.apply_table_fonts();
             return;
         }
-        // Built before the menu is borrowed: the label depends on the worker's
+        // Built before the menu is borrowed: the labels depend on the worker's
         // loading flag, which needs an immutable borrow of the app.
-        let usage_period_text = self.usage_period_text(self.usage.snapshot().period);
+        let usage_period_texts = self.usage_period_texts();
+        let usage_period_title = self.usage_period_title();
         if let Some(menu) = &mut self.menu {
             for (item, instance) in menu
                 .instances
@@ -433,8 +465,11 @@ impl App {
                 for (item, text) in menu.usage.iter().zip(usage_lines(&snapshot)) {
                     item.set_text(text);
                 }
-                if let Some(item) = &menu.usage_period {
-                    item.set_text(usage_period_text.clone());
+                if let Some(period) = &menu.usage_period {
+                    period.set_text(usage_period_title.clone());
+                }
+                for (item, text) in menu.usage_period_rows.iter().zip(&usage_period_texts) {
+                    item.set_text(text.clone());
                 }
             }
             menu.notifications
@@ -531,24 +566,25 @@ impl App {
         // switch, a header row, one row per agent and a total. Its numbers come
         // from the agents' own session records, recomputed in the background.
         let mut usage_rows = Vec::new();
-        let mut usage_period_item = None;
+        let mut usage_period_items = Vec::new();
+        let mut usage_period_menu = None;
         if self.config.show_usage {
             let _ = menu.append(&PredefinedMenuItem::separator());
             let snapshot = self.usage.snapshot();
-            let switch = IconMenuItem::with_id(
-                "usage_period",
-                self.usage_period_text(snapshot.period),
-                true,
-                None,
-                None,
-            );
-            let _ = menu.append(&switch);
+            let period_menu = Submenu::new(self.usage_period_title(), true);
+            for (period, text) in usage::Period::ALL.iter().zip(self.usage_period_texts()) {
+                let item =
+                    MenuItem::with_id(format!("usage_period:{}", period.key()), text, true, None);
+                let _ = period_menu.append(&item);
+                usage_period_items.push(item);
+            }
+            let _ = menu.append(&period_menu);
+            usage_period_menu = Some(period_menu);
             for text in usage_lines(&snapshot) {
                 let item = MenuItem::new(text, false, None);
                 let _ = menu.append(&item);
                 usage_rows.push(item);
             }
-            usage_period_item = Some(switch);
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
         let settings = Submenu::new(i18n::menu("settings"), true);
@@ -719,7 +755,8 @@ impl App {
             signature,
             instances: instance_items,
             resource: resource_items,
-            usage_period: usage_period_item,
+            usage_period: usage_period_menu,
+            usage_period_rows: usage_period_items,
             usage: usage_rows,
             notifications: notification_item,
             notification_preferences: notification_preference_items,
@@ -962,11 +999,13 @@ impl ApplicationHandler<UserEvent> for App {
                 let _ = self.refresh_tx.try_send(WorkerCommand::Refresh);
             } else if id == "restart_detector" {
                 let _ = self.refresh_tx.try_send(WorkerCommand::Restart);
-            } else if id == "usage_period" {
-                // The switch is one row with three states: each click advances
-                // day -> week -> month, and the background worker rescans at
-                // once instead of waiting for its next tick.
-                let next = self.config.usage_period().next();
+            } else if let Some(key) = id.strip_prefix("usage_period:") {
+                // Each row selects the period it names; the background worker
+                // rescans at once instead of waiting for its next tick.
+                let next = usage::Period::from_key(key);
+                if next == self.config.usage_period() {
+                    continue;
+                }
                 self.config.usage_period = next.key().into();
                 self.config.save();
                 self.usage.set_period(next);
@@ -1510,32 +1549,42 @@ fn usage_cost(cost: Option<f64>) -> String {
 
 /// The frames of the load spinner. ASCII only, because the menu font is
 /// proportional and the 14 supported languages all render these four glyphs.
-const USAGE_SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
+pub(crate) const USAGE_SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
 
-/// The period row while a scan is running: the spinner takes the place of the
-/// period name, and the chosen period follows it so the click still reads as
-/// having landed somewhere.
-fn usage_loading_label(period: usage::Period, frame: usize) -> String {
+/// Text of one period row: a radio-style mark and the period name. The selected
+/// row carries a filled circle, or the spinner while a scan runs.
+fn usage_period_row(candidate: usage::Period, selected: bool, spinner: Option<usize>) -> String {
+    let mark = match spinner {
+        Some(frame) if selected => USAGE_SPINNER[frame % USAGE_SPINNER.len()],
+        _ if selected => "●",
+        _ => "○",
+    };
+    format!("{mark} {}", candidate.label())
+}
+
+/// The submenu title at rest: the period it echoes.
+pub(crate) fn usage_period_title_text(period: usage::Period) -> String {
+    format!("{}:  {} ▾", i18n::text("usage_period"), period.label())
+}
+
+/// The submenu title while a scan runs, with the spinner frame in front of the
+/// period name.
+pub(crate) fn usage_period_loading_title(period: usage::Period, frame: usize) -> String {
     format!(
-        "{}:  {} {}",
+        "{}:  {} {} ▾",
         i18n::text("usage_period"),
         USAGE_SPINNER[frame % USAGE_SPINNER.len()],
         period.label()
     )
 }
 
-/// The day/week/month switch above the table. One row carries all three options
-/// so the control reads as a single radio group; clicking it advances the
-/// selection.
-fn usage_period_label(period: usage::Period) -> String {
-    let options: Vec<String> = usage::Period::ALL
+/// The three period rows as the menu shows them, with a filled circle on the
+/// selected one.
+fn usage_period_lines(period: usage::Period) -> Vec<String> {
+    usage::Period::ALL
         .iter()
-        .map(|candidate| {
-            let mark = if *candidate == period { "●" } else { "○" };
-            format!("{mark} {}", candidate.label())
-        })
-        .collect();
-    format!("{}:  {}", i18n::text("usage_period"), options.join("   "))
+        .map(|candidate| usage_period_row(*candidate, *candidate == period, None))
+        .collect()
 }
 
 /// Join table cells into menu rows. macOS draws these rows with tab stops (see
@@ -2324,39 +2373,40 @@ mod usage_table_tests {
     #[test]
     fn the_loading_label_keeps_the_period_and_cycles_the_spinner() {
         for period in usage::Period::ALL {
-            assert!(
-                usage_loading_label(period, 0).contains(period.label()),
-                "{}",
-                usage_loading_label(period, 0)
-            );
-            assert!(
-                usage_loading_label(period, 0).starts_with(i18n::text("usage_period")),
-                "{}",
-                usage_loading_label(period, 0)
-            );
+            let first = usage_period_row(period, true, Some(0));
+            assert!(first.contains(period.label()), "{first}");
             // The frames wrap, so an ever-increasing counter keeps spinning.
             assert_eq!(
-                usage_loading_label(period, 1),
-                usage_loading_label(period, 1 + USAGE_SPINNER.len())
+                usage_period_row(period, true, Some(1)),
+                usage_period_row(period, true, Some(1 + USAGE_SPINNER.len()))
             );
             assert_ne!(
-                usage_loading_label(period, 0),
-                usage_loading_label(period, 1)
+                usage_period_row(period, true, Some(0)),
+                usage_period_row(period, true, Some(1))
             );
         }
     }
 
     #[test]
-    fn the_switch_marks_exactly_one_period() {
+    fn the_period_rows_mark_exactly_one_period() {
         for period in usage::Period::ALL {
-            let label = usage_period_label(period);
-            assert_eq!(label.matches('●').count(), 1, "{label}");
-            assert_eq!(label.matches('○').count(), 2, "{label}");
-            assert!(label.contains(period.label()), "{label}");
+            let lines = usage_period_lines(period);
+            assert_eq!(lines.len(), usage::Period::ALL.len());
+            let joined = lines.join(" ");
+            assert_eq!(joined.matches('●').count(), 1, "{joined}");
+            assert_eq!(
+                joined.matches('○').count(),
+                usage::Period::ALL.len() - 1,
+                "{joined}"
+            );
+            // The marked row is the selected period's own row.
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.starts_with('●') && line.contains(period.label())),
+                "{joined}"
+            );
         }
-        // Clicking advances day -> week -> month and wraps.
-        assert_eq!(usage::Period::Day.next(), usage::Period::Week);
-        assert_eq!(usage::Period::Month.next(), usage::Period::Day);
     }
 }
 

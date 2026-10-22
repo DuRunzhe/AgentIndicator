@@ -73,15 +73,6 @@ impl Period {
         }
     }
 
-    /// The next period in the day → week → month cycle of the switch row.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Day => Self::Week,
-            Self::Week => Self::Month,
-            Self::Month => Self::Day,
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Day => crate::i18n::text("usage_day"),
@@ -1017,14 +1008,11 @@ mod tests {
     }
 
     #[test]
-    fn periods_cycle_and_round_trip_through_the_config() {
+    fn periods_round_trip_through_the_config() {
         for period in Period::ALL {
             assert_eq!(Period::from_key(period.key()), period);
             assert!(!period.label().is_empty());
         }
-        assert_eq!(Period::Day.next(), Period::Week);
-        assert_eq!(Period::Week.next(), Period::Month);
-        assert_eq!(Period::Month.next(), Period::Day);
         assert_eq!(Period::from_key("nonsense"), Period::Day);
     }
 
