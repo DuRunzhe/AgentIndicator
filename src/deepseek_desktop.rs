@@ -1075,8 +1075,8 @@ fn turn_open(rows: &Value) -> bool {
 /// renders:
 ///
 /// * an active tool question means the user has to answer something;
-/// * an open step, a pending tool call or a queued inbox message means the
-///   agent is still producing;
+/// * an open step, a pending tool call or queued work means the agent is still
+///   producing;
 /// * otherwise the turn is finished and the conversation is only ready.
 fn state_of(rows: &Value) -> AgentState {
     let active_questions = rows["userQuestions"]["val"]["questions"]["active"]
@@ -1086,22 +1086,46 @@ fn state_of(rows: &Value) -> AgentState {
         return AgentState::WaitingReply;
     }
     let stats = &rows["sessionStats"]["val"];
-    let queued = rows["inbox"]["val"]["next-turn"]
-        .as_array()
-        .map_or(0, Vec::len)
-        + rows["inbox"]["val"]["next-step"]
-            .as_array()
-            .map_or(0, Vec::len);
     let working = !stats["openStep"].is_null()
         || stats["pendingCalls"]
             .as_object()
             .is_some_and(|calls| !calls.is_empty())
-        || queued > 0;
+        || queued_work(rows) > 0;
     if working {
         AgentState::Working
     } else {
         AgentState::Ready
     }
+}
+
+/// How much of the inbox is work the agent is about to do.
+///
+/// The inbox is not "everything the agent still owes": it holds two targets
+/// filled by different calls, and only the call that queued an entry is
+/// recorded anywhere the projection can be read from — as the message's
+/// source. So the target and the source together decide:
+///
+/// * `next-turn` is what `followup()` writes, an ordinary prompt that wakes the
+///   driver: an entry there is pending work whatever its source;
+/// * `next-step` is shared. `steer()` puts a user prompt there and wakes the
+///   driver too, but `inject()` puts model-facing context there and
+///   deliberately does *not* wake anything — it is only claimed when a turn
+///   boundary comes past. A context injection that lands after the loop's last
+///   inbox check is never claimed at all, so it sits in `next-step` forever.
+///
+/// Counting those injections as work reported an empty conversation as running
+/// with nothing in the app to explain it. Only a user prompt waiting for the
+/// next step is work.
+fn queued_work(rows: &Value) -> usize {
+    let inbox = &rows["inbox"]["val"];
+    let next_turn = inbox["next-turn"].as_array().map_or(0, Vec::len);
+    let steering = inbox["next-step"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|message| message["source"]["kind"].as_str() == Some("user"))
+        .count();
+    next_turn + steering
 }
 
 fn title_of(rows: &Value) -> Option<String> {
@@ -1292,6 +1316,61 @@ mod tests {
             session_document(rows(json!(null), json!({}), json!([]), json!("排队的会话")));
         document["record"]["rows"]["inbox"]["val"]["next-turn"] = json!([{ "text": "继续" }]);
         assert_eq!(parse_temp(&document).state, AgentState::Working);
+    }
+
+    /// An injected notice, as the approval service writes it when the policy
+    /// changes: `inject()` never wakes the driver, so the entry is only claimed
+    /// at the next turn boundary — and never, if it landed after the loop's last
+    /// inbox check.
+    fn injected_notice() -> Value {
+        json!({
+            "content": [{ "type": "text", "text": "The approval policy changed from \"ask\" to \"never\" (changed by the user)." }],
+            "source": { "kind": "user-approval" },
+            "role": "user",
+            "id": "notice-1",
+        })
+    }
+
+    #[test]
+    fn a_queued_context_injection_is_not_work() {
+        let mut document =
+            session_document(rows(json!(null), json!({}), json!([]), json!("空闲的会话")));
+        document["record"]["rows"]["inbox"]["val"]["next-step"] = json!([injected_notice()]);
+        let session = parse_temp(&document);
+        assert_eq!(session.state, AgentState::Ready);
+        assert!(!session.turn_open);
+    }
+
+    #[test]
+    fn a_steering_prompt_is_work() {
+        // `steer()` shares `next-step` with `inject()`, but a user prompt queued
+        // there does wake the driver, so the row has to keep spinning.
+        let mut document =
+            session_document(rows(json!(null), json!({}), json!([]), json!("插话的会话")));
+        document["record"]["rows"]["inbox"]["val"]["next-step"] = json!([{
+            "content": [{ "type": "text", "text": "改成 v2 接口" }],
+            "source": { "kind": "user" },
+            "role": "user",
+            "id": "steer-1",
+        }]);
+        assert_eq!(parse_temp(&document).state, AgentState::Working);
+    }
+
+    #[test]
+    fn a_scratch_buffer_holding_only_an_injection_gets_no_row() {
+        // Measured on this profile: a session that was created and never,
+        // prompted held one injected "approval policy changed" notice and
+        // nothing else. The app shows no conversation for it, while the queued
+        // notice used to leave the tray spinning on "working" forever.
+        let mut document = session_document(rows(json!(null), json!({}), json!([]), json!(null)));
+        document["record"]["rows"]["contextPressure"] = json!({ "val": {} });
+        document["record"]["rows"]["sessionListMetadata"] =
+            json!({ "val": { "blank": true, "lastPromptAt": null } });
+        document["record"]["rows"]["inbox"]["val"]["next-step"] = json!([injected_notice()]);
+        let session = parse_temp(&document);
+        assert!(session.last_prompt.is_none());
+        assert!(!started(&session));
+        assert!(listed_sessions(&[session], None, &WorkspaceRegistry::default()).is_empty());
     }
 
     #[test]
