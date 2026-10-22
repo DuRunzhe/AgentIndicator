@@ -1145,9 +1145,15 @@ impl App {
             }
         }
         let requested = panel.update_requested();
+        let alpha_requested = panel.alpha_requested();
         let visible = panel.is_visible();
         if !visible {
             self.about = None;
+        } else if alpha_requested {
+            // The link asks for the same install flow, only on the alpha
+            // channel; whatever the stable check found no longer applies.
+            self.pending_update = None;
+            panel.start_alpha_check();
         } else if requested {
             match self.pending_update.take() {
                 Some(version) => {

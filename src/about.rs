@@ -2,9 +2,12 @@
 //!
 //! On macOS the About panel is a small custom `NSWindow`: app icon, name,
 //! version, repository and copyright are stacked with even padding and
-//! horizontally centered, with an update and a close button underneath. A
-//! plain window is used instead of `NSAlert` so the alert chrome at the top
-//! can be dropped and the inner padding fully controlled.
+//! horizontally centered, with an update and a close button underneath. The
+//! repository row carries a copy button for the URL, and the very bottom of the
+//! panel holds a small blue link that switches the update check to the alpha
+//! channel; it stays visually quiet so the stable update button keeps the
+//! user's attention. A plain window is used instead of `NSAlert` so the alert
+//! chrome at the top can be dropped and the inner padding fully controlled.
 //!
 //! The panel is deliberately non-modal. It is owned by the tray event loop,
 //! which keeps polling it: the update check runs on a worker thread and the
@@ -31,7 +34,11 @@ impl AboutPanel {
     pub fn update_requested(&self) -> bool {
         false
     }
+    pub fn alpha_requested(&self) -> bool {
+        false
+    }
     pub fn start_check(&mut self) {}
+    pub fn start_alpha_check(&mut self) {}
     pub fn set_update_available(&self, _: &str) {}
     pub fn set_up_to_date(&self) {}
     pub fn set_check_failed(&self) {}
@@ -86,15 +93,21 @@ mod macos {
     use crossbeam_channel::{Receiver, TryRecvError};
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, NSObject, Sel};
-    use objc2::{msg_send, sel, ClassType};
+    use objc2::{msg_send, sel, AnyThread, ClassType};
     use objc2_app_kit::{
-        NSApplication, NSButton, NSColor, NSControlSize, NSFont, NSImageScaling, NSImageView,
-        NSProgressIndicator, NSProgressIndicatorStyle, NSTextAlignment, NSTextField, NSView,
-        NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
+        NSApplication, NSButton, NSColor, NSControlSize, NSFont, NSFontAttributeName,
+        NSForegroundColorAttributeName, NSImageScaling, NSImageView, NSPasteboard,
+        NSPasteboardTypeString, NSProgressIndicator, NSProgressIndicatorStyle, NSStringDrawing,
+        NSTextAlignment, NSTextField, NSUnderlineStyleAttributeName, NSView, NSWindow,
+        NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
     };
-    use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+    use objc2_foundation::{
+        MainThreadMarker, NSAttributedString, NSAttributedStringKey, NSDictionary, NSNumber,
+        NSPoint, NSRect, NSSize, NSString,
+    };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
 
     const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
     const APP_NAME: &str = env!("CARGO_PKG_NAME");
@@ -104,6 +117,16 @@ mod macos {
     const PANEL_HEIGHT: f64 = 264.0;
     const ICON_SIZE: f64 = 64.0;
     const BUTTON_HEIGHT: f64 = 26.0;
+    const BUTTONS_Y: f64 = 30.0;
+    /// Small link at the very bottom of the panel; a smaller font and a shorter
+    /// frame keep it below the update button in the visual hierarchy.
+    const LINK_Y: f64 = 8.0;
+    const LINK_HEIGHT: f64 = 16.0;
+    const LINK_FONT_SIZE: f64 = 10.0;
+    const COPY_GAP: f64 = 8.0;
+    const COPY_HEIGHT: f64 = 18.0;
+    /// How long the copy button keeps its "copied" label.
+    const COPIED_LABEL: Duration = Duration::from_millis(1200);
     const UPDATE_BUTTON_WIDTH: f64 = 178.0;
     const CLOSE_BUTTON_WIDTH: f64 = 96.0;
     const BUTTON_GAP: f64 = 12.0;
@@ -115,6 +138,10 @@ mod macos {
     /// Set by the panel's button and drained by the tray loop, which owns the
     /// actual check/install state machine.
     static UPDATE_REQUESTED: AtomicBool = AtomicBool::new(false);
+    /// Set by the alpha link: the same state machine, but on the alpha channel.
+    static ALPHA_REQUESTED: AtomicBool = AtomicBool::new(false);
+    /// Set by the copy button so the panel can flash a confirmation label.
+    static COPY_REQUESTED: AtomicBool = AtomicBool::new(false);
 
     /// Returns the shared action target backing both panels' buttons.
     fn action_target() -> Retained<AnyObject> {
@@ -130,6 +157,30 @@ mod macos {
                 _sender: &AnyObject,
             ) {
                 UPDATE_REQUESTED.store(true, Ordering::SeqCst);
+            }
+
+            unsafe extern "C-unwind" fn request_alpha(
+                _this: &AnyObject,
+                _cmd: Sel,
+                _sender: &AnyObject,
+            ) {
+                ALPHA_REQUESTED.store(true, Ordering::SeqCst);
+            }
+
+            unsafe extern "C-unwind" fn copy_repository(
+                _this: &AnyObject,
+                _cmd: Sel,
+                _sender: &AnyObject,
+            ) {
+                let pasteboard = NSPasteboard::generalPasteboard();
+                pasteboard.clearContents();
+                let copied = pasteboard
+                    .setString_forType(&NSString::from_str(REPOSITORY), unsafe {
+                        NSPasteboardTypeString
+                    });
+                if copied {
+                    COPY_REQUESTED.store(true, Ordering::SeqCst);
+                }
             }
 
             unsafe extern "C-unwind" fn close_panel(
@@ -151,6 +202,14 @@ mod macos {
                     request_update as unsafe extern "C-unwind" fn(_, _, _),
                 );
                 builder.add_method(
+                    sel!(requestAlpha:),
+                    request_alpha as unsafe extern "C-unwind" fn(_, _, _),
+                );
+                builder.add_method(
+                    sel!(copyRepository:),
+                    copy_repository as unsafe extern "C-unwind" fn(_, _, _),
+                );
+                builder.add_method(
                     sel!(closePanel:),
                     close_panel as unsafe extern "C-unwind" fn(_, _, _),
                 );
@@ -164,6 +223,10 @@ mod macos {
     pub struct AboutPanel {
         window: Retained<NSWindow>,
         update_button: Retained<NSButton>,
+        copy_button: Retained<NSButton>,
+        /// When the copy button returns to its normal label, if it is showing
+        /// the confirmation one.
+        copied_until: Option<Instant>,
         check_rx: Option<Receiver<CheckOutcome>>,
         // NSControl targets are weak; keep the action target alive as long as
         // the buttons that point at it.
@@ -176,6 +239,7 @@ mod macos {
         }
 
         pub fn poll_check(&mut self) -> Option<CheckOutcome> {
+            self.refresh_copy_label();
             let receiver = self.check_rx.as_ref()?;
             match receiver.try_recv() {
                 Ok(outcome) => {
@@ -195,9 +259,40 @@ mod macos {
             UPDATE_REQUESTED.swap(false, Ordering::SeqCst)
         }
 
+        /// Drains a click on the alpha link the same way.
+        pub fn alpha_requested(&self) -> bool {
+            ALPHA_REQUESTED.swap(false, Ordering::SeqCst)
+        }
+
         pub fn start_check(&mut self) {
+            self.start_check_on(update::Channel::Stable);
+        }
+
+        pub fn start_alpha_check(&mut self) {
+            self.start_check_on(update::Channel::Alpha);
+        }
+
+        fn start_check_on(&mut self, channel: update::Channel) {
             self.set_button(i18n::text("update_checking"), false);
-            self.check_rx = Some(update::spawn_check());
+            self.check_rx = Some(update::spawn_check(channel));
+        }
+
+        /// Flashes the copy button's confirmation label after a click and
+        /// restores the normal one a moment later.
+        fn refresh_copy_label(&mut self) {
+            let label = if COPY_REQUESTED.swap(false, Ordering::SeqCst) {
+                self.copied_until = Some(Instant::now() + COPIED_LABEL);
+                i18n::text("about_copied")
+            } else if self
+                .copied_until
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                self.copied_until = None;
+                i18n::text("about_copy")
+            } else {
+                return;
+            };
+            self.copy_button.setTitle(&NSString::from_str(label));
         }
 
         pub fn set_update_available(&self, version: &str) {
@@ -286,6 +381,7 @@ mod macos {
                 (UPDATE_WIDTH - 96.0) / 2.0,
                 12.0,
                 96.0,
+                BUTTON_HEIGHT,
                 None,
                 &target,
             );
@@ -357,17 +453,21 @@ mod macos {
     pub fn open() -> Option<AboutPanel> {
         let mtm = MainThreadMarker::new()?;
         UPDATE_REQUESTED.store(false, Ordering::SeqCst);
+        ALPHA_REQUESTED.store(false, Ordering::SeqCst);
+        COPY_REQUESTED.store(false, Ordering::SeqCst);
         let target = action_target();
         let window = panel_window(mtm, PANEL_WIDTH, PANEL_HEIGHT);
-        let (content, update_button) = panel_content(mtm, &target);
-        window.setContentView(Some(&content));
+        let parts = panel_content(mtm, &target);
+        window.setContentView(Some(&parts.content));
         window.center();
         activate(mtm);
         window.makeKeyAndOrderFront(None);
 
         let mut panel = AboutPanel {
             window,
-            update_button,
+            update_button: parts.update_button,
+            copy_button: parts.copy_button,
+            copied_until: None,
             check_rx: None,
             _target: target,
         };
@@ -403,12 +503,16 @@ mod macos {
         window
     }
 
-    /// Builds the About panel's content view and returns the update button so
-    /// the tray loop can relabel it when the check finishes.
-    fn panel_content(
-        mtm: MainThreadMarker,
-        target: &AnyObject,
-    ) -> (Retained<NSView>, Retained<NSButton>) {
+    /// The controls the tray loop relabels after a check or a copy.
+    struct PanelParts {
+        content: Retained<NSView>,
+        update_button: Retained<NSButton>,
+        copy_button: Retained<NSButton>,
+    }
+
+    /// Builds the About panel's content view and returns the buttons whose
+    /// titles change later.
+    fn panel_content(mtm: MainThreadMarker, target: &AnyObject) -> PanelParts {
         let container = NSView::new(mtm);
         container.setFrame(NSRect::new(
             NSPoint::new(0.0, 0.0),
@@ -445,7 +549,49 @@ mod macos {
             None,
             false,
         );
-        add_centered_label(mtm, &container, REPOSITORY, 92.0, 16.0, None, false);
+        // The repository URL and its copy button share one row, centered as a
+        // group so the row still reads as the middle of the panel.
+        let repo_font = NSFont::systemFontOfSize(12.0);
+        let copy_title = i18n::text("about_copy");
+        let copy_font = NSFont::systemFontOfSize(11.0);
+        // Wide enough for the confirmation label as well, so the button does
+        // not resize when it flashes after a click.
+        let copy_width = measure(&copy_font, copy_title)
+            .max(measure(&copy_font, i18n::text("about_copied")))
+            + 18.0;
+        let repo_width = measure(&repo_font, REPOSITORY) + 1.0;
+        let row_left = (PANEL_WIDTH - (repo_width + COPY_GAP + copy_width)) / 2.0;
+        let repo = add_centered_label(
+            mtm,
+            &container,
+            REPOSITORY,
+            92.0,
+            16.0,
+            Some(&repo_font),
+            false,
+        );
+        repo.setFrame(NSRect::new(
+            NSPoint::new(row_left, 92.0),
+            NSSize::new(repo_width, 16.0),
+        ));
+        repo.setAlignment(NSTextAlignment::Left);
+
+        let copy_button = add_button(
+            mtm,
+            &container,
+            copy_title,
+            sel!(copyRepository:),
+            row_left + repo_width + COPY_GAP,
+            91.0,
+            copy_width,
+            COPY_HEIGHT,
+            None,
+            target,
+        );
+        copy_button.setControlSize(NSControlSize::Mini);
+        copy_button.setFont(Some(&copy_font));
+        copy_button.setRefusesFirstResponder(true);
+
         add_centered_label(
             mtm,
             &container,
@@ -462,8 +608,9 @@ mod macos {
             i18n::text("update_checking"),
             sel!(requestUpdate:),
             (PANEL_WIDTH - BUTTONS_WIDTH) / 2.0,
-            24.0,
+            BUTTONS_Y,
             UPDATE_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
             Some("\r"),
             target,
         );
@@ -473,13 +620,91 @@ mod macos {
             i18n::text("close"),
             sel!(closePanel:),
             (PANEL_WIDTH - BUTTONS_WIDTH) / 2.0 + UPDATE_BUTTON_WIDTH + BUTTON_GAP,
-            24.0,
+            BUTTONS_Y,
             CLOSE_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
             Some("\u{1b}"),
             target,
         );
+        // Last row of the panel: a quiet way into the alpha channel. It has no
+        // key equivalent and refuses first responder so Return still fires the
+        // stable update button.
+        add_link(
+            mtm,
+            &container,
+            i18n::text("about_alpha"),
+            sel!(requestAlpha:),
+            LINK_Y,
+            target,
+        );
 
-        (container, update_button)
+        PanelParts {
+            content: container,
+            update_button,
+            copy_button,
+        }
+    }
+
+    /// Width `text` occupies in the font it will be drawn with.
+    fn measure(font: &Retained<NSFont>, text: &str) -> f64 {
+        let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> =
+            NSDictionary::from_retained_objects(
+                &[unsafe { NSFontAttributeName }],
+                &[font.clone().into()],
+            );
+        unsafe { NSString::from_str(text).sizeWithAttributes(Some(&attributes)) }.width
+    }
+
+    /// Small blue underlined title for a text control that acts like a link.
+    fn link_title(text: &str) -> Retained<NSAttributedString> {
+        let font = NSFont::systemFontOfSize(LINK_FONT_SIZE);
+        let color = NSColor::linkColor();
+        // NSUnderlineStyleSingle.
+        let underline = NSNumber::numberWithInt(1);
+        let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> =
+            NSDictionary::from_retained_objects(
+                &[
+                    unsafe { NSFontAttributeName },
+                    unsafe { NSForegroundColorAttributeName },
+                    unsafe { NSUnderlineStyleAttributeName },
+                ],
+                &[font.into(), color.into(), underline.into()],
+            );
+        unsafe {
+            NSAttributedString::initWithString_attributes(
+                NSAttributedString::alloc(),
+                &NSString::from_str(text),
+                Some(&attributes),
+            )
+        }
+    }
+
+    fn add_link(
+        mtm: MainThreadMarker,
+        container: &NSView,
+        text: &str,
+        action: Sel,
+        y: f64,
+        target: &AnyObject,
+    ) -> Retained<NSButton> {
+        let button = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(""),
+                Some(target),
+                Some(action),
+                mtm,
+            )
+        };
+        button.setBordered(false);
+        button.setAttributedTitle(&link_title(text));
+        button.setAlignment(NSTextAlignment::Center);
+        button.setRefusesFirstResponder(true);
+        button.setFrame(NSRect::new(
+            NSPoint::new(0.0, y),
+            NSSize::new(container.frame().size.width, LINK_HEIGHT),
+        ));
+        container.addSubview(&button);
+        button
     }
 
     fn add_centered_label(
@@ -517,6 +742,7 @@ mod macos {
         x: f64,
         y: f64,
         width: f64,
+        height: f64,
         key_equivalent: Option<&str>,
         target: &AnyObject,
     ) -> Retained<NSButton> {
@@ -531,10 +757,7 @@ mod macos {
         if let Some(key) = key_equivalent {
             button.setKeyEquivalent(&NSString::from_str(key));
         }
-        button.setFrame(NSRect::new(
-            NSPoint::new(x, y),
-            NSSize::new(width, BUTTON_HEIGHT),
-        ));
+        button.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)));
         container.addSubview(&button);
         button
     }

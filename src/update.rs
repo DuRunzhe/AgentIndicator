@@ -8,6 +8,7 @@
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::{
+    cmp::Ordering,
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -27,6 +28,15 @@ pub enum CheckOutcome {
     UpToDate,
     Available(String),
     Failed(String),
+}
+
+/// Release channel a check follows. `Stable` is what the menu's update button
+/// tracks; `Alpha` additionally considers pre-release tags, so a user who
+/// explicitly asked for one is not left behind between stable releases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    Stable,
+    Alpha,
 }
 
 /// Phase of an install, mirrored into the progress dialog.
@@ -53,10 +63,10 @@ pub enum Message {
 }
 
 /// Asks GitHub for the newest release on a background thread.
-pub fn spawn_check() -> Receiver<CheckOutcome> {
+pub fn spawn_check(channel: Channel) -> Receiver<CheckOutcome> {
     let (tx, rx) = bounded(1);
     thread::spawn(move || {
-        let _ = tx.send(check());
+        let _ = tx.send(check_channel(channel));
     });
     rx
 }
@@ -82,24 +92,60 @@ pub fn restart(executable: &Path) {
         .spawn();
 }
 
-/// Asks GitHub for the newest release synchronously. Exposed for diagnostics.
+/// Asks GitHub for the newest stable release synchronously. Exposed for
+/// diagnostics.
 pub fn check() -> CheckOutcome {
-    let url = format!("https://api.github.com/repos/{REPOSITORY_SLUG}/releases/latest");
-    let Some(body) = curl_text(&url, 15) else {
-        return CheckOutcome::Failed("latest release is unreachable".into());
+    check_channel(Channel::Stable)
+}
+
+/// Asks GitHub for the newest release on `channel` synchronously.
+pub fn check_channel(channel: Channel) -> CheckOutcome {
+    let Some(body) = curl_text(&releases_url(channel), 15) else {
+        return CheckOutcome::Failed("the release list is unreachable".into());
     };
-    let version = serde_json::from_str::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|value| {
-            value["tag_name"]
-                .as_str()
-                .map(|tag| tag.trim_start_matches('v').to_owned())
-        });
-    match version {
-        Some(version) if is_newer(&version, CURRENT_VERSION) => CheckOutcome::Available(version),
-        Some(_) => CheckOutcome::UpToDate,
-        None => CheckOutcome::Failed("latest release response was not understood".into()),
+    let Some(version) = newest_tag(channel, &body) else {
+        return CheckOutcome::Failed("the release response was not understood".into());
+    };
+    if is_newer(&version, CURRENT_VERSION) {
+        CheckOutcome::Available(version)
+    } else {
+        CheckOutcome::UpToDate
     }
+}
+
+fn releases_url(channel: Channel) -> String {
+    match channel {
+        // `latest` never returns a pre-release, which is exactly the stable
+        // channel's contract.
+        Channel::Stable => {
+            format!("https://api.github.com/repos/{REPOSITORY_SLUG}/releases/latest")
+        }
+        Channel::Alpha => {
+            format!("https://api.github.com/repos/{REPOSITORY_SLUG}/releases?per_page=40")
+        }
+    }
+}
+
+/// Newest tag in a GitHub release response, without the `v` prefix.
+fn newest_tag(channel: Channel, body: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let tag = match channel {
+        Channel::Stable => value["tag_name"].as_str()?,
+        // The list arrives newest-first, but ordering it by version keeps the
+        // pick correct when a backport is published after a later release.
+        Channel::Alpha => value
+            .as_array()?
+            .iter()
+            .filter_map(|release| release["tag_name"].as_str())
+            .reduce(|best, tag| {
+                if compare_versions(tag, best) == Ordering::Greater {
+                    tag
+                } else {
+                    best
+                }
+            })?,
+    };
+    Some(tag.trim_start_matches('v').to_owned())
 }
 
 fn install(version: &str, tx: &Sender<Message>) -> Result<PathBuf, String> {
@@ -448,27 +494,70 @@ fn executable_name() -> &'static str {
     }
 }
 
-/// Numeric comparison good enough for `x.y.z` release tags. Pre-release
-/// suffixes are ignored because `releases/latest` never returns them.
 fn is_newer(candidate: &str, current: &str) -> bool {
-    fn parts(value: &str) -> Vec<u64> {
-        value
-            .trim_start_matches('v')
-            .split(['.', '-', '+'])
-            .map_while(|part| part.parse::<u64>().ok())
-            .collect()
-    }
-    let candidate = parts(candidate);
-    let current = parts(current);
-    let length = candidate.len().max(current.len());
+    compare_versions(candidate, current) == Ordering::Greater
+}
+
+/// Orders `x.y.z[-pre]` tags the way a release feed does: the numeric parts
+/// first, then a build without a pre-release suffix above any of its
+/// pre-releases, then the dotted pre-release identifiers, numeric ones
+/// compared as numbers so `alpha.10` sorts above `alpha.9`.
+fn compare_versions(candidate: &str, current: &str) -> Ordering {
+    let (candidate_core, candidate_pre) = split_tag(candidate);
+    let (current_core, current_pre) = split_tag(current);
+    let length = candidate_core.len().max(current_core.len());
     for index in 0..length {
-        let left = candidate.get(index).copied().unwrap_or(0);
-        let right = current.get(index).copied().unwrap_or(0);
+        let left = candidate_core.get(index).copied().unwrap_or(0);
+        let right = current_core.get(index).copied().unwrap_or(0);
         if left != right {
-            return left > right;
+            return left.cmp(&right);
         }
     }
-    false
+    match (candidate_pre, current_pre) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(left), Some(right)) => compare_pre_release(left, right),
+    }
+}
+
+fn split_tag(value: &str) -> (Vec<u64>, Option<&str>) {
+    let value = value.trim_start_matches('v');
+    // Build metadata carries no ordering information.
+    let value = value.split('+').next().unwrap_or(value);
+    let (core, pre) = match value.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (value, None),
+    };
+    let core = core
+        .split('.')
+        .map_while(|part| part.parse::<u64>().ok())
+        .collect();
+    (core, pre)
+}
+
+fn compare_pre_release(candidate: &str, current: &str) -> Ordering {
+    let mut candidate = candidate.split('.');
+    let mut current = current.split('.');
+    loop {
+        match (candidate.next(), current.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(left), Some(right)) => {
+                let order = match (left.parse::<u64>(), right.parse::<u64>()) {
+                    (Ok(left), Ok(right)) => left.cmp(&right),
+                    // A numeric identifier sorts below an alphanumeric one.
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => left.cmp(right),
+                };
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -489,6 +578,38 @@ mod tests {
     #[test]
     fn strips_the_version_prefix() {
         assert!(is_newer("v0.2.22", "v0.2.21"));
+    }
+
+    #[test]
+    fn ranks_pre_releases_below_their_release() {
+        assert!(is_newer("0.2.34", "0.2.34-alpha.2"));
+        assert!(!is_newer("0.2.34-alpha.2", "0.2.34"));
+        assert!(is_newer("0.2.34-alpha.2", "0.2.34-alpha.1"));
+        assert!(is_newer("0.2.34-alpha.10", "0.2.34-alpha.9"));
+        assert!(!is_newer("0.2.34-alpha.1", "0.2.34-alpha.2"));
+        assert!(is_newer("0.2.34-beta.1", "0.2.34-alpha.2"));
+        // An alpha of a newer version still beats the current stable build.
+        assert!(is_newer("0.2.34-alpha.3", "0.2.33"));
+        assert!(!is_newer("0.2.33", "0.2.34-alpha.2"));
+        assert!(!is_newer("0.2.34-alpha.2", "0.2.34-alpha.2"));
+    }
+
+    #[test]
+    fn picks_the_newest_tag_from_a_release_list() {
+        let releases = r#"[
+            {"tag_name": "v0.2.34-alpha.1"},
+            {"tag_name": "v0.2.33"},
+            {"tag_name": "v0.2.34-alpha.2"}
+        ]"#;
+        assert_eq!(
+            newest_tag(Channel::Alpha, releases).as_deref(),
+            Some("0.2.34-alpha.2")
+        );
+        assert_eq!(
+            newest_tag(Channel::Stable, r#"{"tag_name": "v0.2.33"}"#).as_deref(),
+            Some("0.2.33")
+        );
+        assert_eq!(newest_tag(Channel::Alpha, "[]").as_deref(), None);
     }
 
     #[test]
