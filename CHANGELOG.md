@@ -6,6 +6,12 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.34-alpha.1] - 2026-10-22
+
+### 新增
+
+- Add a period selector to the token usage table
+
 ## [0.2.33] - 2026-10-20
 
 ### 新增

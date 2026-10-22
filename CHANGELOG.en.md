@@ -8,6 +8,12 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.34-alpha.1] - 2026-10-22
+
+### Added
+
+- Add a period selector to the token usage table
+
 ## [0.2.33] - 2026-10-20
 
 ### Added
