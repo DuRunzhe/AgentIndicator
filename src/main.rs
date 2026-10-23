@@ -54,8 +54,101 @@ use winit::{
     window::WindowId,
 };
 
+/// Every option this build accepts, so the usage text and the refusal cannot
+/// drift away from what `main` actually reads.
+const CLI_FLAGS: [&str; 11] = [
+    "--claude-statusline",
+    "--diagnose",
+    "--with-drivers",
+    "--diagnose-deepseek-desktop",
+    "--diagnose-usage",
+    "--usage-period",
+    "--render",
+    "--check-update",
+    "--debug-ui",
+    "--help",
+    "--version",
+];
+
+const USAGE: &str = "\
+AgentStatusIndicator - tray monitor for AI coding agents
+
+Usage:
+  agent-status-indicator [option]
+
+Run without an option to start the tray. Every option below prints its result
+and exits without starting it.
+
+Options:
+  --diagnose                    print the rows the tray would show, as JSON
+  --with-drivers                add the dsh drivers found by --diagnose
+  --diagnose-deepseek-desktop   explain how the desktop app and its profile were read
+  --diagnose-usage              print the token usage table for one period
+  --usage-period <period>       read day, week or month with --diagnose-usage
+  --render                      draw the usage rows exactly as the tray shows them
+  --check-update                report whether a newer release exists
+  --debug-ui                    write the tray UI state to ~/.agent-status-indicator-ui.json
+  --claude-statusline           collect Claude Code's statusline from stdin
+  -h, --help                    print this help
+  -V, --version                 print the version";
+
+/// What the command line asks for.
+///
+/// An unrecognized option is its own answer rather than "start the tray": the
+/// tray path needs a bundle and a window server, so a typo would abort inside
+/// AppKit instead of explaining itself.
+#[derive(Debug, Eq, PartialEq)]
+enum CliRequest {
+    Run,
+    Version,
+    Help,
+    Unknown(String),
+}
+
+fn cli_request(arguments: &[String]) -> CliRequest {
+    let mut unknown: Option<String> = None;
+    for argument in arguments {
+        match argument.as_str() {
+            "--help" | "-h" => return CliRequest::Help,
+            "--version" | "-V" => return CliRequest::Version,
+            // LaunchServices hands an app launched from the Finder a process
+            // serial number on older systems. It is not the user asking for
+            // anything, so it must not be refused as a typo.
+            value if value.starts_with("-psn_") => {}
+            value if value.starts_with('-') && !CLI_FLAGS.contains(&value) => {
+                unknown = Some(argument.clone());
+            }
+            _ => {}
+        }
+    }
+    match unknown {
+        Some(argument) => CliRequest::Unknown(argument),
+        None => CliRequest::Run,
+    }
+}
+
 fn main() -> Result<()> {
-    let arguments: Vec<_> = std::env::args().collect();
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    // Answer the command line before any tray machinery exists. `--version`
+    // and `--help` used to match nothing here, so they fell through to the
+    // tray path, where a windowless process with no bundle aborts inside
+    // AppKit (`--version` died with an uncaught NSException).
+    match cli_request(&arguments) {
+        CliRequest::Help => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        CliRequest::Version => {
+            println!("agent-status-indicator {}", update::CURRENT_VERSION);
+            return Ok(());
+        }
+        CliRequest::Unknown(argument) => {
+            eprintln!("agent-status-indicator: unrecognized option '{argument}'");
+            eprintln!("Try 'agent-status-indicator --help' for the options.");
+            std::process::exit(2);
+        }
+        CliRequest::Run => {}
+    }
     if arguments
         .iter()
         .any(|argument| argument == "--claude-statusline")
@@ -2536,5 +2629,63 @@ mod usage_format_tests {
             model::RESOURCE_AGENTS.len() - 1
         );
         assert!(names.contains(i18n::text("resource_total")), "{names}");
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    fn request(arguments: &[&str]) -> CliRequest {
+        cli_request(
+            &arguments
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn help_and_version_are_answered_without_starting_the_tray() {
+        assert_eq!(request(&[]), CliRequest::Run);
+        assert_eq!(request(&["--help"]), CliRequest::Help);
+        assert_eq!(request(&["-h"]), CliRequest::Help);
+        assert_eq!(request(&["--version"]), CliRequest::Version);
+        assert_eq!(request(&["-V"]), CliRequest::Version);
+    }
+
+    #[test]
+    fn the_documented_options_still_start_the_process_they_name() {
+        assert_eq!(request(&["--diagnose"]), CliRequest::Run);
+        assert_eq!(request(&["--diagnose", "--with-drivers"]), CliRequest::Run);
+        assert_eq!(
+            request(&["--diagnose-usage", "--usage-period", "week", "--render"]),
+            CliRequest::Run
+        );
+        assert_eq!(request(&["--diagnose-deepseek-desktop"]), CliRequest::Run);
+    }
+
+    #[test]
+    fn an_unrecognized_option_is_refused() {
+        // These used to fall through to the tray, which aborts in AppKit when
+        // the process has no bundle: `--version` printed nothing at all.
+        assert_eq!(
+            request(&["--versions"]),
+            CliRequest::Unknown("--versions".into())
+        );
+        assert_eq!(request(&["-x"]), CliRequest::Unknown("-x".into()));
+        // A Finder launch appends a process serial number on older systems;
+        // refusing it would make the app unlaunchable from there.
+        assert_eq!(request(&["-psn_0_1234567"]), CliRequest::Run);
+    }
+
+    #[test]
+    fn every_flag_the_build_reads_is_in_the_usage_text() {
+        for flag in CLI_FLAGS {
+            assert!(
+                USAGE.contains(flag),
+                "{flag} is missing from the usage text"
+            );
+        }
     }
 }

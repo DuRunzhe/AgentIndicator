@@ -207,6 +207,8 @@ winget upgrade --id DuRunzhe.AgentStatusIndicator
 
 ```bash
 agent-status-indicator
+agent-status-indicator --version
+agent-status-indicator --help
 agent-status-indicator --diagnose
 agent-status-indicator --diagnose-deepseek-desktop
 agent-status-indicator --diagnose-usage
@@ -214,6 +216,8 @@ agent-status-indicator --debug-ui
 agent-status-indicator --check-update
 ```
 
+- `--version` / `-V`：打印版本（如 `agent-status-indicator 0.2.34-alpha.3`），不启动托盘。
+- `--help` / `-h`：打印全部可用参数，不启动托盘；不认识的参数会被直接拒绝并以退出码 2 结束，不会静默走到启动托盘（那条路径在没有 app bundle 时会在 AppKit 内崩溃）。
 - `--diagnose`：打印当前探测到的 Agent、会话与状态，不启动托盘。
 - `--diagnose-deepseek-desktop`：只诊断 DeepSeek Harness 桌面端：识别到的宿主进程、所用 `DSH_HOME`、读到的会话，以及一次会话缓存扫描（冷读/稳态）的耗时，不启动托盘。
 - `--diagnose-usage`：打印当前维度的 Token 用量（加 `--usage-period week|month` 换维度，加 `--render` 输出与菜单完全一致的三列表格），不启动托盘。

@@ -207,12 +207,16 @@ Note: the `tar.gz` / `zip` assets contain the CLI binary by default; the notariz
 
 ```bash
 agent-status-indicator
+agent-status-indicator --version
+agent-status-indicator --help
 agent-status-indicator --diagnose
 agent-status-indicator --diagnose-deepseek-desktop
 agent-status-indicator --debug-ui
 agent-status-indicator --check-update
 ```
 
+- `--version` / `-V`: prints the version (e.g. `agent-status-indicator 0.2.34-alpha.3`) without starting the tray.
+- `--help` / `-h`: prints every option without starting the tray; an unrecognized option is refused with exit code 2 instead of falling through to the tray path, which aborts inside AppKit when the process has no bundle.
 - `--diagnose`: prints the detected agents, sessions and states without starting the tray.
 - `--diagnose-usage [--usage-period week|month] [--render]`: prints the token table for the current window (JSON, or the exact menu rows with `--render`) without starting the tray.
 - `--diagnose-deepseek-desktop`: diagnoses only the DeepSeek Harness desktop app — the host process it was recognized as, the `DSH_HOME` in use, the conversations read, and what one scan of that cache costs (cold and steady state) — without starting the tray.

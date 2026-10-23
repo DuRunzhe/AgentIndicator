@@ -114,6 +114,21 @@ open dsh://open     # 等价于点击一行时的动作
 
 ## 性能检查
 
+## 命令行参数
+
+不带参数启动托盘；以下命令只打印结果并退出，可用于确认装的是哪个版本、以及这个版本接受哪些参数：
+
+```bash
+agent-status-indicator --version
+agent-status-indicator --help
+```
+
+再拿一个不存在的参数确认它被拒绝（退出码 2，不启动托盘、也不会在 AppKit 内崩溃）：
+
+```bash
+agent-status-indicator --bogus; echo "exit=$?"
+```
+
 ## 状态诊断
 
 当状态与终端不一致时，先运行：
