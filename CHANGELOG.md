@@ -6,6 +6,12 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.35] - 2026-10-27
+
+### 修复
+
+- Answer --version and --help instead of launching the tray
+
 ## [0.2.34-alpha.3] - 2026-10-22
 
 ### 新增

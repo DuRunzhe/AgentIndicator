@@ -10,7 +10,7 @@
 
 ## 安装
 
-当前已发布 **v0.2.34-alpha.3**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
+当前已发布 **v0.2.35**（macOS arm64，Developer ID 签名 + 公证）。x86_64 macOS / Windows / Linux 制品由 [release workflow](.github/workflows/release.yml) 在后续版本自动补齐。
 
 ### curl（macOS / Linux）
 
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.34-alpha.3 sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.35 sh
 ```
 
 指定安装目录：
@@ -216,7 +216,7 @@ agent-status-indicator --debug-ui
 agent-status-indicator --check-update
 ```
 
-- `--version` / `-V`：打印版本（如 `agent-status-indicator 0.2.34-alpha.3`），不启动托盘。
+- `--version` / `-V`：打印版本（如 `agent-status-indicator 0.2.35`），不启动托盘。
 - `--help` / `-h`：打印全部可用参数，不启动托盘；不认识的参数会被直接拒绝并以退出码 2 结束，不会静默走到启动托盘（那条路径在没有 app bundle 时会在 AppKit 内崩溃）。
 - `--diagnose`：打印当前探测到的 Agent、会话与状态，不启动托盘。
 - `--diagnose-deepseek-desktop`：只诊断 DeepSeek Harness 桌面端：识别到的宿主进程、所用 `DSH_HOME`、读到的会话，以及一次会话缓存扫描（冷读/稳态）的耗时，不启动托盘。
