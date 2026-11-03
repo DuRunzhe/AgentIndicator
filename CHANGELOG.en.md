@@ -8,6 +8,12 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.36-alpha.1] - 2026-11-03
+
+### Added
+
+- Notify when a session finishes a turn
+
 ## [0.2.35] - 2026-10-27
 
 ### Fixed
