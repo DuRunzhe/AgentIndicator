@@ -224,7 +224,7 @@ agent-status-indicator --check-update
 - `--debug-ui`：调试模式，把托盘 UI 状态写入 `~/.agent-status-indicator-ui.json`。
 - `--check-update`：向 GitHub 查询最新版本并打印结果，不启动托盘。
 - 单击托盘图标展开菜单：每行以统一格式 `Kind (项目) · 标题` 显示会话（Claude、Codex、ChatGPT、OpenCode、DeepSeek Harness、Pi 均如此，标题缺失时只保留 `Kind (项目)`），并按“等待确认 → 等待回复 → 进行中 → 就绪”排序，附带模型、上下文、时长与 CPU/内存占用；点击存活实例可跳回对应终端、浏览器会话或把 DeepSeek Harness 桌面端窗口带到前台。
-- 系统通知默认关闭，可在“设置”中开启，并调整等待确认、等待回复及自动确认模式下的通知。
+- 系统通知默认关闭，可在“设置”中开启，并调整等待确认、等待回复、任务完成及自动确认模式下的通知；“任务完成”是「进行中」切换到「就绪」那一刻的一次性通知，不参与 0/60/180 秒的等待提醒。
 - 会话列表下方、设置上方按 Agent 汇总一行「资源汇总」：最左侧是 `CPU/内存` 数值说明，其后第一列为所有 Agent 的总计，其余为 Claude / Codex / OpenCode / DeepSeek / Pi 各一列；第一行是列名，第二行是对应的 `CPU/内存`，横向并排；两行使用等宽字体以保证列对齐，未运行的 Agent 仍占位显示 `--/--`。宿主的多个会话（ChatGPT 与 DeepSeek 桌面端）按进程去重，不会重复累加，Codex 与 ChatGPT 合并为「Codex」一列。可在“设置”里用“资源汇总”开关关闭。
 - 资源汇总下方是 **Token 用量表**：表头上方一行是「当日 / 当周 / 当月」单选切换，列为 `输入/命中`、`输出`、`费用`，每行一个 Agent，末行为当前维度总计。数字全部从各 Agent 自身会话记录重算，不额外落盘（详见下文「Token 用量表」）。
 - “设置”提供十项显示选项（时长、模型、上下文占比/已用/总量、CPU、内存、资源汇总、Token 用量、已停止 Agent）、语言、开机自启及 DeepSeek 浏览器标签页复用。CPU 与内存按会话的**整棵进程树**汇总（macOS 从已有的 `ps` 采样读取 `pcpu`/`rss`，Windows/Linux 复用已刷新的 `sysinfo` 快照），无额外进程拉起；ChatGPT 与 DeepSeek Harness 桌面端这类**一个进程承载多个会话**的宿主行，其数值为宿主级、无法拆分到单个会话；DeepSeek 的各个会话条目以及这类宿主行都不再显示 CPU 与内存，数值只在汇总中出现。会话显示范围按来源**分成两组独立配置**：「ChatGPT 会话显示范围」与「DeepSeek Harness 会话显示范围」，各自支持 15 分钟、1 小时、12 小时、24 小时（默认）或全部；进行中、等待确认/回复或异常的会话始终保留。二者分别持久化、分别作用，改变其中一组不影响另一组。
@@ -369,6 +369,7 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描
 - [x] 逐字节增量解析 Claude/Codex transcript，工具 ID 配对、模型与上下文
 - [x] OpenCode SQLite 状态、模型和上下文读取
 - [x] 等待态原生通知与 0/60/180 秒提醒；点击通知聚焦对应终端或 DeepSeek 浏览器会话
+- [x] 任务完成通知：会话从「进行中」变为「就绪」时一次性提醒，可在“设置 → 通知”中单独开关
 - [x] macOS 按 TTY 精确定位 Terminal/iTerm 标签页
 - [x] 原生设置菜单、九项显示配置（含 CPU/内存与按 Agent 的资源汇总）和 macOS 登录启动设置
 - [x] macOS LaunchAgent、Windows Startup、Linux XDG autostart 登录启动

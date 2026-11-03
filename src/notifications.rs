@@ -19,9 +19,13 @@ struct Tracker {
 
 #[derive(Default)]
 pub struct NotificationTracker {
+    /// Last observed state per row key, for every live row. A completion needs
+    /// the previous state of a row that is *not* asking for attention (a
+    /// working row gets no reminders), so this cannot live in [`Tracker`].
+    states: HashMap<String, AgentState>,
     /// Keyed by [`AgentInstance::key`]: one process can host several sessions,
     /// and each needs its own reminder schedule.
-    instances: HashMap<String, Tracker>,
+    reminders: HashMap<String, Tracker>,
 }
 
 impl NotificationTracker {
@@ -31,20 +35,33 @@ impl NotificationTracker {
         config: &crate::config::Config,
     ) -> Vec<NotificationRequest> {
         if !config.notifications_enabled {
-            self.instances.clear();
+            self.states.clear();
+            self.reminders.clear();
             return vec![];
         }
         let mut due_notifications = vec![];
         let now = Instant::now();
-        let live: std::collections::HashSet<_> = instances.iter().map(|i| i.key.clone()).collect();
-        self.instances.retain(|key, _| live.contains(key));
+        let live: std::collections::HashSet<&str> = instances
+            .iter()
+            .filter(|instance| !instance.informational)
+            .map(|instance| instance.key.as_str())
+            .collect();
+        self.states.retain(|key, _| live.contains(key.as_str()));
+        self.reminders.retain(|key, _| live.contains(key.as_str()));
         for instance in instances {
+            if instance.informational {
+                continue;
+            }
+            let previous = self.states.insert(instance.key.clone(), instance.state);
+            if completed(previous, instance, config) {
+                due_notifications.push(NotificationRequest::from_instance(instance, 0));
+            }
             if !should_notify(instance, config) {
-                self.instances.remove(&instance.key);
+                self.reminders.remove(&instance.key);
                 continue;
             }
             let tracker = self
-                .instances
+                .reminders
                 .entry(instance.key.clone())
                 .or_insert(Tracker {
                     state: instance.state,
@@ -67,6 +84,20 @@ impl NotificationTracker {
         }
         due_notifications
     }
+}
+
+/// A finished turn: the row was working at the previous scan and is ready now.
+/// The exact step is what makes it a completion — a row first seen as ready,
+/// or one coming back from waiting or error, was not finishing anything. The
+/// notice is one-shot by construction, because the transition itself is.
+fn completed(
+    previous: Option<AgentState>,
+    instance: &AgentInstance,
+    config: &crate::config::Config,
+) -> bool {
+    config.notify_completion
+        && previous == Some(AgentState::Working)
+        && instance.state == AgentState::Ready
 }
 
 pub fn should_notify(instance: &AgentInstance, config: &crate::config::Config) -> bool {
@@ -100,14 +131,7 @@ pub struct NotificationRequest {
 
 impl NotificationRequest {
     fn from_instance(instance: &AgentInstance, stage: usize) -> Self {
-        let body = crate::i18n::notification_message(
-            match instance.state {
-                AgentState::Error => "error",
-                AgentState::WaitingReply => "waiting_reply",
-                _ => "waiting",
-            },
-            stage,
-        );
+        let body = crate::i18n::notification_message(body_key(instance.state), stage);
         let action = instance
             .open_url
             .as_ref()
@@ -136,6 +160,17 @@ impl NotificationRequest {
     }
 }
 
+/// The message family a row's state speaks with. A ready row is only ever
+/// announced as a completion, never as a reminder.
+fn body_key(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Error => "error",
+        AgentState::WaitingReply => "waiting_reply",
+        AgentState::Ready => "completion",
+        _ => "waiting",
+    }
+}
+
 fn reminder_stage(elapsed: Duration) -> usize {
     REMINDERS
         .iter()
@@ -146,6 +181,32 @@ fn reminder_stage(elapsed: Duration) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(state: AgentState) -> AgentInstance {
+        AgentInstance {
+            key: "1".into(),
+            kind: "Pi".into(),
+            label: "Pi".into(),
+            pid: 1,
+            cwd: None,
+            state,
+            uptime: Duration::ZERO,
+            model: None,
+            context: None,
+            open_url: None,
+            automatic_confirmation_mode: false,
+            informational: false,
+            usage: None,
+        }
+    }
+
+    fn enabled_config() -> crate::config::Config {
+        crate::config::Config {
+            notifications_enabled: true,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn only_attention_states_are_eligible_for_notifications() {
         let config = crate::config::Config::default();
@@ -263,5 +324,100 @@ mod tests {
             ..waiting
         };
         assert!(should_notify(&reply, &config));
+    }
+
+    #[test]
+    fn finishing_a_turn_notifies_once_per_transition() {
+        let config = enabled_config();
+        let mut tracker = NotificationTracker::default();
+        // A working row asks for nothing; it only sets up the completion below.
+        assert!(tracker
+            .update(&[row(AgentState::Working)], &config)
+            .is_empty());
+        let requests = tracker.update(&[row(AgentState::Ready)], &config);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].body,
+            crate::i18n::notification_message("completion", 0)
+        );
+        assert!(requests[0].title.ends_with(AgentState::Ready.label()));
+        // A ready row has no reminder schedule, so later scans stay silent.
+        assert!(tracker
+            .update(&[row(AgentState::Ready)], &config)
+            .is_empty());
+        // The next turn finishes again and announces again.
+        assert!(tracker
+            .update(&[row(AgentState::Working)], &config)
+            .is_empty());
+        assert_eq!(tracker.update(&[row(AgentState::Ready)], &config).len(), 1);
+    }
+
+    #[test]
+    fn only_the_working_to_ready_step_is_a_completion() {
+        let config = enabled_config();
+        // A row that is ready the first time it is seen finished nothing here.
+        let mut tracker = NotificationTracker::default();
+        assert!(tracker
+            .update(&[row(AgentState::Ready)], &config)
+            .is_empty());
+        // Neither did a row coming back from another state: it was not working.
+        for previous in [
+            AgentState::Stopped,
+            AgentState::Waiting,
+            AgentState::WaitingReply,
+            AgentState::Error,
+        ] {
+            let mut tracker = NotificationTracker::default();
+            tracker.update(&[row(previous)], &config);
+            assert!(
+                tracker
+                    .update(&[row(AgentState::Ready)], &config)
+                    .is_empty(),
+                "{previous:?} → ready must not read as a finished turn"
+            );
+        }
+    }
+
+    #[test]
+    fn completion_notifications_can_be_switched_off() {
+        let config = crate::config::Config {
+            notify_completion: false,
+            ..enabled_config()
+        };
+        let mut tracker = NotificationTracker::default();
+        tracker.update(&[row(AgentState::Working)], &config);
+        assert!(tracker
+            .update(&[row(AgentState::Ready)], &config)
+            .is_empty());
+    }
+
+    #[test]
+    fn a_shared_process_announces_each_session_separately() {
+        let config = enabled_config();
+        let mut first = row(AgentState::Working);
+        first.key = "9:a".into();
+        let mut second = row(AgentState::Working);
+        second.key = "9:b".into();
+        let mut ready = second.clone();
+        ready.state = AgentState::Ready;
+        let mut tracker = NotificationTracker::default();
+        assert!(tracker.update(&[first.clone(), second], &config).is_empty());
+        // Only the conversation that just finished is announced, even though
+        // both rows come from one host process.
+        let requests = tracker.update(&[first, ready], &config);
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].title.starts_with("Pi"));
+    }
+
+    #[test]
+    fn informational_rows_never_announce_a_completion() {
+        let config = enabled_config();
+        let mut working = row(AgentState::Working);
+        working.informational = true;
+        let mut ready = working.clone();
+        ready.state = AgentState::Ready;
+        let mut tracker = NotificationTracker::default();
+        tracker.update(&[working], &config);
+        assert!(tracker.update(&[ready], &config).is_empty());
     }
 }

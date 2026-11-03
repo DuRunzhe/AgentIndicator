@@ -27,6 +27,8 @@ pub struct Config {
     pub notifications_enabled: bool,
     pub notify_waiting_confirmation: bool,
     pub notify_waiting_reply: bool,
+    /// One-shot notice when a row finishes a turn: working → ready.
+    pub notify_completion: bool,
     pub notify_error: bool,
     pub show_waiting_notifications_in_auto_confirm_mode: bool,
     pub show_duration: bool,
@@ -59,6 +61,7 @@ impl Default for Config {
             notifications_enabled: false,
             notify_waiting_confirmation: true,
             notify_waiting_reply: true,
+            notify_completion: true,
             notify_error: true,
             show_waiting_notifications_in_auto_confirm_mode: true,
             show_duration: true,
@@ -152,6 +155,7 @@ mod tests {
         assert!(config.notifications_enabled);
         assert!(config.notify_waiting_confirmation);
         assert!(config.notify_waiting_reply);
+        assert!(config.notify_completion);
         assert!(config.notify_error);
         assert!(config.show_waiting_notifications_in_auto_confirm_mode);
         assert!(config.show_duration);

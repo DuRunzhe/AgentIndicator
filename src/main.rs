@@ -1404,7 +1404,7 @@ fn display_settings() -> [(&'static str, &'static str); 10] {
     ]
 }
 
-fn notification_preferences(config: &Config) -> [(&'static str, &'static str, bool); 4] {
+fn notification_preferences(config: &Config) -> [(&'static str, &'static str, bool); 5] {
     [
         (
             "waiting_confirmation",
@@ -1415,6 +1415,11 @@ fn notification_preferences(config: &Config) -> [(&'static str, &'static str, bo
             "waiting_reply",
             i18n::text("notify_waiting_reply"),
             config.notify_waiting_reply,
+        ),
+        (
+            "completion",
+            i18n::text("notify_completion"),
+            config.notify_completion,
         ),
         ("error", i18n::text("notify_error"), config.notify_error),
         (
@@ -1431,6 +1436,7 @@ fn toggle_notification_preference(config: &mut Config, key: &str) {
             config.notify_waiting_confirmation = !config.notify_waiting_confirmation
         }
         "waiting_reply" => config.notify_waiting_reply = !config.notify_waiting_reply,
+        "completion" => config.notify_completion = !config.notify_completion,
         "error" => config.notify_error = !config.notify_error,
         "auto_confirm" => {
             config.show_waiting_notifications_in_auto_confirm_mode =
