@@ -8,6 +8,14 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.36-alpha.2] - 2026-11-04
+
+### Fixed
+
+- Count OpenCode reasoning tokens as output in the token table
+- Stop the alpha update check from timing out before it reaches the newest build
+- Follow the session a Pi process resumes instead of its frozen startup file
+
 ## [0.2.36-alpha.1] - 2026-11-03
 
 ### Added

@@ -6,6 +6,14 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.36-alpha.2] - 2026-11-04
+
+### 修复
+
+- Count OpenCode reasoning tokens as output in the token table
+- Stop the alpha update check from timing out before it reaches the newest build
+- Follow the session a Pi process resumes instead of its frozen startup file
+
 ## [0.2.36-alpha.1] - 2026-11-03
 
 ### 新增
