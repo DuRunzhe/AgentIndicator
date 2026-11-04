@@ -299,6 +299,34 @@ fn assign_sessions(live: &[LiveSession], candidates: &[Candidate]) -> Vec<Option
             claimed[candidate] = true;
         }
     }
+
+    // 4. `/new` moves forward in time, but a resume can move the other way:
+    //    pi creates its startup session file and then opens an older
+    //    conversation, so the anchored file freezes while the older one keeps
+    //    growing. Creation time keeps pointing at that frozen file, whose tail
+    //    question then reports a state the live conversation already left
+    //    behind. With no sibling to confuse, the file written most recently is
+    //    the one in use, so follow it.
+    if live.len() == 1 {
+        if let Some(previous) = claims[0] {
+            let newer = candidates
+                .iter()
+                .enumerate()
+                .filter(|(index, file)| {
+                    *index != previous
+                        && !claimed[*index]
+                        && file.modified > candidates[previous].modified
+                        && written_while_alive(file, &live[0])
+                })
+                .max_by_key(|(_, file)| file.modified)
+                .map(|(index, _)| index);
+            if let Some(candidate) = newer {
+                claimed[previous] = false;
+                claimed[candidate] = true;
+                claims[0] = Some(candidate);
+            }
+        }
+    }
     claims
 }
 
@@ -1004,5 +1032,22 @@ mod tests {
         let dormant = candidate(100, 180);
         let claims = assign_sessions(&[live(200)], &[current, dormant]);
         assert_eq!(claims[0], Some(0), "dormant file must not take over");
+    }
+
+    #[test]
+    fn a_resumed_conversation_outranks_the_frozen_startup_session() {
+        // Regression: pi created a fresh session file at startup and then
+        // resumed a much older conversation, so the startup file stopped being
+        // written while the resumed file kept growing. Anchoring by creation
+        // time pinned the process to the frozen file, whose tail question
+        // reported WaitingReply for a session that was in fact working.
+        let startup = candidate(20 * 60, 18 * 60);
+        let resumed = candidate(6 * 86_400, 1);
+        let claims = assign_sessions(&[live(20 * 60)], &[startup, resumed]);
+        assert_eq!(
+            claims[0],
+            Some(1),
+            "the file still being written is the live session"
+        );
     }
 }
