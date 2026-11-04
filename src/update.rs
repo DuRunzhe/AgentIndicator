@@ -100,7 +100,7 @@ pub fn check() -> CheckOutcome {
 
 /// Asks GitHub for the newest release on `channel` synchronously.
 pub fn check_channel(channel: Channel) -> CheckOutcome {
-    let Some(body) = curl_text(&releases_url(channel), 15) else {
+    let Some(body) = curl_text(&releases_url(channel), check_timeout(channel)) else {
         return CheckOutcome::Failed("the release list is unreachable".into());
     };
     let Some(version) = newest_tag(channel, &body) else {
@@ -120,9 +120,25 @@ fn releases_url(channel: Channel) -> String {
         Channel::Stable => {
             format!("https://api.github.com/repos/{REPOSITORY_SLUG}/releases/latest")
         }
+        // A pre-release only shows up in the list, and every entry carries the
+        // release body: 40 entries is 760 KB, which on a slow connection still
+        // has not finished after 15 seconds and made the alpha check report a
+        // failure instead of the newest build. Ten entries are 230 KB and
+        // always contain the newest release; the version ordering in
+        // `newest_tag` still decides the pick.
         Channel::Alpha => {
-            format!("https://api.github.com/repos/{REPOSITORY_SLUG}/releases?per_page=40")
+            format!("https://api.github.com/repos/{REPOSITORY_SLUG}/releases?per_page=10")
         }
+    }
+}
+
+/// How long a check may take. The alpha list is an order of magnitude larger
+/// than `latest`, and a truncated download must not be mistaken for a release
+/// feed that has no pre-releases.
+fn check_timeout(channel: Channel) -> u64 {
+    match channel {
+        Channel::Stable => 15,
+        Channel::Alpha => 30,
     }
 }
 
@@ -592,6 +608,16 @@ mod tests {
         assert!(is_newer("0.2.34-alpha.3", "0.2.33"));
         assert!(!is_newer("0.2.33", "0.2.34-alpha.2"));
         assert!(!is_newer("0.2.34-alpha.2", "0.2.34-alpha.2"));
+    }
+
+    #[test]
+    fn asks_for_a_small_alpha_list_with_a_longer_timeout() {
+        // The alpha list is the only endpoint that can carry a pre-release, and
+        // it is large enough that asking for 40 entries once timed out before
+        // the first byte of the newest one arrived.
+        assert!(releases_url(Channel::Alpha).ends_with("/releases?per_page=10"));
+        assert!(releases_url(Channel::Stable).ends_with("/releases/latest"));
+        assert!(check_timeout(Channel::Alpha) > check_timeout(Channel::Stable));
     }
 
     #[test]
