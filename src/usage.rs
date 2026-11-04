@@ -667,13 +667,21 @@ fn opencode(database: &Path, start: i64, end: i64) -> Totals {
 
 /// `tokens.input` is the uncached prompt, `cache.read`/`cache.write` are the
 /// cached shares, and `cost` is what OpenCode charged for the response.
+///
+/// `tokens.reasoning` is counted as output: OpenCode reports it beside
+/// `tokens.output` instead of inside it (its `tokens.total` sums both), so the
+/// row would otherwise undercount every reasoning response against the other
+/// agents, whose output counters already contain their reasoning tokens.
 const OPENCODE_SQL: &str = r#"
 SELECT
   count(*),
   coalesce(sum(json_extract(data, '$.tokens.input')), 0),
   coalesce(sum(json_extract(data, '$.tokens.cache.read')), 0),
   coalesce(sum(json_extract(data, '$.tokens.cache.write')), 0),
-  coalesce(sum(json_extract(data, '$.tokens.output')), 0),
+  coalesce(sum(
+    coalesce(json_extract(data, '$.tokens.output'), 0)
+    + coalesce(json_extract(data, '$.tokens.reasoning'), 0)
+  ), 0),
   coalesce(sum(json_extract(data, '$.cost')), 0)
 FROM message
 WHERE time_created >= ?1 AND time_created <= ?2
@@ -1289,6 +1297,8 @@ mod tests {
                 .expect("insert");
         };
         let at = 1_791_000_000_000i64;
+        // A message from a release that has no `reasoning` field, and one that
+        // reports reasoning beside output: neither may lose its whole output.
         let assistant = |input: u64, read: u64, write: u64, output: u64, cost: f64| {
             json!({
                 "role": "assistant",
@@ -1300,14 +1310,27 @@ mod tests {
                 "cost": cost
             })
         };
+        let reasoning = |input: u64, output: u64, reasoning: u64| {
+            json!({
+                "role": "assistant",
+                "tokens": {
+                    "input": input,
+                    "output": output,
+                    "reasoning": reasoning,
+                    "cache": { "read": 0, "write": 0 }
+                },
+                "cost": 0.0
+            })
+        };
         insert("a1", at, assistant(10, 100, 1, 5, 0.5));
         insert("a2", at - 86_400_000 * 2, assistant(1_000, 0, 0, 50, 9.0));
+        insert("a3", at, reasoning(20, 7, 3));
         insert("u1", at, json!({ "role": "user" }));
         let totals = opencode(&database, at - 1_000, at + 1_000);
-        assert_eq!(totals.records, 1);
-        assert_eq!(totals.counts.input, 111);
+        assert_eq!(totals.records, 2);
+        assert_eq!(totals.counts.input, 131);
         assert_eq!(totals.counts.input_cached, 100);
-        assert_eq!(totals.counts.output, 5);
+        assert_eq!(totals.counts.output, 15, "reasoning is output too");
         assert_eq!(totals.counts.cost, Some(0.5));
     }
 
