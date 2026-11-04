@@ -139,15 +139,28 @@ EOF
 
 ### Homebrew (macOS)
 
-```bash
-brew install DuRunzhe/tap/agent-status-indicator
-```
-
-Update to the latest version:
+The Homebrew tap for this project is the source repository itself: `Formula/agent-status-indicator.rb` is committed here alongside the code. Since Homebrew 7 a third-party tap must be trusted once before its formulae load (recorded in `~/.homebrew/trust.json`; undo with `brew untrust DuRunzhe/agentindicator`), so the first install registers this repository as the tap and trusts it:
 
 ```bash
-brew upgrade DuRunzhe/tap/agent-status-indicator
+brew tap DuRunzhe/agentindicator https://github.com/DuRunzhe/AgentIndicator
+brew trust DuRunzhe/agentindicator
+brew install DuRunzhe/agentindicator/agent-status-indicator
 ```
+
+Update to the latest version (`brew update` pulls the formula from this repository):
+
+```bash
+brew update && brew upgrade DuRunzhe/agentindicator/agent-status-indicator
+```
+
+The former standalone tap `DuRunzhe/tap` no longer updates. Moving over:
+
+```bash
+brew uninstall DuRunzhe/tap/agent-status-indicator
+brew untap DuRunzhe/tap
+```
+
+Then install with the three commands above.
 
 #### Adding it to your applications (optional)
 
@@ -238,7 +251,7 @@ Each channel installs independently, so remove only the ones you used.
 Homebrew:
 
 ```bash
-brew uninstall DuRunzhe/tap/agent-status-indicator
+brew uninstall DuRunzhe/agentindicator/agent-status-indicator
 ```
 
 If you previously ran `brew services start`, stop it first:

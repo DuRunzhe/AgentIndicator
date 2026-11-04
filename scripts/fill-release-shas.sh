@@ -1,10 +1,11 @@
 #!/bin/bash
 # Fill the two macOS sha256 values in Formula/agent-status-indicator.rb with
-# the hashes published by CI for the given tag.
+# the hashes published by CI for the given tag. The formula lives in this
+# repository, which is also the Homebrew tap, so there is nowhere else to copy
+# it: commit the change with the release.
 #
 # Usage:
-#   bash scripts/fill-release-shas.sh v0.2.13          # repo formula only
-#   TAP_DIR=/path/to/homebrew-tap bash scripts/fill-release-shas.sh v0.2.13
+#   bash scripts/fill-release-shas.sh v0.2.13
 #   REPO=DuRunzhe/AgentIndicator bash scripts/fill-release-shas.sh v0.2.13
 set -euo pipefail
 
@@ -53,12 +54,4 @@ s = replace_in_block(s, 'agent-status-indicator-x86_64-apple-darwin.tar.gz', x64
 open(path, 'w').write(s)
 print("updated", path)
 PY
-
-if [[ -n "${TAP_DIR:-}" ]]; then
-  mkdir -p "$TAP_DIR/Formula"
-  cp "$FORMULA" "$TAP_DIR/Formula/"
-  echo "copied formula to $TAP_DIR/Formula/ (commit & push it there)"
-else
-  echo "repo formula updated. If the tap lives elsewhere, run again with"
-  echo "TAP_DIR=/path/to/homebrew-tap or copy Formula/agent-status-indicator.rb"
-fi
+echo "Formula/agent-status-indicator.rb updated; commit and push it with the release"

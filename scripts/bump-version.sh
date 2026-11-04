@@ -50,4 +50,3 @@ echo "      git add -A && git commit -m \"build: release $NEW\" && git push orig
 echo "      git tag v$NEW && git push origin v$NEW"
 echo "after CI finishes:"
 echo "      bash scripts/fill-release-shas.sh v$NEW"
-echo "      bash scripts/update-tap.sh          # commit+push tap formula"

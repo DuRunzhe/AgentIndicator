@@ -139,15 +139,28 @@ EOF
 
 ### Homebrew（macOS）
 
-```bash
-brew install DuRunzhe/tap/agent-status-indicator
-```
-
-更新到最新版：
+本项目的 Homebrew tap 就是源码仓库本身，`Formula/agent-status-indicator.rb` 随版本一起提交在这里。Homebrew 7 起第三方 tap 必须先信任一次才能加载其中的公式（记录在 `~/.homebrew/trust.json`，可用 `brew untrust DuRunzhe/agentindicator` 撤销），所以第一次安装要先把本仓库注册为 tap 并信任：
 
 ```bash
-brew upgrade DuRunzhe/tap/agent-status-indicator
+brew tap DuRunzhe/agentindicator https://github.com/DuRunzhe/AgentIndicator
+brew trust DuRunzhe/agentindicator
+brew install DuRunzhe/agentindicator/agent-status-indicator
 ```
+
+更新到最新版（`brew update` 会拉取本仓库里的公式）：
+
+```bash
+brew update && brew upgrade DuRunzhe/agentindicator/agent-status-indicator
+```
+
+早先的独立 tap `DuRunzhe/tap` 已停止更新。从它迁移：
+
+```bash
+brew uninstall DuRunzhe/tap/agent-status-indicator
+brew untap DuRunzhe/tap
+```
+
+然后按上面三行安装。
 
 #### 添加到系统应用（可选）
 
@@ -239,7 +252,7 @@ agent-status-indicator --check-update
 Homebrew：
 
 ```bash
-brew uninstall DuRunzhe/tap/agent-status-indicator
+brew uninstall DuRunzhe/agentindicator/agent-status-indicator
 ```
 
 若之前运行过 `brew services start`，先停止服务：
