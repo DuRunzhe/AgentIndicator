@@ -153,7 +153,7 @@ brew install DuRunzhe/agentindicator/agent-status-indicator
 brew update && brew upgrade DuRunzhe/agentindicator/agent-status-indicator
 ```
 
-早先的独立 tap `DuRunzhe/tap` 已停止更新。从它迁移：
+早先的独立 tap `DuRunzhe/tap` 已在 GitHub 归档（archived），固定在其最后一个版本、不再更新；它仍可 clone，所以老的 `brew tap` 不会立刻报错。从它迁移：
 
 ```bash
 brew uninstall DuRunzhe/tap/agent-status-indicator

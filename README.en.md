@@ -153,7 +153,7 @@ Update to the latest version (`brew update` pulls the formula from this reposito
 brew update && brew upgrade DuRunzhe/agentindicator/agent-status-indicator
 ```
 
-The former standalone tap `DuRunzhe/tap` no longer updates. Moving over:
+The former standalone tap `DuRunzhe/tap` is archived on GitHub and pinned at its last release; it stays cloneable, so an existing `brew tap` does not break, but it never updates again. Moving over:
 
 ```bash
 brew uninstall DuRunzhe/tap/agent-status-indicator
