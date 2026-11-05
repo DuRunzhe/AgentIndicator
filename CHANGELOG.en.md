@@ -8,6 +8,18 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.38-alpha.1] - 2026-11-05
+
+### Fixed
+
+- Check for updates without the anonymous API quota
+- Initialise GTK so the Linux tray can start
+
+### Documentation
+
+- Record the Linux tray smoke test
+- Verify the Linux tray inside a container without a desktop
+
 ## [0.2.37] - 2026-11-05
 
 ### Documentation

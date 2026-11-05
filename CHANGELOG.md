@@ -6,6 +6,18 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.38-alpha.1] - 2026-11-05
+
+### 修复
+
+- Check for updates without the anonymous API quota
+- Initialise GTK so the Linux tray can start
+
+### 文档
+
+- Record the Linux tray smoke test
+- Verify the Linux tray inside a container without a desktop
+
 ## [0.2.37] - 2026-11-05
 
 ### 文档
