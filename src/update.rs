@@ -100,11 +100,18 @@ pub fn check() -> CheckOutcome {
 
 /// Asks GitHub for the newest release on `channel` synchronously.
 pub fn check_channel(channel: Channel) -> CheckOutcome {
-    let Some(body) = curl_text(&releases_url(channel), check_timeout(channel)) else {
-        return CheckOutcome::Failed("the release list is unreachable".into());
+    let url = releases_url(channel);
+    let version = match channel {
+        // `releases/latest` redirects to the newest tag; only the location
+        // matters, so a HEAD request is enough.
+        Channel::Stable => curl_redirect_tag(&url, check_timeout(channel)),
+        // Pre-releases never reach that redirect; the Atom feed lists them.
+        Channel::Alpha => {
+            curl_text(&url, check_timeout(channel)).and_then(|body| newest_tag(&body))
+        }
     };
-    let Some(version) = newest_tag(channel, &body) else {
-        return CheckOutcome::Failed("the release response was not understood".into());
+    let Some(version) = version else {
+        return CheckOutcome::Failed("the release list is unreachable".into());
     };
     if is_newer(&version, CURRENT_VERSION) {
         CheckOutcome::Available(version)
@@ -115,26 +122,23 @@ pub fn check_channel(channel: Channel) -> CheckOutcome {
 
 fn releases_url(channel: Channel) -> String {
     match channel {
-        // `latest` never returns a pre-release, which is exactly the stable
-        // channel's contract.
-        Channel::Stable => {
-            format!("https://api.github.com/repos/{REPOSITORY_SLUG}/releases/latest")
-        }
-        // A pre-release only shows up in the list, and every entry carries the
-        // release body: 40 entries is 760 KB, which on a slow connection still
-        // has not finished after 15 seconds and made the alpha check report a
-        // failure instead of the newest build. Ten entries are 230 KB and
-        // always contain the newest release; the version ordering in
+        // GitHub redirects this to the newest non-prerelease tag, which is
+        // exactly the stable channel's contract. Reading the redirect keeps
+        // the check off the REST API: its 60 anonymous requests per hour are
+        // shared by everyone behind the same egress address, and exhausting
+        // them made the check report "unreachable" while the release was
+        // right there.
+        Channel::Stable => format!("https://github.com/{REPOSITORY_SLUG}/releases/latest"),
+        // A pre-release only appears in the feed. Ten entries are about 17 KB
+        // and always contain the newest releases; the version ordering in
         // `newest_tag` still decides the pick.
-        Channel::Alpha => {
-            format!("https://api.github.com/repos/{REPOSITORY_SLUG}/releases?per_page=10")
-        }
+        Channel::Alpha => format!("https://github.com/{REPOSITORY_SLUG}/releases.atom"),
     }
 }
 
-/// How long a check may take. The alpha list is an order of magnitude larger
-/// than `latest`, and a truncated download must not be mistaken for a release
-/// feed that has no pre-releases.
+/// How long a check may take. The feed is larger than the redirect, and a
+/// truncated download must not be mistaken for a release list without
+/// pre-releases.
 fn check_timeout(channel: Channel) -> u64 {
     match channel {
         Channel::Stable => 15,
@@ -142,26 +146,35 @@ fn check_timeout(channel: Channel) -> u64 {
     }
 }
 
-/// Newest tag in a GitHub release response, without the `v` prefix.
-fn newest_tag(channel: Channel, body: &str) -> Option<String> {
-    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
-    let tag = match channel {
-        Channel::Stable => value["tag_name"].as_str()?,
-        // The list arrives newest-first, but ordering it by version keeps the
-        // pick correct when a backport is published after a later release.
-        Channel::Alpha => value
-            .as_array()?
-            .iter()
-            .filter_map(|release| release["tag_name"].as_str())
-            .reduce(|best, tag| {
-                if compare_versions(tag, best) == Ordering::Greater {
-                    tag
-                } else {
-                    best
-                }
-            })?,
-    };
-    Some(tag.trim_start_matches('v').to_owned())
+/// Newest tag in the releases Atom feed. The feed arrives newest-first, but
+/// ordering by version keeps the pick correct when a backport is published
+/// after a later release.
+fn newest_tag(body: &str) -> Option<String> {
+    const MARKER: &str = "/releases/tag/";
+    let mut newest: Option<&str> = None;
+    let mut rest = body;
+    while let Some(index) = rest.find(MARKER) {
+        rest = &rest[index + MARKER.len()..];
+        let end = rest
+            .find(|character: char| matches!(character, '"' | '\'' | '<' | '>' | '?' | '#' | ' '))
+            .unwrap_or(rest.len());
+        let tag = &rest[..end];
+        if !tag.is_empty()
+            && newest.is_none_or(|best| compare_versions(tag, best) == Ordering::Greater)
+        {
+            newest = Some(tag);
+        }
+    }
+    newest.map(|tag| tag.trim_start_matches('v').to_owned())
+}
+
+/// The tag in a `…/releases/tag/<tag>` URL.
+fn tag_from_release_url(url: &str) -> Option<String> {
+    let rest = url.trim().split("/releases/tag/").nth(1)?;
+    let tag = rest
+        .split(|character: char| matches!(character, '/' | '?' | '#' | ' ' | '\n'))
+        .next()?;
+    (!tag.is_empty()).then(|| tag.trim_start_matches('v').to_owned())
 }
 
 fn install(version: &str, tx: &Sender<Message>) -> Result<PathBuf, String> {
@@ -425,6 +438,39 @@ fn curl_text(url: &str, timeout: u64) -> Option<String> {
     }
 }
 
+/// The tag a redirect lands on, without downloading the page it lands on.
+fn curl_redirect_tag(url: &str, timeout: u64) -> Option<String> {
+    let output = Command::new("curl")
+        .args([
+            "-fsSIL",
+            "--max-time",
+            &timeout.to_string(),
+            "-o",
+            null_output(),
+            "-w",
+            "%{url_effective}",
+        ])
+        .arg(url)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    tag_from_release_url(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Where a response body goes when only the headers matter.
+fn null_output() -> &'static str {
+    #[cfg(windows)]
+    {
+        "NUL"
+    }
+    #[cfg(not(windows))]
+    {
+        "/dev/null"
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn sha256(path: &Path) -> Option<String> {
     let output = Command::new("certutil")
@@ -611,31 +657,41 @@ mod tests {
     }
 
     #[test]
-    fn asks_for_a_small_alpha_list_with_a_longer_timeout() {
-        // The alpha list is the only endpoint that can carry a pre-release, and
-        // it is large enough that asking for 40 entries once timed out before
-        // the first byte of the newest one arrived.
-        assert!(releases_url(Channel::Alpha).ends_with("/releases?per_page=10"));
+    fn checks_github_without_the_anonymous_api_quota() {
+        // The REST API allows 60 anonymous requests per hour per address, which
+        // a shared egress IP exhausts; both endpoints below are served without
+        // a quota. The redirect never carries a pre-release, and the feed is
+        // the only place they appear.
         assert!(releases_url(Channel::Stable).ends_with("/releases/latest"));
+        assert!(releases_url(Channel::Alpha).ends_with("/releases.atom"));
         assert!(check_timeout(Channel::Alpha) > check_timeout(Channel::Stable));
     }
 
     #[test]
-    fn picks_the_newest_tag_from_a_release_list() {
-        let releases = r#"[
-            {"tag_name": "v0.2.34-alpha.1"},
-            {"tag_name": "v0.2.33"},
-            {"tag_name": "v0.2.34-alpha.2"}
-        ]"#;
+    fn reads_the_tag_a_redirect_lands_on() {
         assert_eq!(
-            newest_tag(Channel::Alpha, releases).as_deref(),
-            Some("0.2.34-alpha.2")
+            tag_from_release_url(
+                "https://github.com/DuRunzhe/AgentIndicator/releases/tag/v0.2.37\n"
+            )
+            .as_deref(),
+            Some("0.2.37")
         );
         assert_eq!(
-            newest_tag(Channel::Stable, r#"{"tag_name": "v0.2.33"}"#).as_deref(),
-            Some("0.2.33")
+            tag_from_release_url("https://github.com/DuRunzhe/AgentIndicator/releases"),
+            None
         );
-        assert_eq!(newest_tag(Channel::Alpha, "[]").as_deref(), None);
+    }
+
+    #[test]
+    fn picks_the_newest_tag_from_the_release_feed() {
+        let feed = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+            <entry><link rel="alternate" href="https://github.com/DuRunzhe/AgentIndicator/releases/tag/v0.2.34-alpha.1"/></entry>
+            <entry><link rel="alternate" href="https://github.com/DuRunzhe/AgentIndicator/releases/tag/v0.2.33"/></entry>
+            <entry><link rel="alternate" href="https://github.com/DuRunzhe/AgentIndicator/releases/tag/v0.2.34-alpha.2"/></entry>
+        </feed>"#;
+        assert_eq!(newest_tag(feed).as_deref(), Some("0.2.34-alpha.2"));
+        assert_eq!(newest_tag(""), None);
+        assert_eq!(newest_tag("<feed></feed>"), None);
     }
 
     #[test]
