@@ -235,6 +235,16 @@ fn main() -> Result<()> {
             return Ok(());
         }
     };
+    // The Linux tray backend builds GTK menus through muda and expects the
+    // toolkit to be up already; without this the first menu panics with "GTK
+    // has not been initialized". Every command-line path above returns before
+    // this point, so `--diagnose` still works without a display.
+    #[cfg(target_os = "linux")]
+    if let Err(error) = gtk::init() {
+        eprintln!("agent-status-indicator: cannot start the tray: {error}");
+        eprintln!("A graphical session with GTK 3 is required (DISPLAY or WAYLAND_DISPLAY).");
+        std::process::exit(1);
+    }
     // If Claude Code's statusline still points at a collector installed by an
     // earlier channel, re-point it at this executable so a fresh npm/Homebrew/
     // curl install takes over without a manual menu action.
@@ -924,6 +934,13 @@ impl ApplicationHandler<UserEvent> for App {
         self.rebuild();
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The Linux tray reports menu activation through the GTK main loop,
+        // which winit does not run; drain it here so a click is handled on the
+        // next wake-up instead of never.
+        #[cfg(target_os = "linux")]
+        while gtk::events_pending() {
+            gtk::main_iteration_do(false);
+        }
         if self.last_locale_check.elapsed() >= Duration::from_secs(60) {
             self.last_locale_check = Instant::now();
             // The "follow system" row leads with the system language, so keep

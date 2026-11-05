@@ -36,5 +36,12 @@ libc = "0.2"
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = ["Foundation", "UI_Notifications", "Data_Xml_Dom", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
 
+# The Linux tray backend builds GTK menus through muda, so the process has to
+# initialise GTK itself before the first menu exists; without it the first menu
+# panics with "GTK has not been initialized". The version is pinned to the one
+# muda links against, so both share the same GTK instance.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"
