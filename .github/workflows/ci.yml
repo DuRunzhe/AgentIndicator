@@ -32,3 +32,50 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev pkg-config libssl-dev
       - name: Run tests
         run: cargo test --locked
+
+      # The tray only builds its GTK menu at runtime, so compiling is not enough
+      # on Linux: the tray used to panic with "GTK has not been initialized" on
+      # the first menu (see issue #2). Start it on a virtual display and require
+      # that it stays up long enough to write its UI dump.
+      - name: Smoke-test the tray on a virtual display
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y xvfb xauth dbus-x11
+          cargo build --locked
+          binary="./target/debug/agent-status-indicator"
+          dump="$HOME/.agent-status-indicator-ui.json"
+          rm -f "$dump"
+          xvfb-run -a dbus-run-session -- "$binary" --debug-ui \
+            > "$RUNNER_TEMP/tray.log" 2>&1 &
+          runner_pid=$!
+          # The first scan lands within a couple of seconds and writes the dump;
+          # give the event loop time to build the menu and process it.
+          for _ in $(seq 1 20); do
+            if [[ -f "$dump" ]]; then break; fi
+            if ! kill -0 "$runner_pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          status=0
+          running=0
+          if kill -0 "$runner_pid" 2>/dev/null; then running=1; fi
+          if [[ $running -eq 0 ]]; then
+            echo "::error::the tray exited before it could draw its menu"
+            status=1
+          fi
+          if grep -qE "GTK has not been initialized|panicked" "$RUNNER_TEMP/tray.log"; then
+            echo "::error::the tray panicked on a GTK call"
+            status=1
+          fi
+          if [[ ! -f "$dump" ]]; then
+            echo "::error::the event loop never scanned, so the menu never appeared"
+            status=1
+          fi
+          kill "$runner_pid" 2>/dev/null || true
+          wait "$runner_pid" 2>/dev/null || true
+          pkill -f "target/debug/agent-status-indicator" 2>/dev/null || true
+          if [[ $status -ne 0 ]]; then
+            echo "--- tray log ---"
+            cat "$RUNNER_TEMP/tray.log"
+          fi
+          exit $status
