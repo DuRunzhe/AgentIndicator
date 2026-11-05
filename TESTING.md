@@ -190,6 +190,10 @@ ps -o pid,%cpu,rss,etime,command -p "$(pgrep -x agent-status-indicator)"
 
 确认框保持未处理至少 20 秒（跨越多次 5 秒探测缓存刷新），状态应持续为等待确认，不应重复触发首次通知；1 分钟和 3 分钟的既有提醒仍保留。确认处理后，新日志活动或明确的终端执行信号应解除等待状态。
 
+## Linux 启动（自动化冒烟）
+
+`ci.yml` 在 `ubuntu-latest` 上用 `xvfb-run` 启动托盘，并在 20 秒内等待 `--debug-ui` 写出 UI 快照：进程必须仍然存活，日志里不得出现 `GTK has not been initialized` 或 `panicked`。GTK 初始化、菜单构建或事件循环的回归都会让该 job 失败。真实的托盘图标与菜单点击仍需按下面的手动步骤在 Linux 机器上验收。
+
 ## 终端聚焦手动验收（Windows / Linux）
 
 托盘菜单点击会话项时，应把承载该 Agent 的既有终端窗口带到前台，而不是新开终端。
