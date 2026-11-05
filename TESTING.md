@@ -194,6 +194,23 @@ ps -o pid,%cpu,rss,etime,command -p "$(pgrep -x agent-status-indicator)"
 
 `ci.yml` 在 `ubuntu-latest` 上用 `xvfb-run` 启动托盘，并在 20 秒内等待 `--debug-ui` 写出 UI 快照：进程必须仍然存活，日志里不得出现 `GTK has not been initialized` 或 `panicked`。GTK 初始化、菜单构建或事件循环的回归都会让该 job 失败。真实的托盘图标与菜单点击仍需按下面的手动步骤在 Linux 机器上验收。
 
+### Linux 托盘图标（容器内验证，无需桌面）
+
+没有 Linux 桌面时，虚拟显示加一个 XEmbed 托盘宿主就能验证图标与菜单是否正确（issue #2 的回归点）：
+
+```bash
+sudo apt install -y xvfb stalonetray imagemagick xdotool dbus-x11 libxkbcommon-x11-0
+Xvfb :99 -screen 0 1280x800x24 &
+eval "$(dbus-launch --sh-syntax)"
+DISPLAY=:99 stalonetray --geometry 5x1-0+0 --icon-size 24 &
+DISPLAY=:99 ./target/debug/agent-status-indicator &
+sleep 8
+DISPLAY=:99 import -window root /tmp/shot.png      # 右上角应出现托盘图标
+DISPLAY=:99 xdotool mousemove <图标坐标> click 3   # 右键应弹出完整菜单
+```
+
+应用在找不到 StatusNotifier host 时会回退到 XEmbed，由 stalonetray 负责显示；菜单激活由事件循环里的 GTK 迭代派发，所以点击 “Quit” 应当让进程退出。这两点任缺其一（未 `gtk::init`、未泵 GTK 主循环），图标或菜单就会是空白。
+
 ## 终端聚焦手动验收（Windows / Linux）
 
 托盘菜单点击会话项时，应把承载该 Agent 的既有终端窗口带到前台，而不是新开终端。
