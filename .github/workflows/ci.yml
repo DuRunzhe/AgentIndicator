@@ -41,7 +41,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          sudo apt-get install -y xvfb xauth dbus-x11
+          sudo apt-get install -y xvfb xauth dbus-x11 libxkbcommon-x11-0
           cargo build --locked
           binary="./target/debug/agent-status-indicator"
           dump="$HOME/.agent-status-indicator-ui.json"
