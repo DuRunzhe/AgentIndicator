@@ -6,6 +6,13 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.37] - 2026-11-05
+
+### 文档
+
+- Serve the Homebrew tap from this repository
+- Note that the standalone Homebrew tap is archived
+
 ## [0.2.36-alpha.2] - 2026-11-04
 
 ### 修复

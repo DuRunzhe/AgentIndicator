@@ -8,6 +8,13 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.37] - 2026-11-05
+
+### Documentation
+
+- Serve the Homebrew tap from this repository
+- Note that the standalone Homebrew tap is archived
+
 ## [0.2.36-alpha.2] - 2026-11-04
 
 ### Fixed
