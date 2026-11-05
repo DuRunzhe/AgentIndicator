@@ -67,10 +67,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          # Build the release body from merged PRs, grouped by the labels in
-          # .github/release.yml. The release-notes job appends the npm note to
-          # this body afterwards.
-          generate_release_notes: true
+          # The body is written afterwards by the release-notes job from
+          # CHANGELOG.md: GitHub's generated notes only list merged pull
+          # requests, and this repository commits straight to main.
           prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
 
   # Assemble one cross-platform npm tarball from every build and publish it.
@@ -136,38 +135,27 @@ jobs:
           echo "publishing $VERSION under dist-tag $TAG"
           npm publish ./dist/agent-status-indicator-*.tgz --tag "$TAG"
 
-  # Spell out which npm dist-tag this tag occupies, so the release page makes
-  # it obvious whether `npm install -g agent-status-indicator` picks it up.
+  # Write the release body: the version's CHANGELOG section (git-cliff output,
+  # Chinese first and English folded) plus the npm dist-tag note. GitHub's own
+  # "generate release notes" only knows about merged pull requests, so on a
+  # repository that commits straight to main it produces an empty body.
   # Runs after `build` so the release and its assets already exist.
   release-notes:
-    name: annotate npm dist-tag
+    name: publish release notes
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Append the npm dist-tag note to the release
+      - uses: actions/checkout@v4
+        with:
+          # The compare link needs the previous tag, which a shallow clone omits.
+          fetch-depth: 0
+      - name: Attach the changelog section to the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
-          if [[ "$VERSION" == *-* ]]; then
-            DIST="${VERSION#*-}"
-            DIST="${DIST%%.*}"
-            NOTE="This is a prerelease, published under the \`$DIST\` npm dist-tag. \`latest\` keeps pointing at the newest stable release, so \`npm install -g agent-status-indicator\` is unchanged."
-          else
-            NOTE="This is a stable release: npm \`latest\` now points to \`$VERSION\`, so \`npm install -g agent-status-indicator\` installs it."
-          fi
-          BODY="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body)"
-          if [[ "$BODY" == *"## npm"* ]]; then
-            echo "npm note already present; nothing to change"
-            exit 0
-          fi
-          if [[ -n "$BODY" ]]; then
-            printf '%s\n\n## npm\n\n%s\n' "$BODY" "$NOTE" > /tmp/notes.md
-          else
-            printf '## npm\n\n%s\n' "$NOTE" > /tmp/notes.md
-          fi
+          bash scripts/release-notes.sh "${TAG#v}" > /tmp/notes.md
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file /tmp/notes.md
 
   # Developer ID signing + notarization. Secrets never reach other jobs or any

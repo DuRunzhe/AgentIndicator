@@ -23,8 +23,19 @@ BASE="https://github.com/$REPO/releases/download/v$TAG"
 FORMULA="$ROOT/Formula/agent-status-indicator.rb"
 
 fetch_sha() {
-  curl -fsSL --retry 4 --retry-all-errors "$BASE/agent-status-indicator-$1.tar.gz.sha256" \
-    | tr -d '[:space:]'
+  local asset="agent-status-indicator-$1.tar.gz.sha256" sha tmp
+  sha="$(curl -fsSL --retry 4 --retry-all-errors "$BASE/$asset" 2>/dev/null | tr -d '[:space:]')"
+  if [[ -z "$sha" ]]; then
+    # The releases/download gateway occasionally answers 504; the API route
+    # used by the gh CLI serves the same asset.
+    tmp="$(mktemp -d)"
+    gh release download "v$TAG" --repo "$REPO" --pattern "$asset" --dir "$tmp" --clobber \
+      >/dev/null 2>&1 || true
+    sha="$(tr -d '[:space:]' < "$tmp/$asset" 2>/dev/null || true)"
+    rm -rf "$tmp"
+  fi
+  printf '%s' "$sha"
+  [[ -n "$sha" ]]
 }
 
 ARM=$(fetch_sha aarch64-apple-darwin) \
