@@ -391,6 +391,81 @@ struct MenuView {
     display: Vec<IconMenuItem>,
     browser_tabs: IconMenuItem,
     claude_statusline: IconMenuItem,
+    /// The state each row of [`Self::icon_items`] was last drawn with. A row
+    /// only gets a new icon when its setting actually changed: every icon
+    /// handed to the native menu is a fresh bitmap, and re-rasterising all of
+    /// them on each two-second refresh is what exhausted the Windows build's
+    /// GDI handles (which then killed the tray).
+    icon_states: Vec<bool>,
+}
+
+impl MenuView {
+    /// The rows whose leading icon mirrors an on/off setting, in the order
+    /// [`icon_row_states`] lists their states.
+    fn icon_items(&self) -> Vec<&IconMenuItem> {
+        let mut items: Vec<&IconMenuItem> = Vec::with_capacity(19);
+        items.push(&self.notifications);
+        items.extend(self.notification_preferences.iter());
+        items.push(&self.browser_tabs);
+        items.push(&self.startup);
+        items.push(&self.claude_statusline);
+        items.extend(self.display.iter());
+        items
+    }
+}
+
+/// The on/off state each row of [`MenuView::icon_items`] should show, in the
+/// same order as that method returns the rows.
+fn icon_row_states(config: &Config, startup_enabled: bool, claude_installed: bool) -> Vec<bool> {
+    let mut states = Vec::with_capacity(19);
+    states.push(config.notifications_enabled);
+    states.extend(
+        notification_preferences(config)
+            .iter()
+            .map(|(_, _, enabled)| *enabled),
+    );
+    states.push(config.browser_tab_reuse);
+    states.push(startup_enabled);
+    states.push(claude_installed);
+    states.extend(
+        display_settings()
+            .iter()
+            .map(|(key, _)| config_value(config, key)),
+    );
+    states
+}
+
+/// Push a new leading icon to the setting rows whose state changed, and leave
+/// the rest untouched. Each icon is a freshly rasterised bitmap in the native
+/// menu; on Windows `muda` keeps every bitmap it is handed, so repainting all
+/// nineteen rows on every refresh grows the process's GDI handle count until
+/// `CreateIcon` starts failing (which used to take the tray down with it).
+fn apply_toggle_icons(
+    config: &Config,
+    menu: &mut MenuView,
+    startup_enabled: bool,
+    claude_installed: bool,
+) {
+    let states = icon_row_states(config, startup_enabled, claude_installed);
+    let mut applied = std::mem::take(&mut menu.icon_states);
+    applied.resize(states.len(), false);
+    for (index, (item, enabled)) in menu.icon_items().into_iter().zip(&states).enumerate() {
+        if applied[index] == *enabled {
+            continue;
+        }
+        #[cfg(not(target_os = "macos"))]
+        match menu_toggle_icon(*enabled) {
+            Some(icon) => item.set_icon(Some(icon)),
+            // No bitmap available (out of GDI handles, or a headless session).
+            // Keep the icon already on the row and retry on the next rebuild
+            // instead of taking the tray down with a panic.
+            None => continue,
+        }
+        #[cfg(target_os = "macos")]
+        let _ = item;
+        applied[index] = *enabled;
+    }
+    menu.icon_states = applied;
 }
 
 impl App {
@@ -530,13 +605,14 @@ impl App {
                 tray.set_menu(Some(Box::new(menu.menu.clone())));
             } else {
                 let title = summary(&self.current);
-                self.tray = TrayIconBuilder::new()
+                let mut builder = TrayIconBuilder::new()
                     .with_menu(Box::new(menu.menu.clone()))
                     .with_tooltip(&title)
-                    .with_title(&title)
-                    .with_icon(status_icon(summary_state(&self.current), 0))
-                    .build()
-                    .ok();
+                    .with_title(&title);
+                if let Some(icon) = status_icon(summary_state(&self.current), 0) {
+                    builder = builder.with_icon(icon);
+                }
+                self.tray = builder.build().ok();
             }
             self.menu = Some(menu);
             self.update_tray_status(true);
@@ -577,9 +653,6 @@ impl App {
             }
             menu.notifications
                 .set_text(notification_action_label(self.config.notifications_enabled));
-            #[cfg(not(target_os = "macos"))]
-            menu.notifications
-                .set_icon(Some(toggle_menu_icon(self.config.notifications_enabled)));
             for (item, (_, label, enabled)) in menu
                 .notification_preferences
                 .iter()
@@ -587,19 +660,11 @@ impl App {
             {
                 item.set_enabled(self.config.notifications_enabled);
                 item.set_text(toggle_label(enabled, label));
-                #[cfg(not(target_os = "macos"))]
-                item.set_icon(Some(toggle_menu_icon(enabled)));
             }
             menu.browser_tabs
                 .set_text(browser_tab_action_label(self.config.browser_tab_reuse));
-            #[cfg(not(target_os = "macos"))]
-            menu.browser_tabs
-                .set_icon(Some(toggle_menu_icon(self.config.browser_tab_reuse)));
-            menu.startup
-                .set_text(startup_action_label(startup::is_enabled()));
-            #[cfg(not(target_os = "macos"))]
-            menu.startup
-                .set_icon(Some(toggle_menu_icon(startup::is_enabled())));
+            let startup_enabled = startup::is_enabled();
+            menu.startup.set_text(startup_action_label(startup_enabled));
             menu.notifications.set_enabled(!self.action_busy);
             menu.test_notification
                 .set_enabled(self.config.notifications_enabled && !self.action_busy);
@@ -609,16 +674,12 @@ impl App {
             let claude_installed = claude_statusline::is_installed();
             menu.claude_statusline
                 .set_text(claude_action_label(claude_installed));
-            #[cfg(not(target_os = "macos"))]
-            menu.claude_statusline
-                .set_icon(Some(toggle_menu_icon(claude_installed)));
             menu.claude_statusline.set_enabled(!self.action_busy);
             menu.startup.set_enabled(!self.action_busy);
             for (item, (key, label)) in menu.display.iter().zip(display_settings()) {
                 item.set_text(toggle_label(config_value(&self.config, key), label));
-                #[cfg(not(target_os = "macos"))]
-                item.set_icon(Some(toggle_menu_icon(config_value(&self.config, key))));
             }
+            apply_toggle_icons(&self.config, menu, startup_enabled, claude_installed);
             #[cfg(target_os = "macos")]
             self.macos_menu_symbols
                 .apply_if_settings_changed(&menu.menu, &self.config);
@@ -632,6 +693,12 @@ impl App {
 
     fn create_menu(&self, signature: Vec<(u32, AgentState)>) -> MenuView {
         let menu = Menu::new();
+        // Read once per menu: these two drive both a row's icon and its label,
+        // and the recorded icon state has to be the one the rows were built
+        // with so the first refresh after this one is a no-op.
+        let startup_enabled = startup::is_enabled();
+        let claude_installed = claude_statusline::is_installed();
+        let icon_states = icon_row_states(&self.config, startup_enabled, claude_installed);
         let mut instance_items = Vec::new();
         let visible: Vec<_> = visible_instances(&self.current, &self.config).collect();
         for instance in &visible {
@@ -694,9 +761,9 @@ impl App {
         let startup_menu = Submenu::new(i18n::menu("startup"), startup::is_supported());
         let startup_item = IconMenuItem::with_id(
             "startup",
-            startup_action_label(startup::is_enabled()),
+            startup_action_label(startup_enabled),
             startup::is_supported(),
-            menu_toggle_icon(startup::is_enabled()),
+            menu_toggle_icon(startup_enabled),
             None,
         );
         let _ = startup_menu.append(&startup_item);
@@ -764,7 +831,6 @@ impl App {
         ));
         let _ = browser_menu.append(&MenuItem::new(i18n::menu("permission"), false, None));
         let _ = settings.append(&browser_menu);
-        let claude_installed = claude_statusline::is_installed();
         let claude_statusline = IconMenuItem::with_id(
             "claude_statusline",
             claude_action_label(claude_installed),
@@ -868,6 +934,7 @@ impl App {
             display: display_items,
             browser_tabs,
             claude_statusline,
+            icon_states,
         }
     }
 
@@ -890,7 +957,9 @@ impl App {
             tray.set_title(Some(&title));
         }
         if force || state_changed || frame_changed {
-            let _ = tray.set_icon(Some(status_icon(state, frame)));
+            if let Some(icon) = status_icon(state, frame) {
+                let _ = tray.set_icon(Some(icon));
+            }
         }
     }
 }
@@ -1850,7 +1919,7 @@ fn animation_frame(state: AgentState, elapsed: Duration) -> usize {
     }
 }
 
-fn status_icon(state: AgentState, frame: usize) -> Icon {
+fn status_icon(state: AgentState, frame: usize) -> Option<Icon> {
     // tray-icon displays a status item at 18pt.  Supplying a high-resolution,
     // antialiased source lets AppKit downsample it cleanly instead of enlarging
     // the original 16px diagnostic raster.
@@ -1860,7 +1929,9 @@ fn status_icon(state: AgentState, frame: usize) -> Icon {
         STATUS_ICON_PIXELS as u32,
         STATUS_ICON_PIXELS as u32,
     )
-    .expect("valid icon")
+    // A refused bitmap (the platform ran out of icon or GDI handles) skips one
+    // refresh; it is not a reason to abort the whole tray.
+    .ok()
 }
 
 fn status_icon_rgba_at_size(state: AgentState, frame: usize, size: usize) -> Vec<u8> {
@@ -1955,7 +2026,7 @@ fn status_icon_rgba(state: AgentState, frame: usize) -> Vec<u8> {
 /// expose SF Symbols as cross-platform menu images, so these are deliberately
 /// small equivalents rather than loading a macOS-only asset at runtime.
 #[cfg(not(target_os = "macos"))]
-fn toggle_menu_icon(enabled: bool) -> MenuIcon {
+fn toggle_menu_icon(enabled: bool) -> Option<MenuIcon> {
     let mut rgba = empty_menu_icon();
     let color = if enabled {
         [52, 199, 89]
@@ -1987,15 +2058,14 @@ fn toggle_menu_icon(enabled: bool) -> MenuIcon {
         draw_menu_line(&mut rgba, (4.0, 8.0), (7.0, 11.0), 1.15, [255, 255, 255]);
         draw_menu_line(&mut rgba, (7.0, 11.0), (12.0, 6.0), 1.15, [255, 255, 255]);
     }
-    MenuIcon::from_rgba(rgba, MENU_ICON_PIXELS as u32, MENU_ICON_PIXELS as u32)
-        .expect("valid menu toggle icon")
+    MenuIcon::from_rgba(rgba, MENU_ICON_PIXELS as u32, MENU_ICON_PIXELS as u32).ok()
 }
 
 /// A compact colored information badge for one-off menu commands (test
 /// notification and Claude context collection).  It is intentionally an icon
 /// rather than a Unicode glyph so its color and alignment match toggle icons.
 #[cfg(not(target_os = "macos"))]
-fn menu_symbol_icon(rgb: [u8; 3]) -> MenuIcon {
+fn menu_symbol_icon(rgb: [u8; 3]) -> Option<MenuIcon> {
     let mut rgba = empty_menu_icon();
     let center = MENU_ICON_PIXELS as i32 / 2;
     let radius = 7 * MENU_ICON_SCALE;
@@ -2018,8 +2088,7 @@ fn menu_symbol_icon(rgb: [u8; 3]) -> MenuIcon {
             set_menu_pixel(&mut rgba, x as usize, y as usize, [255, 255, 255]);
         }
     }
-    MenuIcon::from_rgba(rgba, MENU_ICON_PIXELS as u32, MENU_ICON_PIXELS as u32)
-        .expect("valid menu symbol icon")
+    MenuIcon::from_rgba(rgba, MENU_ICON_PIXELS as u32, MENU_ICON_PIXELS as u32).ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -2031,7 +2100,7 @@ fn menu_toggle_icon(_: bool) -> Option<MenuIcon> {
 
 #[cfg(not(target_os = "macos"))]
 fn menu_toggle_icon(enabled: bool) -> Option<MenuIcon> {
-    Some(toggle_menu_icon(enabled))
+    toggle_menu_icon(enabled)
 }
 
 #[cfg(target_os = "macos")]
@@ -2041,7 +2110,7 @@ fn menu_symbol_menu_icon(_: [u8; 3]) -> Option<MenuIcon> {
 
 #[cfg(not(target_os = "macos"))]
 fn menu_symbol_menu_icon(rgb: [u8; 3]) -> Option<MenuIcon> {
-    Some(menu_symbol_icon(rgb))
+    menu_symbol_icon(rgb)
 }
 
 // The native macOS menu renders images at 18pt.  Keep a 128px backing image
@@ -2332,6 +2401,30 @@ mod stopped_visibility_tests {
             ..Config::default()
         };
         assert!(!config_value(&hidden, "stopped_agents"));
+    }
+
+    #[test]
+    fn icon_states_list_one_entry_per_setting_row_in_menu_order() {
+        // `apply_toggle_icons` walks the rows and this vector in lockstep, so a
+        // row inserted anywhere must move its state with it.
+        let config = Config::default();
+        let preferences = notification_preferences(&config);
+        let display = display_settings();
+        let states = icon_row_states(&config, true, false);
+        assert_eq!(states.len(), 1 + preferences.len() + 3 + display.len());
+        assert_eq!(states[0], config.notifications_enabled);
+        assert_eq!(
+            &states[1..1 + preferences.len()],
+            &preferences.map(|(_, _, enabled)| enabled)[..]
+        );
+        let after_preferences = 1 + preferences.len();
+        assert_eq!(states[after_preferences], config.browser_tab_reuse);
+        assert!(states[after_preferences + 1], "startup state is passed in");
+        assert!(!states[after_preferences + 2], "Claude state is passed in");
+        assert_eq!(
+            &states[after_preferences + 3..],
+            &display.map(|(key, _)| config_value(&config, key))[..]
+        );
     }
 }
 
