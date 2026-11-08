@@ -8,6 +8,20 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.38-alpha.2] - 2026-11-08
+
+### Added
+
+- Log crashes so a silent tray exit can be reported
+
+### Fixed
+
+- Refresh the tray menu icons only when their setting changes
+
+### Documentation
+
+- Record the Windows tray stability check
+
 ## [0.2.38-alpha.1] - 2026-11-05
 
 ### Fixed

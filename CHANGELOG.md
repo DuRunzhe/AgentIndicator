@@ -6,6 +6,20 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.38-alpha.2] - 2026-11-08
+
+### 新增
+
+- Log crashes so a silent tray exit can be reported
+
+### 修复
+
+- Refresh the tray menu icons only when their setting changes
+
+### 文档
+
+- Record the Windows tray stability check
+
 ## [0.2.38-alpha.1] - 2026-11-05
 
 ### 修复
