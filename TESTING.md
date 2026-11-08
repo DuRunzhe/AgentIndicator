@@ -172,6 +172,17 @@ ps -o pid,%cpu,rss,etime,command -p "$(pgrep -x agent-status-indicator)"
 - 预期状态与实际状态
 - 复现步骤
 - 上述 `ps` 命令输出
+- 进程死亡且终端里没有输出时，缓存目录下的 `agent-status-indicator/panic.log`（Windows 为 `%LOCALAPPDATA%\agent-status-indicator\panic.log`）
+
+## Windows 托盘稳定性验收
+
+托盘每次刷新都会重设行状态，而每个图标位图都是一个 GDI 对象，所以这里既要验“点得动”，也要验“放得久”。
+
+1. 从安装包启动托盘，在任务管理器「详细信息」页加上「GDI 对象」和「句柄」两列。
+2. 静置 10 分钟不操作：GDI 对象数应基本平稳，不再以每次刷新约 19 个的速度增长。
+3. 反复点击托盘图标打开菜单，逐行走一遍会话行、各个设置开关、语言、期间选择（Quit 除外）：进程应始终存活，菜单不得消失。
+4. 点击菜单外部关闭菜单（不选任何行）：进程应继续运行。
+5. 托盘仍然退出时读 `%LOCALAPPDATA%\agent-status-indicator\panic.log`：有 `panicked at` 行就整行贴进反馈；没有该文件说明是系统结束了进程，需要附事件查看器的应用程序错误。
 
 ## Codex 确认状态回归
 
