@@ -127,7 +127,43 @@ fn cli_request(arguments: &[String]) -> CliRequest {
     }
 }
 
+/// Where a panic is recorded, next to the single-instance lock.
+fn panic_log_path() -> Option<PathBuf> {
+    dirs::cache_dir().map(|directory| directory.join("agent-status-indicator/panic.log"))
+}
+
+/// Keep a panic on disk as well as on stderr.
+///
+/// A tray that dies on Windows leaves nothing behind: the process is started
+/// without a console (from the Start Menu, or by the autostart entry), so a
+/// panic's message goes nowhere and all the user sees is the icon vanishing.
+/// Writing the same text to the cache directory makes that reportable.
+fn install_panic_log() {
+    let path = panic_log_path();
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(path) = &path {
+            let thread = std::thread::current();
+            let name = thread.name().unwrap_or("unnamed");
+            append_panic(path, &format!("[{name}] {info}\n"));
+        }
+        // The console output, when there is a console, is unchanged.
+        default_hook(info);
+    }));
+}
+
+fn append_panic(path: &std::path::Path, line: &str) {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 fn main() -> Result<()> {
+    install_panic_log();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     // Answer the command line before any tray machinery exists. `--version`
     // and `--help` used to match nothing here, so they fell through to the
@@ -1982,6 +2018,27 @@ fn status_icon_rgba_at_size(state: AgentState, frame: usize, size: usize) -> Vec
 
 fn edge_alpha(inside_distance: f32) -> u8 {
     ((inside_distance + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+#[cfg(test)]
+mod panic_log_tests {
+    use super::*;
+
+    #[test]
+    fn panic_lines_are_appended_instead_of_truncated() {
+        let path = std::env::temp_dir().join(format!(
+            "agent-status-indicator-panic-{}/panic.log",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+        append_panic(&path, "first\n");
+        append_panic(&path, "second\n");
+        assert_eq!(fs::read_to_string(&path).expect("log"), "first\nsecond\n");
+        // The path's directory is created on demand, so a first crash on a
+        // freshly installed machine still leaves a readable log.
+        assert!(path.parent().expect("parent").is_dir());
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
 }
 
 #[cfg(test)]
