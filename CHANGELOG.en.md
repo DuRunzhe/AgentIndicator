@@ -8,6 +8,12 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.38-alpha.3] - 2026-11-10
+
+### Added
+
+- Rebuild the About panel with product info and project links (about)
+
 ## [0.2.38-alpha.2] - 2026-11-08
 
 ### Added

@@ -6,6 +6,12 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.38-alpha.3] - 2026-11-10
+
+### 新增
+
+- Rebuild the About panel with product info and project links (about)
+
 ## [0.2.38-alpha.2] - 2026-11-08
 
 ### 新增
