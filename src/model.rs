@@ -40,6 +40,10 @@ pub struct ContextUsage {
     pub window_tokens: u64,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// CPU and resident-memory usage of a row's process tree.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ProcessUsage {
@@ -68,6 +72,14 @@ pub struct AgentInstance {
     pub pid: u32,
     pub cwd: Option<PathBuf>,
     pub state: AgentState,
+    /// Whether `state` was read from the agent's own session record (its
+    /// transcript, rollout or conversation cache) rather than guessed from
+    /// process activity. A row that cannot reach its session falls back to
+    /// "a child is running ⇒ working, otherwise ⇒ ready", which says nothing
+    /// about the task itself: the notification tracker must not read such a
+    /// fallback as a finished turn.
+    #[serde(default = "default_true")]
+    pub state_from_session: bool,
     pub uptime: Duration,
     pub model: Option<String>,
     pub context: Option<ContextUsage>,
@@ -199,6 +211,7 @@ mod tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: false,
+            state_from_session: true,
             usage: Some(usage),
         }
     }

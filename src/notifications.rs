@@ -19,9 +19,13 @@ struct Tracker {
 
 #[derive(Default)]
 pub struct NotificationTracker {
-    /// Last observed state per row key, for every live row. A completion needs
-    /// the previous state of a row that is *not* asking for attention (a
-    /// working row gets no reminders), so this cannot live in [`Tracker`].
+    /// Last *session-backed* state per row key, for every live row. A
+    /// completion needs the previous state of a row that is *not* asking for
+    /// attention (a working row gets no reminders), so this cannot live in
+    /// [`Tracker`]. Scans whose state is only a process-activity guess leave
+    /// this untouched: they say nothing about the task, and letting them
+    /// overwrite the baseline would both fabricate completions and hide real
+    /// ones.
     states: HashMap<String, AgentState>,
     /// Keyed by [`AgentInstance::key`]: one process can host several sessions,
     /// and each needs its own reminder schedule.
@@ -52,9 +56,11 @@ impl NotificationTracker {
             if instance.informational {
                 continue;
             }
-            let previous = self.states.insert(instance.key.clone(), instance.state);
-            if completed(previous, instance, config) {
-                due_notifications.push(NotificationRequest::from_instance(instance, 0));
+            if instance.state_from_session {
+                let previous = self.states.insert(instance.key.clone(), instance.state);
+                if completed(previous, instance, config) {
+                    due_notifications.push(NotificationRequest::from_instance(instance, 0));
+                }
             }
             if !should_notify(instance, config) {
                 self.reminders.remove(&instance.key);
@@ -90,6 +96,13 @@ impl NotificationTracker {
 /// The exact step is what makes it a completion — a row first seen as ready,
 /// or one coming back from waiting or error, was not finishing anything. The
 /// notice is one-shot by construction, because the transition itself is.
+///
+/// Both sides of the step come from the agent's session record: [`update`] only
+/// calls this for a session-backed `instance`, and a process-activity guess
+/// never enters [`NotificationTracker::states`]. A row that loses its session
+/// binding falls back to "a running child means working", so a tool call that
+/// starts and ends would otherwise look like a finished turn and send a
+/// completion notice every time.
 fn completed(
     previous: Option<AgentState>,
     instance: &AgentInstance,
@@ -190,6 +203,7 @@ mod tests {
             pid: 1,
             cwd: None,
             state,
+            state_from_session: true,
             uptime: Duration::ZERO,
             model: None,
             context: None,
@@ -217,6 +231,7 @@ mod tests {
             pid: 1,
             cwd: None,
             state,
+            state_from_session: true,
             uptime: Duration::ZERO,
             model: None,
             context: None,
@@ -251,6 +266,7 @@ mod tests {
                 pid: 10,
                 cwd: None,
                 state: AgentState::Waiting,
+                state_from_session: true,
                 uptime: Duration::ZERO,
                 model: None,
                 context: None,
@@ -281,6 +297,7 @@ mod tests {
             pid: 42,
             cwd: None,
             state: AgentState::WaitingReply,
+            state_from_session: true,
             uptime: Duration::ZERO,
             model: None,
             context: None,
@@ -310,6 +327,7 @@ mod tests {
             pid: 7,
             cwd: None,
             state: AgentState::Waiting,
+            state_from_session: true,
             uptime: Duration::ZERO,
             model: None,
             context: None,
@@ -407,6 +425,43 @@ mod tests {
         let requests = tracker.update(&[first, ready], &config);
         assert_eq!(requests.len(), 1);
         assert!(requests[0].title.starts_with("Pi"));
+    }
+
+    #[test]
+    fn a_process_only_state_never_announces_a_completion() {
+        let config = enabled_config();
+        // A row that lost its session binding says "working" only because a
+        // child process is running; when the child exits it turns ready again.
+        // No turn finished, so neither edge may notify.
+        let mut guess_working = row(AgentState::Working);
+        guess_working.state_from_session = false;
+        let mut tracker = NotificationTracker::default();
+        tracker.update(&[guess_working], &config);
+        assert!(tracker
+            .update(&[row(AgentState::Ready)], &config)
+            .is_empty());
+
+        // The reverse edge counts too: a ready row that is only a process
+        // guess did not necessarily finish the turn that was running.
+        let mut guess_ready = row(AgentState::Ready);
+        guess_ready.state_from_session = false;
+        let mut tracker = NotificationTracker::default();
+        tracker.update(&[row(AgentState::Working)], &config);
+        assert!(tracker.update(&[guess_ready], &config).is_empty());
+    }
+
+    #[test]
+    fn an_unbacked_scan_does_not_erase_the_last_session_state() {
+        let config = enabled_config();
+        let mut tracker = NotificationTracker::default();
+        tracker.update(&[row(AgentState::Working)], &config);
+        // A scan that lost the session binding says "ready" only because no
+        // child is running. It must neither notify nor replace the working
+        // baseline, so the real turn end still announces once.
+        let mut guess = row(AgentState::Ready);
+        guess.state_from_session = false;
+        assert!(tracker.update(&[guess], &config).is_empty());
+        assert_eq!(tracker.update(&[row(AgentState::Ready)], &config).len(), 1);
     }
 
     #[test]

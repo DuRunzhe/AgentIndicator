@@ -180,6 +180,9 @@ impl Detector {
                     open_url: None,
                     automatic_confirmation_mode: false,
                     informational: false,
+                    // The process-activity guess until an analyzer reads the
+                    // session record.
+                    state_from_session: false,
                     usage: Some(usage),
                 };
                 if kind == "claude" {
@@ -319,7 +322,7 @@ impl Detector {
                         };
                     }
                 }
-                let cwd = group_metadata.iter().find_map(|entry| entry.cwd.clone());
+                let cwd = row_cwd(process.pid, &group_pids, &metadata);
                 // Record what a DeepSeek CLI serves and which conversation it is
                 // writing, then emit no row for the process itself.
                 if kind == "deepseek" && host.is_none() {
@@ -378,6 +381,9 @@ impl Detector {
                     },
                     automatic_confirmation_mode: false,
                     informational: false,
+                    // The process-activity guess until an analyzer reads the
+                    // session record.
+                    state_from_session: false,
                     usage: Some(usage),
                 };
                 match kind {
@@ -479,6 +485,7 @@ fn stopped_instance(kind: &str) -> AgentInstance {
         open_url: None,
         automatic_confirmation_mode: false,
         informational: false,
+        state_from_session: false,
         usage: None,
     }
 }
@@ -578,6 +585,9 @@ fn desktop_rows(
             open_url: None,
             automatic_confirmation_mode: false,
             informational: false,
+            // The application itself is ready because its window is open, not
+            // because a session reported anything.
+            state_from_session: false,
             usage: Some(usage),
         }];
     }
@@ -590,6 +600,7 @@ fn desktop_rows(
             pid,
             cwd: session.cwd.clone(),
             state: session.state,
+            state_from_session: true,
             // How long this run has lasted, not how old the conversation is: a
             // conversation created months ago and used today is minutes old.
             //
@@ -633,6 +644,7 @@ fn desktop_overflow_row(pid: u32, hidden: usize) -> Option<AgentInstance> {
         open_url: None,
         automatic_confirmation_mode: false,
         informational: true,
+        state_from_session: false,
         usage: None,
     })
 }
@@ -668,6 +680,7 @@ fn desktop_alert_row(
         open_url: None,
         automatic_confirmation_mode: false,
         informational: true,
+        state_from_session: false,
         usage: None,
     })
 }
@@ -1137,6 +1150,34 @@ fn sysinfo_tree_usage(root: Pid, system: &System, shared: bool) -> ProcessUsage 
     tree_usage(root.as_u32(), &entries, shared)
 }
 
+/// The directory a row belongs to.
+///
+/// The agent process itself owns it. A descendant may be running with another
+/// directory — a shell that changed into a subdirectory, a build tool in a
+/// worktree — and `ps` does not guarantee parents are listed before children.
+/// Reading the first descendant's cwd therefore made the row adopt the tool's
+/// directory: the Pi row lost its session binding (no session file lives in
+/// that directory, so it fell back to process activity), its title and context
+/// disappeared, and the menu renamed it after whichever directory a command ran
+/// in. The process tree is only a fallback for the rare scan where the root's
+/// own cwd is missing.
+#[cfg(target_os = "macos")]
+fn row_cwd(
+    root: u32,
+    group_pids: &[u32],
+    metadata: &HashMap<u32, ProcessMetadata>,
+) -> Option<PathBuf> {
+    metadata
+        .get(&root)
+        .and_then(|entry| entry.cwd.clone())
+        .or_else(|| {
+            group_pids
+                .iter()
+                .filter_map(|pid| metadata.get(pid))
+                .find_map(|entry| entry.cwd.clone())
+        })
+}
+
 #[cfg(target_os = "macos")]
 fn process_tree_pids(root: u32, processes: &[ProcessRecord]) -> Vec<u32> {
     let parents: HashMap<_, _> = processes
@@ -1261,6 +1302,9 @@ fn hosted_application_instance(
         open_url: None,
         automatic_confirmation_mode: false,
         informational: false,
+        // No conversation row exists, so "ready" describes the application,
+        // not a session.
+        state_from_session: false,
         usage: Some(usage),
     }
 }
@@ -1319,6 +1363,7 @@ fn hosted_codex_instances(
                 pid: process.pid,
                 cwd: facts.cwd.clone(),
                 state: facts.state.unwrap_or(AgentState::Ready),
+                state_from_session: true,
                 uptime: rollout_uptime(&rollout).unwrap_or(process.uptime),
                 model: facts.model.clone(),
                 context: facts.context.clone(),
@@ -1404,6 +1449,7 @@ fn enrich_opencode(instance: &mut AgentInstance, analyzer: &mut crate::opencode:
     instance.context = facts.context;
     if let Some(state) = facts.state {
         instance.state = state;
+        instance.state_from_session = true;
     }
     instance.label = session_label(
         &instance.kind,
@@ -1423,6 +1469,7 @@ fn enrich_deepseek(instance: &mut AgentInstance, analyzer: &mut crate::deepseek:
     instance.context = facts.context;
     if let Some(state) = facts.state {
         instance.state = state;
+        instance.state_from_session = true;
     }
 }
 
@@ -1468,6 +1515,7 @@ fn enrich_pi_instances(instances: &mut [AgentInstance], analyzer: &mut crate::pi
             instance.context = facts.context;
             if let Some(state) = facts.state {
                 instance.state = state;
+                instance.state_from_session = true;
             }
             instance.label = session_label(
                 &instance.kind,
@@ -1510,16 +1558,19 @@ fn enrich_codex(
     instance.automatic_confirmation_mode = facts.automatic_confirmation_mode;
     if let Some(state) = facts.state {
         instance.state = state;
+        instance.state_from_session = true;
     }
     if requires_terminal_probe {
         match terminal.request(instance.pid, activity) {
             Some(AgentState::Waiting) if instance.state == AgentState::Working => {
-                instance.state = AgentState::Waiting
+                instance.state = AgentState::Waiting;
+                instance.state_from_session = true;
             }
             Some(AgentState::Working)
                 if instance.state == AgentState::Waiting && has_active_child =>
             {
-                instance.state = AgentState::Working
+                instance.state = AgentState::Working;
+                instance.state_from_session = true;
             }
             _ => {}
         }
@@ -1561,6 +1612,7 @@ fn enrich_macos_codex(
             Some(facts) => (None, facts),
             // A newly opened terminal Codex may not have created its rollout
             // yet. Stay ready instead of mirroring another process's session.
+            // This is a guess about the process, not a session state.
             None => {
                 instance.state = AgentState::Ready;
                 return None;
@@ -1593,18 +1645,21 @@ fn enrich_macos_codex(
     instance.automatic_confirmation_mode = facts.automatic_confirmation_mode;
     if let Some(state) = facts.state {
         instance.state = state;
+        instance.state_from_session = true;
     }
     // A session hosted by a GUI application has no terminal of its own, so
     // there is no approval prompt to probe for.
     if requires_terminal_probe && probe_terminal {
         match terminal.request(instance.pid, activity) {
             Some(AgentState::Waiting) if instance.state == AgentState::Working => {
-                instance.state = AgentState::Waiting
+                instance.state = AgentState::Waiting;
+                instance.state_from_session = true;
             }
             Some(AgentState::Working)
                 if instance.state == AgentState::Waiting && has_active_child =>
             {
-                instance.state = AgentState::Working
+                instance.state = AgentState::Working;
+                instance.state_from_session = true;
             }
             _ => {}
         }
@@ -1730,11 +1785,15 @@ fn enrich_claude(instance: &mut AgentInstance, analyzer: &mut SessionAnalyzer) {
                 Some(AgentState::Waiting | AgentState::WaitingReply) => facts.state.unwrap(),
                 _ => native_state.or(facts.state).unwrap_or(instance.state),
             };
+            // Either source is the session's own record; without one the row
+            // keeps the process-activity guess and must not report a turn end.
+            instance.state_from_session = facts.state.is_some() || native_state.is_some();
             return;
         }
     }
     if let Some(state) = native_state {
         instance.state = state;
+        instance.state_from_session = true;
     }
 }
 
@@ -2075,6 +2134,39 @@ mod tests {
             cpu: 0.0,
             memory_bytes: 0,
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_rows_cwd_comes_from_the_agent_process_not_a_tool_child() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            100,
+            ProcessMetadata {
+                cwd: Some(PathBuf::from("/project")),
+                files: Vec::new(),
+            },
+        );
+        metadata.insert(
+            101,
+            ProcessMetadata {
+                cwd: Some(PathBuf::from("/project/test")),
+                files: Vec::new(),
+            },
+        );
+        // `ps` listed the tool child before the agent process, which is exactly
+        // the ordering that used to rename a Pi row to the directory its
+        // command ran in and cost it its session binding.
+        let group_pids = [101, 100];
+        assert_eq!(
+            row_cwd(100, &group_pids, &metadata),
+            Some(PathBuf::from("/project"))
+        );
+        // A missing root still falls back to the tree rather than to nothing.
+        assert_eq!(
+            row_cwd(999, &group_pids, &metadata),
+            Some(PathBuf::from("/project/test"))
+        );
     }
 
     #[cfg(target_os = "macos")]

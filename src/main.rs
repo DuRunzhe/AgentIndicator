@@ -2326,6 +2326,7 @@ mod summary_tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: false,
+            state_from_session: true,
             usage: None,
         }
     }
@@ -2354,6 +2355,7 @@ mod summary_tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: true,
+            state_from_session: true,
             usage: None,
         };
         assert_eq!(summary_state(&[instance.clone()]), AgentState::Stopped);
@@ -2380,6 +2382,7 @@ mod summary_tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: true,
+            state_from_session: true,
             usage: None,
         };
         assert!(!notifications::should_notify(&instance, &config));
@@ -2419,6 +2422,7 @@ mod stopped_visibility_tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: false,
+            state_from_session: true,
             usage: None,
         }
     }
@@ -2701,6 +2705,7 @@ mod usage_format_tests {
             open_url: None,
             automatic_confirmation_mode: false,
             informational: false,
+            state_from_session: true,
             usage: Some(usage),
         }
     }
