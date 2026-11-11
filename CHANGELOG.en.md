@@ -8,6 +8,12 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.38-alpha.4] - 2026-11-11
+
+### Fixed
+
+- Stop repeated completion notifications for multi-session agents
+
 ## [0.2.38-alpha.3] - 2026-11-10
 
 ### Added
