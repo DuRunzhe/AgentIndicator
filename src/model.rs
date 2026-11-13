@@ -13,15 +13,8 @@ pub enum AgentState {
 }
 
 impl AgentState {
-    pub fn icon(self) -> &'static str {
-        match self {
-            Self::Waiting | Self::WaitingReply => "🟡",
-            Self::Working => "🔵",
-            Self::Ready => "🟢",
-            Self::Stopped => "⚪",
-            Self::Error => "🔴",
-        }
-    }
+    /// Localized state name shown next to a session row. The row's lamp is drawn
+    /// by [`crate::state_menu_icon`], so the name never carries an emoji.
     pub fn label(self) -> &'static str {
         match self {
             Self::Waiting => crate::i18n::state("waiting"),
@@ -157,13 +150,7 @@ pub fn resource_totals(instances: &[AgentInstance]) -> Vec<ResourceTotal> {
 
 impl fmt::Display for AgentInstance {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} {}: {}",
-            self.state.icon(),
-            self.label,
-            self.state.label()
-        )?;
+        write!(f, "{}: {}", self.label, self.state.label())?;
         if self.uptime.as_secs() >= 60 {
             write!(f, " ({}m)", self.uptime.as_secs() / 60)?;
         }

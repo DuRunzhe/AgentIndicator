@@ -11,11 +11,12 @@ use crate::{
     display_settings, i18n, notification_action_label, notification_preferences, startup,
     startup_action_label, toggle_label,
 };
+use objc2::MainThreadMarker;
 use objc2::{rc::Retained, runtime::AnyObject, AnyThread};
 use objc2_app_kit::{
-    NSColor, NSFont, NSFontAttributeName, NSImage, NSImageSymbolConfiguration, NSMenu,
-    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStringDrawing, NSTextAlignment,
-    NSTextTab,
+    NSApplication, NSColor, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage,
+    NSImageSymbolConfiguration, NSMenu, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+    NSStringDrawing, NSTextAlignment, NSTextTab,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSDictionary, NSString,
@@ -95,6 +96,65 @@ pub fn apply_table(menu: &Menu, anchor: &MenuItem, rows: &[String]) {
             NSAttributedString::initWithString_attributes(
                 NSAttributedString::alloc(),
                 &NSString::from_str(line),
+                Some(&attributes),
+            )
+        };
+        item.setAttributedTitle(Some(&attributed));
+    }
+}
+
+/// Whether the menu is drawn on a dark background. The row text uses the lamp
+/// colour as it is in dark appearance and a darkened shade in light appearance,
+/// where the pure hues are too faint to read.
+pub fn is_dark_appearance() -> bool {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+    NSApplication::sharedApplication(mtm)
+        .effectiveAppearance()
+        .name()
+        .to_string()
+        .contains("Dark")
+}
+
+/// Paint the session rows' titles in their lamp colour, so a row's text and its
+/// icon read as one thing rather than two colours side by side.
+///
+/// `colors` runs from the top of the menu down, one entry per session row, and
+/// comes from `state_lamp_color`, the same palette the images use. `set_text`
+/// clears an attributed title on every refresh, so the tray re-applies this
+/// after the texts change, the same way it re-applies [`apply_table`].
+pub fn apply_row_colors(menu: &Menu, colors: &[[u8; 3]]) {
+    if colors.is_empty() {
+        return;
+    }
+    // `Menu::ns_menu` is supplied by muda's public ContextMenu trait; see
+    // `SymbolCache::apply` for the lifetime and main-thread reasoning.
+    let native_menu = unsafe { &*(menu.ns_menu().cast::<NSMenu>()) };
+    let font = NSFont::systemFontOfSize(NSFont::systemFontSize());
+    let items = native_menu.itemArray();
+    for (index, rgb) in colors.iter().enumerate() {
+        if index >= items.count() {
+            break;
+        }
+        let item = items.objectAtIndex(index);
+        let color = NSColor::colorWithSRGBRed_green_blue_alpha(
+            rgb[0] as f64 / 255.0,
+            rgb[1] as f64 / 255.0,
+            rgb[2] as f64 / 255.0,
+            1.0,
+        );
+        let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> =
+            NSDictionary::from_retained_objects(
+                &[unsafe { NSFontAttributeName }, unsafe {
+                    NSForegroundColorAttributeName
+                }],
+                &[font.clone().into(), color.into()],
+            );
+        let attributed = unsafe {
+            NSAttributedString::initWithString_attributes(
+                NSAttributedString::alloc(),
+                &item.title(),
                 Some(&attributes),
             )
         };

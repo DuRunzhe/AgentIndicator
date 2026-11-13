@@ -406,7 +406,11 @@ impl Default for Animation {
 struct MenuView {
     menu: Menu,
     signature: Vec<(u32, AgentState)>,
-    instances: Vec<MenuItem>,
+    /// One row per visible session. These carry the state lamp as their leading
+    /// image, which is why they are `IconMenuItem`s: a state change rebuilds the
+    /// menu (it is part of [`Self::signature`]), so the image is only ever
+    /// handed over when the row is created.
+    instances: Vec<IconMenuItem>,
     /// The two per-agent resource rows (names, then CPU/memory). Empty when the
     /// summary is turned off.
     resource: Vec<MenuItem>,
@@ -570,6 +574,13 @@ impl App {
                 &usage_lines(&self.usage.snapshot()),
             );
         }
+        // The row text takes the colour of its lamp, darkened on a light menu.
+        // `set_text` clears an attributed title, so this has to run after every
+        // text refresh, which is why it lives here rather than in `create_menu`.
+        let colors: Vec<[u8; 3]> = visible_instances(&self.current, &self.config)
+            .map(|instance| state_text_color(instance.state))
+            .collect();
+        macos_menu_symbols::apply_row_colors(&menu.menu, &colors);
     }
     /// Text of the three period rows, in menu order.
     fn usage_period_texts(&self) -> Vec<String> {
@@ -739,17 +750,18 @@ impl App {
         let visible: Vec<_> = visible_instances(&self.current, &self.config).collect();
         for instance in &visible {
             let id = format!("focus:{}", instance.key);
-            let item = MenuItem::with_id(
+            let item = IconMenuItem::with_id(
                 id,
                 format_instance(instance, &self.config),
                 !instance.informational && instance.state != AgentState::Stopped,
+                state_menu_icon(instance.state),
                 None,
             );
             let _ = menu.append(&item);
             instance_items.push(item);
         }
         if visible.is_empty() {
-            let item = MenuItem::new(i18n::text("no_agents"), false, None);
+            let item = IconMenuItem::new(i18n::text("no_agents"), false, idle_menu_icon(), None);
             let _ = menu.append(&item);
         }
         // A per-agent resource summary sits below the sessions and above the
@@ -1601,12 +1613,7 @@ fn toggle_config(config: &mut Config, key: &str) {
 }
 
 fn format_instance(instance: &AgentInstance, config: &Config) -> String {
-    let mut text = format!(
-        "{} {}: {}",
-        instance.state.icon(),
-        instance.label,
-        instance.state.label()
-    );
+    let mut text = format!("{}: {}", instance.label, instance.state.label());
     if config.show_duration && instance.uptime.as_secs() >= 60 {
         let minutes = instance.uptime.as_secs() / 60;
         if minutes >= 60 {
@@ -1947,10 +1954,13 @@ fn summary(items: &[AgentInstance]) -> String {
         .join(" · ")
     }
 }
+/// Which beat of the centre-dot breath a live state is on. Every live state
+/// breathes on the same two-second beat; the settled states hold still.
 fn animation_frame(state: AgentState, elapsed: Duration) -> usize {
     match state {
-        AgentState::Waiting | AgentState::WaitingReply => elapsed.as_secs() as usize % 2,
-        AgentState::Working => (elapsed.as_secs() / 2) as usize % 2,
+        AgentState::Waiting | AgentState::WaitingReply | AgentState::Working => {
+            (elapsed.as_secs() / 2) as usize % 2
+        }
         AgentState::Ready | AgentState::Stopped | AgentState::Error => 0,
     }
 }
@@ -1970,54 +1980,22 @@ fn status_icon(state: AgentState, frame: usize) -> Option<Icon> {
     .ok()
 }
 
+/// The tray's lamp: the same geometry as a menu row, with only the centre dot
+/// breathing. The icon never changes size or hue, so the menu bar stays calm
+/// while an agent is live.
 fn status_icon_rgba_at_size(state: AgentState, frame: usize, size: usize) -> Vec<u8> {
-    let (rgb, outer_radius) = match (state, frame) {
-        (AgentState::Waiting | AgentState::WaitingReply, 0) => ([255, 176, 0], 6.0_f32),
-        (AgentState::Waiting | AgentState::WaitingReply, _) => ([255, 214, 10], 7.0_f32),
-        (AgentState::Working, 0) => ([0, 122, 255], 6.0_f32),
-        (AgentState::Working, _) => ([100, 210, 255], 7.0_f32),
-        (AgentState::Ready, _) => ([52, 199, 89], 6.0_f32),
-        (AgentState::Stopped, _) => ([142, 142, 147], 6.0_f32),
-        (AgentState::Error, _) => ([255, 59, 48], 6.0_f32),
-    };
-    let scale = size as f32 / 16.0;
-    let center = size as f32 / 2.0;
-    let outer_radius = outer_radius * scale;
-    let mut rgba = vec![0; size * size * 4];
-    for y in 0..size {
-        for x in 0..size {
-            let distance =
-                ((x as f32 + 0.5 - center).powi(2) + (y as f32 + 0.5 - center).powi(2)).sqrt();
-            let alpha = match state {
-                AgentState::Waiting | AgentState::WaitingReply | AgentState::Working => {
-                    let ring = edge_alpha(outer_radius - distance)
-                        .min(edge_alpha(distance - (outer_radius - 2.0 * scale)));
-                    let center_dot = edge_alpha(
-                        (if outer_radius >= 7.0 * scale {
-                            2.0
-                        } else {
-                            1.0
-                        }) * scale
-                            - distance,
-                    );
-                    ring.max(center_dot)
-                }
-                AgentState::Ready | AgentState::Stopped | AgentState::Error => {
-                    edge_alpha(outer_radius - distance)
-                }
-            };
-            if alpha > 0 {
-                let pixel = (y * size + x) * 4;
-                rgba[pixel..pixel + 3].copy_from_slice(&rgb);
-                rgba[pixel + 3] = alpha;
-            }
+    let dot_radius = match (state, frame) {
+        (AgentState::Waiting | AgentState::WaitingReply | AgentState::Working, 0) => {
+            LAMP_DOT_RADIUS
         }
-    }
+        (AgentState::Waiting | AgentState::WaitingReply | AgentState::Working, _) => {
+            LAMP_DOT_RADIUS + 0.6
+        }
+        _ => LAMP_DOT_RADIUS,
+    };
+    let mut rgba = lamp_rgba_at(state_lamp_color(state), lamp_shape(state), dot_radius, size);
+    draw_lamp_marks(state, &mut rgba, size);
     rgba
-}
-
-fn edge_alpha(inside_distance: f32) -> u8 {
-    ((inside_distance + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 #[cfg(test)]
@@ -2039,43 +2017,6 @@ mod panic_log_tests {
         assert!(path.parent().expect("parent").is_dir());
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
-}
-
-#[cfg(test)]
-fn status_icon_rgba(state: AgentState, frame: usize) -> Vec<u8> {
-    let (rgb, outer_radius) = match (state, frame) {
-        (AgentState::Waiting | AgentState::WaitingReply, 0) => ([255, 176, 0], 6_i32),
-        (AgentState::Waiting | AgentState::WaitingReply, _) => ([255, 214, 10], 7_i32),
-        (AgentState::Working, 0) => ([0, 122, 255], 6_i32),
-        (AgentState::Working, _) => ([100, 210, 255], 7_i32),
-        (AgentState::Ready, _) => ([52, 199, 89], 6_i32),
-        (AgentState::Stopped, _) => ([142, 142, 147], 6_i32),
-        (AgentState::Error, _) => ([255, 59, 48], 6_i32),
-    };
-    let mut rgba = vec![0; 16 * 16 * 4];
-    for y in 0..16 {
-        for x in 0..16 {
-            let distance = (x as i32 - 8).pow(2) + (y as i32 - 8).pow(2);
-            let active = matches!(
-                state,
-                AgentState::Waiting | AgentState::WaitingReply | AgentState::Working
-            );
-            let visible = if active {
-                let inner_ring_radius = outer_radius - 2;
-                let center_radius = if outer_radius >= 7 { 2_i32 } else { 1_i32 };
-                (distance <= outer_radius.pow(2) && distance >= inner_ring_radius.pow(2))
-                    || distance <= center_radius.pow(2)
-            } else {
-                distance <= outer_radius.pow(2)
-            };
-            if visible {
-                let p = (y * 16 + x) * 4;
-                rgba[p..p + 3].copy_from_slice(&rgb);
-                rgba[p + 3] = 255;
-            }
-        }
-    }
-    rgba
 }
 
 /// Raster menu symbols keep the native menu self-contained on every supported
@@ -2105,15 +2046,31 @@ fn toggle_menu_icon(enabled: bool) -> Option<MenuIcon> {
                 ))
             };
             if coverage > 0 {
-                set_menu_pixel_with_alpha(&mut rgba, x, y, color, coverage);
+                blend_pixel(&mut rgba, MENU_ICON_PIXELS, x, y, color, coverage);
             }
         }
     }
     if enabled {
         // `checkmark.circle.fill`, matching the checked SF Symbol used by the
         // SwiftBar menu. It is rendered at 4× and downsampled by AppKit.
-        draw_menu_line(&mut rgba, (4.0, 8.0), (7.0, 11.0), 1.15, [255, 255, 255]);
-        draw_menu_line(&mut rgba, (7.0, 11.0), (12.0, 6.0), 1.15, [255, 255, 255]);
+        draw_line(
+            &mut rgba,
+            MENU_ICON_PIXELS,
+            MENU_ICON_SCALE as f32,
+            (4.0, 8.0),
+            (7.0, 11.0),
+            1.15,
+            [255, 255, 255],
+        );
+        draw_line(
+            &mut rgba,
+            MENU_ICON_PIXELS,
+            MENU_ICON_SCALE as f32,
+            (7.0, 11.0),
+            (12.0, 6.0),
+            1.15,
+            [255, 255, 255],
+        );
     }
     MenuIcon::from_rgba(rgba, MENU_ICON_PIXELS as u32, MENU_ICON_PIXELS as u32).ok()
 }
@@ -2133,19 +2090,204 @@ fn menu_symbol_icon(rgb: [u8; 3]) -> Option<MenuIcon> {
             .sqrt();
             let coverage = edge_coverage(radius as f32 - distance);
             if coverage > 0 {
-                set_menu_pixel_with_alpha(&mut rgba, x, y, rgb, coverage);
+                blend_pixel(&mut rgba, MENU_ICON_PIXELS, x, y, rgb, coverage);
             }
         }
     }
     // A white `i` makes the blue test-notification command discoverable while
     // still reading as a neutral app badge for the Claude installer.
-    draw_menu_line(&mut rgba, (8.5, 6.0), (8.5, 11.5), 0.8, [255, 255, 255]);
+    draw_line(
+        &mut rgba,
+        MENU_ICON_PIXELS,
+        MENU_ICON_SCALE as f32,
+        (8.5, 6.0),
+        (8.5, 11.5),
+        0.8,
+        [255, 255, 255],
+    );
     for y in 3 * MENU_ICON_SCALE..5 * MENU_ICON_SCALE {
         for x in 8 * MENU_ICON_SCALE..10 * MENU_ICON_SCALE {
             set_menu_pixel(&mut rgba, x as usize, y as usize, [255, 255, 255]);
         }
     }
     MenuIcon::from_rgba(rgba, MENU_ICON_PIXELS as u32, MENU_ICON_PIXELS as u32).ok()
+}
+
+/// The palette the lamps are drawn from. The values match the tray icon's, so
+/// one state reads the same in the menu bar and in the menu.
+const LAMP_AMBER: [u8; 3] = [255, 176, 0];
+const LAMP_BLUE: [u8; 3] = [0, 122, 255];
+const LAMP_GREEN: [u8; 3] = [52, 199, 89];
+const LAMP_GREY: [u8; 3] = [142, 142, 147];
+const LAMP_RED: [u8; 3] = [255, 59, 48];
+
+/// How a lamp is filled. A ring carries the "still going" states, a disc the
+/// settled ones; the centre dot of a ring is sized by the caller so the tray can
+/// make it breathe.
+#[derive(Clone, Copy)]
+enum LampShape {
+    Ring,
+    Disc,
+}
+
+/// The resting radius of a ring lamp's centre dot, in the logical 16pt box.
+const LAMP_DOT_RADIUS: f32 = 1.6;
+
+/// Which fill a state uses. Both waiting states and the busy state share the
+/// ring; the settled states are discs.
+fn lamp_shape(state: AgentState) -> LampShape {
+    match state {
+        AgentState::Waiting | AgentState::WaitingReply | AgentState::Working => LampShape::Ring,
+        AgentState::Ready | AgentState::Stopped | AgentState::Error => LampShape::Disc,
+    }
+}
+
+/// Draw one lamp into a `size`-pixel square, working in the logical 16pt box:
+/// the ring runs from r=4 to r=6 and the centre dot from 0 to `dot_radius`. A
+/// `dot_radius` of zero draws a hollow ring.
+fn lamp_rgba_at(rgb: [u8; 3], shape: LampShape, dot_radius: f32, size: usize) -> Vec<u8> {
+    let mut rgba = vec![0; size * size * 4];
+    let scale = size as f32 / 16.0;
+    let center = size as f32 / 2.0;
+    let outer_radius = 6.0 * scale;
+    let inner_radius = 4.0 * scale;
+    let dot_radius = dot_radius * scale;
+    for y in 0..size {
+        for x in 0..size {
+            let distance =
+                ((x as f32 + 0.5 - center).powi(2) + (y as f32 + 0.5 - center).powi(2)).sqrt();
+            let coverage = match shape {
+                LampShape::Disc => edge_coverage(outer_radius - distance),
+                LampShape::Ring => {
+                    let ring = edge_coverage(outer_radius - distance)
+                        .min(edge_coverage(distance - inner_radius));
+                    let centre = edge_coverage(dot_radius - distance);
+                    ring.max(centre)
+                }
+            };
+            if coverage > 0 {
+                blend_pixel(&mut rgba, size, x, y, rgb, coverage);
+            }
+        }
+    }
+    rgba
+}
+
+/// Ready carries a check and error an exclamation, drawn in whatever size the
+/// lamp was rendered, so the two read apart without relying on colour.
+fn draw_lamp_marks(state: AgentState, rgba: &mut [u8], size: usize) {
+    let scale = size as f32 / 16.0;
+    match state {
+        AgentState::Ready => {
+            draw_line(
+                rgba,
+                size,
+                scale,
+                (5.0, 8.2),
+                (7.2, 10.4),
+                0.95,
+                [255, 255, 255],
+            );
+            draw_line(
+                rgba,
+                size,
+                scale,
+                (7.2, 10.4),
+                (11.2, 5.8),
+                0.95,
+                [255, 255, 255],
+            );
+        }
+        AgentState::Error => {
+            draw_line(
+                rgba,
+                size,
+                scale,
+                (8.0, 4.6),
+                (8.0, 9.6),
+                0.9,
+                [255, 255, 255],
+            );
+            draw_dot(rgba, size, scale, (8.0, 11.6), 1.05, [255, 255, 255]);
+        }
+        _ => {}
+    }
+}
+
+/// Menu glyph for one session state, drawn with the same lamp geometry the tray
+/// icon uses: an amber or blue ring with its centre dot while an agent is busy,
+/// a solid disc once it settles. Ready carries a check and error an exclamation
+/// so the two read apart without relying on colour. Both waiting states share
+/// the same lamp, exactly as the tray icon does.
+fn state_menu_icon(state: AgentState) -> Option<MenuIcon> {
+    MenuIcon::from_rgba(
+        state_menu_rgba(state),
+        MENU_ICON_PIXELS as u32,
+        MENU_ICON_PIXELS as u32,
+    )
+    .ok()
+}
+
+/// The colour a state's lamp is drawn in. The tray icon, the menu glyph and the
+/// row text all come from here, so they never disagree.
+pub(crate) fn state_lamp_color(state: AgentState) -> [u8; 3] {
+    match state {
+        AgentState::Waiting | AgentState::WaitingReply => LAMP_AMBER,
+        AgentState::Working => LAMP_BLUE,
+        AgentState::Ready => LAMP_GREEN,
+        AgentState::Stopped => LAMP_GREY,
+        AgentState::Error => LAMP_RED,
+    }
+}
+
+/// The colour a row's text takes. On a light menu the pure lamp hues are too
+/// faint to read as text, so they are scaled towards black; the icon keeps the
+/// full colour either way.
+#[cfg(target_os = "macos")]
+pub(crate) fn state_text_color(state: AgentState) -> [u8; 3] {
+    let rgb = state_lamp_color(state);
+    if macos_menu_symbols::is_dark_appearance() {
+        rgb
+    } else {
+        darkened(rgb)
+    }
+}
+
+/// Scale a colour towards black without changing its hue. `0.6` brings every
+/// lamp colour to at least 4.5:1 against a white menu.
+#[cfg(target_os = "macos")]
+fn darkened(rgb: [u8; 3]) -> [u8; 3] {
+    rgb.map(|channel| (channel as f32 * 0.6).round() as u8)
+}
+
+/// The lamp behind [`state_menu_icon`], kept separate so the geometry can be
+/// asserted without going through the platform icon type.
+fn state_menu_rgba(state: AgentState) -> Vec<u8> {
+    let mut rgba = lamp_rgba_at(
+        state_lamp_color(state),
+        lamp_shape(state),
+        LAMP_DOT_RADIUS,
+        MENU_ICON_PIXELS,
+    );
+    draw_lamp_marks(state, &mut rgba, MENU_ICON_PIXELS);
+    rgba
+}
+
+/// Glyph for the empty session list: the hollow ring in the neutral grey. A ring
+/// rather than the stopped state's solid disc, so "nothing is running" never
+/// reads as a stopped agent, and it keeps the row aligned with the session rows
+/// that appear in its place.
+fn idle_menu_icon() -> Option<MenuIcon> {
+    MenuIcon::from_rgba(
+        idle_menu_rgba(),
+        MENU_ICON_PIXELS as u32,
+        MENU_ICON_PIXELS as u32,
+    )
+    .ok()
+}
+
+fn idle_menu_rgba() -> Vec<u8> {
+    lamp_rgba_at(LAMP_GREY, LampShape::Ring, 0.0, MENU_ICON_PIXELS)
 }
 
 #[cfg(target_os = "macos")]
@@ -2170,10 +2312,9 @@ fn menu_symbol_menu_icon(rgb: [u8; 3]) -> Option<MenuIcon> {
     menu_symbol_icon(rgb)
 }
 
-// The native macOS menu renders images at 18pt.  Keep a 128px backing image
+// The native menu renders images at 18pt.  Keep a 128px backing image
 // (far beyond a 2× Retina representation) so AppKit can downsample smooth
 // curves instead of magnifying a low-resolution bitmap.
-#[cfg(not(target_os = "macos"))]
 const MENU_ICON_PIXELS: usize = 128;
 #[cfg(not(target_os = "macos"))]
 const MENU_ICON_SCALE: i32 = 8;
@@ -2185,15 +2326,15 @@ fn empty_menu_icon() -> Vec<u8> {
 
 #[cfg(not(target_os = "macos"))]
 fn set_menu_pixel(rgba: &mut [u8], x: usize, y: usize, rgb: [u8; 3]) {
-    set_menu_pixel_with_alpha(rgba, x, y, rgb, 255);
+    blend_pixel(rgba, MENU_ICON_PIXELS, x, y, rgb, 255);
 }
 
-#[cfg(not(target_os = "macos"))]
-fn set_menu_pixel_with_alpha(rgba: &mut [u8], x: usize, y: usize, rgb: [u8; 3], alpha: u8) {
-    if x >= MENU_ICON_PIXELS || y >= MENU_ICON_PIXELS {
+/// Source-over blend of one pixel in a `size`-pixel square.
+fn blend_pixel(rgba: &mut [u8], size: usize, x: usize, y: usize, rgb: [u8; 3], alpha: u8) {
+    if x >= size || y >= size {
         return;
     }
-    let pixel = (y * MENU_ICON_PIXELS + x) * 4;
+    let pixel = (y * size + x) * 4;
     let source_alpha = alpha as f32 / 255.0;
     let destination_alpha = rgba[pixel + 3] as f32 / 255.0;
     let output_alpha = source_alpha + destination_alpha * (1.0 - source_alpha);
@@ -2211,31 +2352,58 @@ fn set_menu_pixel_with_alpha(rgba: &mut [u8], x: usize, y: usize, rgb: [u8; 3], 
     rgba[pixel + 3] = (output_alpha * 255.0).round() as u8;
 }
 
-#[cfg(not(target_os = "macos"))]
 fn edge_coverage(inside_distance: f32) -> u8 {
     ((inside_distance + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-#[cfg(not(target_os = "macos"))]
-fn draw_menu_line(rgba: &mut [u8], start: (f32, f32), end: (f32, f32), radius: f32, rgb: [u8; 3]) {
-    let scale = MENU_ICON_SCALE as f32;
+/// A filled circle in the logical 16pt space, used for the dots inside marks.
+fn draw_dot(
+    rgba: &mut [u8],
+    size: usize,
+    scale: f32,
+    center: (f32, f32),
+    radius: f32,
+    rgb: [u8; 3],
+) {
+    let (cx, cy) = (center.0 * scale, center.1 * scale);
+    let radius = radius * scale;
+    for y in 0..size {
+        for x in 0..size {
+            let distance = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            let coverage = edge_coverage(radius - distance);
+            if coverage > 0 {
+                blend_pixel(rgba, size, x, y, rgb, coverage);
+            }
+        }
+    }
+}
+
+fn draw_line(
+    rgba: &mut [u8],
+    size: usize,
+    scale: f32,
+    start: (f32, f32),
+    end: (f32, f32),
+    radius: f32,
+    rgb: [u8; 3],
+) {
     let (x1, y1) = (start.0 * scale, start.1 * scale);
     let (x2, y2) = (end.0 * scale, end.1 * scale);
     let dx = x2 - x1;
     let dy = y2 - y1;
     let length_squared = dx * dx + dy * dy;
-    let radius_squared = (radius * scale).powi(2);
-    for y in 0..MENU_ICON_PIXELS {
-        for x in 0..MENU_ICON_PIXELS {
+    let radius = radius * scale;
+    for y in 0..size {
+        for x in 0..size {
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
             let projection = (((px - x1) * dx + (py - y1) * dy) / length_squared).clamp(0.0, 1.0);
             let nearest_x = x1 + projection * dx;
             let nearest_y = y1 + projection * dy;
             let distance = ((px - nearest_x).powi(2) + (py - nearest_y).powi(2)).sqrt();
-            let coverage = edge_coverage(radius_squared.sqrt() - distance);
+            let coverage = edge_coverage(radius - distance);
             if coverage > 0 {
-                set_menu_pixel_with_alpha(rgba, x, y, rgb, coverage);
+                blend_pixel(rgba, size, x, y, rgb, coverage);
             }
         }
     }
@@ -2246,17 +2414,21 @@ mod animation_tests {
     use super::*;
 
     #[test]
-    fn waiting_changes_every_second() {
+    fn the_live_states_breathe_on_one_two_second_beat() {
         assert_eq!(
-            animation_frame(AgentState::Waiting, Duration::from_millis(999)),
+            animation_frame(AgentState::Waiting, Duration::from_millis(1999)),
             0
         );
         assert_eq!(
-            animation_frame(AgentState::Waiting, Duration::from_secs(1)),
+            animation_frame(AgentState::Waiting, Duration::from_secs(2)),
             1
         );
         assert_eq!(
             animation_frame(AgentState::WaitingReply, Duration::from_secs(2)),
+            1
+        );
+        assert_eq!(
+            animation_frame(AgentState::WaitingReply, Duration::from_secs(4)),
             0
         );
     }
@@ -2291,20 +2463,247 @@ mod animation_tests {
 
     #[test]
     fn status_icon_has_ring_and_center_dot() {
-        let rgba = status_icon_rgba(AgentState::Working, 0);
-        let alpha = |x: usize, y: usize| rgba[(y * 16 + x) * 4 + 3];
-        assert_eq!(alpha(8, 8), 255);
-        assert_eq!(alpha(8, 11), 0);
-        assert_eq!(alpha(8, 14), 255);
+        // Production size: the ring runs from r=32 to r=48 around the centre and
+        // the resting dot reaches r=12.8.
+        let rgba = status_icon_rgba_at_size(AgentState::Working, 0, 128);
+        let alpha = |x: usize, y: usize| rgba[(y * 128 + x) * 4 + 3];
+        assert_eq!(alpha(64, 64), 255);
+        // Between the dot and the ring there is a gap.
+        assert_eq!(alpha(64, 84), 0);
+        // The ring itself.
+        assert_eq!(alpha(64, 104), 255);
+        // And nothing outside it.
+        assert_eq!(alpha(64, 120), 0);
     }
 
     #[test]
-    fn ready_icon_is_a_solid_green_circle() {
-        let rgba = status_icon_rgba(AgentState::Ready, 0);
-        let pixel = |x: usize, y: usize| &rgba[(y * 16 + x) * 4..(y * 16 + x + 1) * 4];
-        assert_eq!(pixel(8, 8), &[52, 199, 89, 255]);
-        assert_eq!(pixel(8, 11), &[52, 199, 89, 255]);
-        assert_eq!(pixel(8, 15)[3], 0);
+    fn ready_icon_is_a_solid_green_circle_with_a_check() {
+        let rgba = status_icon_rgba_at_size(AgentState::Ready, 0, 128);
+        let pixel = |x: usize, y: usize| &rgba[(y * 128 + x) * 4..(y * 128 + x + 1) * 4];
+        // The disc is green away from the white check.
+        assert_eq!(pixel(64, 96), &[52, 199, 89, 255]);
+        // The check crosses the middle, and nothing spills outside the disc.
+        assert_eq!(pixel(64, 64), &[255, 255, 255, 255]);
+        assert_eq!(pixel(64, 120)[3], 0);
+    }
+
+    #[test]
+    fn the_tray_breathes_without_changing_shape_or_hue() {
+        // Only the centre dot moves between the two beats: comparing everything
+        // outside the dot's reach keeps the ring and the disc identical.
+        let calm = status_icon_rgba_at_size(AgentState::Waiting, 0, 128);
+        let beat = status_icon_rgba_at_size(AgentState::Waiting, 1, 128);
+        let mut differing = 0;
+        for index in (0..calm.len()).step_by(4) {
+            if calm[index..index + 4] != beat[index..index + 4] {
+                differing += 1;
+            }
+        }
+        assert!(differing > 0, "the dot has to breathe");
+        // The ring sits at r=4..6 in the 16pt box, so beyond r=3 nothing may
+        // change between the beats.
+        let middle = 64.0_f32;
+        for y in 0..128_usize {
+            for x in 0..128_usize {
+                let dx = x as f32 + 0.5 - middle;
+                let dy = y as f32 + 0.5 - middle;
+                if (dx * dx + dy * dy).sqrt() / 8.0 > 3.0 {
+                    let pixel = (y as usize * 128 + x as usize) * 4;
+                    assert_eq!(
+                        calm[pixel..pixel + 4],
+                        beat[pixel..pixel + 4],
+                        "pixel ({x}, {y}) changed outside the dot"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod menu_icon_tests {
+    use super::*;
+
+    fn bitmap(state: AgentState) -> Vec<u8> {
+        state_menu_rgba(state)
+    }
+
+    fn pixel(rgba: &[u8], x: usize, y: usize) -> &[u8] {
+        &rgba[(y * MENU_ICON_PIXELS + x) * 4..][..4]
+    }
+
+    fn alpha(rgba: &[u8], x: usize, y: usize) -> u8 {
+        rgba[(y * MENU_ICON_PIXELS + x) * 4 + 3]
+    }
+
+    fn center(state: AgentState) -> [u8; 4] {
+        let rgba = bitmap(state);
+        let middle = MENU_ICON_PIXELS / 2;
+        pixel(&rgba, middle, middle)
+            .try_into()
+            .expect("four channels")
+    }
+
+    #[test]
+    fn every_state_draws_a_distinct_lamp() {
+        // Both waiting states share one lamp, exactly as the tray icon does, and
+        // the rest each get their own.
+        assert_eq!(
+            bitmap(AgentState::Waiting),
+            bitmap(AgentState::WaitingReply)
+        );
+        let states = [
+            AgentState::Waiting,
+            AgentState::Working,
+            AgentState::Ready,
+            AgentState::Stopped,
+            AgentState::Error,
+        ];
+        let bitmaps: Vec<Vec<u8>> = states.iter().map(|state| bitmap(*state)).collect();
+        for (index, rgba) in bitmaps.iter().enumerate() {
+            assert!(
+                rgba.iter().skip(3).step_by(4).any(|alpha| *alpha > 0),
+                "{:?} paints nothing",
+                states[index]
+            );
+            for other in bitmaps.iter().skip(index + 1) {
+                assert_ne!(rgba, other, "{:?} shares its bitmap", states[index]);
+            }
+        }
+    }
+
+    #[test]
+    fn the_lamp_mirrors_the_tray_geometry() {
+        // Both waiting states carry the ring and its centre dot, and the busy
+        // state is the same shape in blue.
+        assert_eq!(
+            center(AgentState::Waiting),
+            [LAMP_AMBER[0], LAMP_AMBER[1], LAMP_AMBER[2], 255]
+        );
+        assert_eq!(
+            center(AgentState::WaitingReply),
+            [LAMP_AMBER[0], LAMP_AMBER[1], LAMP_AMBER[2], 255]
+        );
+        assert_eq!(
+            center(AgentState::Working),
+            [LAMP_BLUE[0], LAMP_BLUE[1], LAMP_BLUE[2], 255]
+        );
+        // The settled states are solid discs.
+        assert_eq!(
+            center(AgentState::Stopped),
+            [LAMP_GREY[0], LAMP_GREY[1], LAMP_GREY[2], 255]
+        );
+        // The ring is a ring: the gap between it and the dot stays empty.
+        let waiting = bitmap(AgentState::Waiting);
+        let middle = MENU_ICON_PIXELS / 2;
+        assert_eq!(alpha(&waiting, middle, middle + 25), 0);
+        assert_eq!(alpha(&waiting, middle, middle + 40), 255);
+    }
+
+    #[test]
+    fn the_icon_ring_uses_the_lamp_colour() {
+        // The glyph is painted from `state_lamp_color`, the single palette the
+        // row text also derives from.
+        for state in [
+            AgentState::Waiting,
+            AgentState::WaitingReply,
+            AgentState::Working,
+            AgentState::Ready,
+            AgentState::Stopped,
+            AgentState::Error,
+        ] {
+            let rgba = bitmap(state);
+            let middle = MENU_ICON_PIXELS / 2;
+            let ring = pixel(&rgba, middle, middle + 40);
+            assert_eq!(ring[..3], state_lamp_color(state), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn the_empty_list_is_a_hollow_grey_ring() {
+        // Aligned with the session rows it replaces, but hollow, so "nothing is
+        // running" cannot be read as a stopped agent's solid disc.
+        let idle = idle_menu_rgba();
+        let middle = MENU_ICON_PIXELS / 2;
+        assert_eq!(alpha(&idle, middle, middle), 0);
+        assert_eq!(
+            pixel(&idle, middle, middle + 40),
+            &[LAMP_GREY[0], LAMP_GREY[1], LAMP_GREY[2], 255]
+        );
+        assert_ne!(idle, bitmap(AgentState::Stopped));
+        assert_ne!(idle, bitmap(AgentState::WaitingReply));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_text_shade_stays_readable_on_a_light_menu() {
+        // The icon keeps the lamp colour; the text only takes a darkened shade,
+        // and that shade has to clear WCAG AA against a white menu.
+        fn luminance(rgb: [u8; 3]) -> f64 {
+            let channel = |value: u8| {
+                let value = value as f64 / 255.0;
+                if value <= 0.03928 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2])
+        }
+        for state in [
+            AgentState::Waiting,
+            AgentState::WaitingReply,
+            AgentState::Working,
+            AgentState::Ready,
+            AgentState::Stopped,
+            AgentState::Error,
+        ] {
+            let lamp = state_lamp_color(state);
+            let text = darkened(lamp);
+            assert_ne!(text, lamp, "{state:?} text must be darker than the lamp");
+            let contrast = (1.05) / (luminance(text) + 0.05);
+            assert!(
+                contrast >= 4.5,
+                "{state:?} text reaches only {contrast:.2}:1"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tray_and_the_menu_share_one_lamp() {
+        // Same geometry, same palette, same marks: only the tray's breathing dot
+        // may ever differ, and that is beat 1.
+        for state in [
+            AgentState::Waiting,
+            AgentState::WaitingReply,
+            AgentState::Working,
+            AgentState::Ready,
+            AgentState::Stopped,
+            AgentState::Error,
+        ] {
+            assert_eq!(
+                status_icon_rgba_at_size(state, 0, MENU_ICON_PIXELS),
+                state_menu_rgba(state),
+                "{state:?} draws differently in the tray and the menu"
+            );
+        }
+    }
+
+    #[test]
+    fn ready_and_error_carry_a_white_mark() {
+        // The exclamation runs down the middle, the check crosses the lower
+        // left, and a state without a mark keeps its own colour there.
+        let error = bitmap(AgentState::Error);
+        let stopped = bitmap(AgentState::Stopped);
+        let ready = bitmap(AgentState::Ready);
+        assert_eq!(pixel(&error, 64, 55), &[255, 255, 255, 255]);
+        assert_eq!(pixel(&stopped, 64, 55), &[142, 142, 147, 255]);
+        let check = pixel(&ready, 58, 83);
+        assert!(
+            check[..3].iter().all(|channel| *channel > 200),
+            "ready needs its check, got {check:?}"
+        );
+        assert_eq!(pixel(&stopped, 58, 83), &[142, 142, 147, 255]);
     }
 }
 
