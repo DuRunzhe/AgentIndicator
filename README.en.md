@@ -8,6 +8,26 @@ A native tray monitor for AI coding agents (macOS first, with Windows/Linux supp
 
 Source and releases: <https://github.com/DuRunzhe/AgentIndicator>
 
+## Screens
+
+### Tray menu
+
+Every row leads with its six-state lamp and takes the lamp's colour; the CPU/memory summary, the token table and Settings follow.
+
+![Tray menu, light](docs/images/menu-light.png)
+
+The same menu in dark appearance: only the row text is lifted, the icons keep their own colour.
+
+![Tray menu, dark](docs/images/menu-dark.png)
+
+### Menu bar
+
+The menu bar holds a single status item: its icon shows the highest state in play and its text counts the sessions in that state, one state at a time.
+
+![The menu bar in each state](docs/images/menubar.png)
+
+> These are not screenshots but renders of the real drawing code; the projects, session titles and figures are examples.
+
 ## Installation
 
 The current release is **v0.2.38-alpha.4**: a Developer ID signed and notarized app bundle for macOS arm64, plus binaries for x86_64 macOS, Windows and Linux and the npm package, all produced by the [release workflow](.github/workflows/release.yml).
@@ -235,13 +255,13 @@ agent-status-indicator --check-update
 - `--diagnose-deepseek-desktop`: diagnoses only the DeepSeek Harness desktop app — the host process it was recognized as, the `DSH_HOME` in use, the conversations read, and what one scan of that cache costs (cold and steady state) — without starting the tray.
 - `--debug-ui`: debug mode; writes the tray UI state to `~/.agent-status-indicator-ui.json`.
 - `--check-update`: asks GitHub for the newest release and prints the result without starting the tray.
-- Click the tray icon to open the menu: every row reads `Kind (project) · title` (Claude, Codex, ChatGPT, OpenCode, DeepSeek Harness and Pi alike; a row with no title keeps `Kind (project)`), ordered “waiting for confirmation → waiting for reply → working → ready” with model, context, uptime and CPU/memory usage; clicking a live instance jumps to its terminal, browser session or DeepSeek Harness desktop window.
+- Click the tray icon to open the menu: every row reads `Kind (project) · title` (Claude, Codex, ChatGPT, OpenCode, DeepSeek Harness and Pi alike; a row with no title keeps `Kind (project)`), ordered “waiting for confirmation → waiting for reply → working → ready” with model, context, uptime and CPU/memory usage; clicking a live instance jumps to its terminal, browser session or DeepSeek Harness desktop window. Each row leads with a status lamp: waiting for confirmation and waiting for reply are an amber ring with its centre dot, working the same ring in blue, ready a green disc with a check, stopped a plain grey disc and error a red disc with an exclamation. The row text takes the lamp's colour, darkened on a light menu and lifted on a dark one, clearing 4.5:1 either way. The menu bar icon draws the same lamp; while an agent is live only its centre dot breathes, on a two-second beat, with no change in size or hue. An empty session list shows the same ring in the neutral grey.
 - Notifications are disabled by default. Enable them in Settings and choose whether to notify for confirmation, reply, finished turns and automatic confirmation mode. “Turn finished” is a one-shot notice at the moment a row goes from *working* to *ready*, so it has no 0/60/180 s reminder stages.
 - A “resource summary” sits below the session list and above Settings: a leading `CPU/memory` stub labels the value row, the first value column totals every agent, followed by one column each for Claude / Codex / OpenCode / DeepSeek / Pi. The column names are on the first row and their `CPU/memory` on the second, side by side. Both rows use a monospaced font so the columns line up; an agent that is not running still shows `--/--` as a placeholder. Sessions of one host (ChatGPT and the DeepSeek desktop) are de-duplicated by process so they are not summed once per conversation, and ChatGPT folds into the Codex column. It can be turned off with the “Resource summary” toggle in Settings.
 - A token table sits below the resource summary: a `today / this week / this month` switch above it (one row, click to advance), a header row of `Input/Hit`, `Output` and `Cost`, one row per agent (Claude / Codex / OpenCode / DeepSeek / Pi) and a total row for the selected window. Every number is recomputed from the agents' own session records — nothing extra is written to disk. Codex differs its cumulative `token_count` counter and reads the thread totals from `state_*.sqlite`; Claude de-duplicates transcript `usage` blocks by message id; Pi de-duplicates by response id and reads the cost it recorded; OpenCode answers with one aggregate query over `opencode.db` (its `cost` is a real amount); the DeepSeek projection only carries a per-conversation total, so a conversation counts in the window where it was last active. Cost is a real amount only for OpenCode and Pi — the other records carry no billing field and show `--/--`. Output has no cache to hit — every output token is decoded and the caching providers offer lives on the input side — so that column carries the count alone. The per-file parse is cached in memory and invalidated by modification time and length, so a refresh costs about 2 ms once the logs are parsed. Turn the table off with the "Token usage" display option.
 - Settings includes ten display options (duration, model, context percentage/used/total, CPU, memory, resource summary, token usage, stopped agents), language, start-at-login and DeepSeek browser tab reuse. CPU and memory are summed over the session's whole process tree (macOS reads `pcpu`/`rss` from the existing `ps` sample, Windows/Linux reuse the refreshed `sysinfo` snapshot), with no extra process spawned. A GUI host that serves several sessions from one process — ChatGPT and the DeepSeek Harness desktop — reports host-level figures that cannot be attributed to a single session, and every DeepSeek row is treated the same way: they show no CPU or memory on the session row, and the figures appear only in the summary. Conversation display ranges are two independent settings — "ChatGPT conversation range" and "DeepSeek Harness conversation range" — each 15 minutes, 1 hour, 12 hours, 24 hours (default) or all conversations. They are independent in function and in data: persisted as separate keys (`conversation_window`, `deepseek_desktop_window`) and applied to their own conversations, so changing one never moves the other. A conversation that is working, waiting for the user or failed always keeps its row.
 - Click the Claude context collector row in Settings to install or uninstall it. Installation configures Claude's `statusLine`, preserving and forwarding an existing command; uninstalling restores the previous configuration.
-- The About panel is a regular titled window that stacks the icon, name, version, a one-line product description, the copyright, the update button, a small blue underlined “Get the alpha version” link, the “Project Home / Report an Issue / Releases” links and, at the very bottom, the centered “Close” button. It checks GitHub for a newer release every time it opens; when one exists the button becomes “Update to x.y.z”, and installing shows a progress window before the app restarts itself. The alpha link re-runs the check on the alpha channel — pre-releases included — with no key equivalent, so the stable update button keeps the user's attention.
+- The About panel is a regular titled window that stacks the icon, name, version, a one-line product description, the update button, the “Get the alpha version” link, the “Project Home / Report an Issue / Releases” links, the copyright and, at the very bottom, the centered “Close” button. It checks GitHub for a newer release every time it opens; when one exists the button becomes “Update to x.y.z”, and installing shows a progress window before the app restarts itself. The alpha link re-runs the check on the alpha channel — pre-releases included — with no key equivalent, so the stable update button keeps the user's attention. All four link rows share the system link colour, carry no underline, and every gap in the panel is a multiple of four points.
 - If you added it to your applications as above, you can also launch it from the graphical launcher.
 
 ## Uninstalling
@@ -357,6 +377,7 @@ These are acceptance targets; the current release workflow does not automate mea
 - [ ] DeepSeek Harness desktop session-level deep links (blocked upstream: the shell handles only `dsh://open`, and the frontend has no URL routing)
 - [x] Codex terminal confirmation screen and positive correction of background tasks
 - [x] Native dynamic menu, summary icon, npm/Homebrew release skeleton
+- [x] One six-state lamp palette shared by the menu bar icon, the session rows and the empty list, with the row text in the lamp colour
 - [x] Byte-level incremental Claude/Codex transcript parsing, tool-ID pairing, model and context
 - [x] OpenCode SQLite state, model and context reading
 - [x] Native notifications for waiting states with 0/60/180 s reminders; clicking focuses the terminal or the DeepSeek browser session
