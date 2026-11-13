@@ -6,6 +6,20 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.38-alpha.5] - 2026-11-13
+
+### 新增
+
+- Draw agent state with one lamp across the tray, menu and row text
+- Put the About panel on the spacing grid (about)
+- Keep the row text readable on a dark menu
+- Merge the resource summary and the token table into one grid
+
+### 文档
+
+- Show the tray menu and the menu bar, with example sessions only
+- Describe the merged resource and usage table
+
 ## [0.2.38-alpha.4] - 2026-11-11
 
 ### 修复

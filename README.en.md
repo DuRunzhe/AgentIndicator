@@ -30,7 +30,7 @@ The menu bar holds a single status item: its icon shows the highest state in pla
 
 ## Installation
 
-The current release is **v0.2.38-alpha.4**: a Developer ID signed and notarized app bundle for macOS arm64, plus binaries for x86_64 macOS, Windows and Linux and the npm package, all produced by the [release workflow](.github/workflows/release.yml).
+The current release is **v0.2.38-alpha.5**: a Developer ID signed and notarized app bundle for macOS arm64, plus binaries for x86_64 macOS, Windows and Linux and the npm package, all produced by the [release workflow](.github/workflows/release.yml).
 
 ### curl (macOS / Linux)
 
@@ -43,7 +43,7 @@ Without `VERSION` the script automatically resolves the latest release, trying t
 Pin a version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.38-alpha.4 sh
+curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/scripts/install.sh | VERSION=0.2.38-alpha.5 sh
 ```
 
 Install elsewhere:
@@ -248,7 +248,7 @@ agent-status-indicator --debug-ui
 agent-status-indicator --check-update
 ```
 
-- `--version` / `-V`: prints the version (e.g. `agent-status-indicator 0.2.38-alpha.4`) without starting the tray.
+- `--version` / `-V`: prints the version (e.g. `agent-status-indicator 0.2.38-alpha.5`) without starting the tray.
 - `--help` / `-h`: prints every option without starting the tray; an unrecognized option is refused with exit code 2 instead of falling through to the tray path, which aborts inside AppKit when the process has no bundle.
 - `--diagnose`: prints the detected agents, sessions and states without starting the tray.
 - `--diagnose-usage [--usage-period week|month] [--render]`: prints the usage rows for the current window (JSON, or the exact menu rows with `--render`) without starting the tray.

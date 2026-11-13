@@ -8,6 +8,20 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.38-alpha.5] - 2026-11-13
+
+### Added
+
+- Draw agent state with one lamp across the tray, menu and row text
+- Put the About panel on the spacing grid (about)
+- Keep the row text readable on a dark menu
+- Merge the resource summary and the token table into one grid
+
+### Documentation
+
+- Show the tray menu and the menu bar, with example sessions only
+- Describe the merged resource and usage table
+
 ## [0.2.38-alpha.4] - 2026-11-11
 
 ### Fixed
