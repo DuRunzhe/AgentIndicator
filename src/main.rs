@@ -2247,7 +2247,7 @@ pub(crate) fn state_lamp_color(state: AgentState) -> [u8; 3] {
 pub(crate) fn state_text_color(state: AgentState) -> [u8; 3] {
     let rgb = state_lamp_color(state);
     if macos_menu_symbols::is_dark_appearance() {
-        rgb
+        lightened(rgb)
     } else {
         darkened(rgb)
     }
@@ -2258,6 +2258,13 @@ pub(crate) fn state_text_color(state: AgentState) -> [u8; 3] {
 #[cfg(target_os = "macos")]
 fn darkened(rgb: [u8; 3]) -> [u8; 3] {
     rgb.map(|channel| (channel as f32 * 0.6).round() as u8)
+}
+
+/// Lift a colour towards white by the same idea, for a menu drawn dark where the
+/// pure blue and red lamps sit just under 4.5:1.
+#[cfg(target_os = "macos")]
+fn lightened(rgb: [u8; 3]) -> [u8; 3] {
+    rgb.map(|channel| (channel as f32 + (255.0 - channel as f32) * 0.3).round() as u8)
 }
 
 /// The lamp behind [`state_menu_icon`], kept separate so the geometry can be
@@ -2632,6 +2639,44 @@ mod menu_icon_tests {
         );
         assert_ne!(idle, bitmap(AgentState::Stopped));
         assert_ne!(idle, bitmap(AgentState::WaitingReply));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_text_shade_stays_readable_on_a_dark_menu() {
+        // A dark menu takes the lamp colour lifted towards white; the icon keeps
+        // the lamp colour itself.
+        fn luminance(rgb: [u8; 3]) -> f64 {
+            let channel = |value: u8| {
+                let value = value as f64 / 255.0;
+                if value <= 0.03928 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2])
+        }
+        // The system dark menu surface.
+        let menu = [30, 30, 30];
+        let menu_luminance = luminance(menu);
+        for state in [
+            AgentState::Waiting,
+            AgentState::WaitingReply,
+            AgentState::Working,
+            AgentState::Ready,
+            AgentState::Stopped,
+            AgentState::Error,
+        ] {
+            let lamp = state_lamp_color(state);
+            let text = lightened(lamp);
+            assert_ne!(text, lamp, "{state:?} text must lift off the lamp");
+            let contrast = (luminance(text) + 0.05) / (menu_luminance + 0.05);
+            assert!(
+                contrast >= 4.5,
+                "{state:?} text reaches only {contrast:.2}:1"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
