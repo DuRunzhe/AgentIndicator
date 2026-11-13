@@ -9,56 +9,66 @@ use crate::{
     browser_tab_action_label, claude_action_label, claude_statusline,
     config::{Config, CONVERSATION_WINDOWS},
     display_settings, i18n, notification_action_label, notification_preferences, startup,
-    startup_action_label, toggle_label,
+    startup_action_label, toggle_label, Cell, CellStyle,
 };
 use objc2::MainThreadMarker;
 use objc2::{rc::Retained, runtime::AnyObject, AnyThread};
 use objc2_app_kit::{
-    NSApplication, NSColor, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage,
-    NSImageSymbolConfiguration, NSMenu, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
-    NSStringDrawing, NSTextAlignment, NSTextTab,
+    NSApplication, NSColor, NSFont, NSFontAttributeName, NSFontWeightSemibold,
+    NSForegroundColorAttributeName, NSImage, NSImageSymbolConfiguration, NSMenu,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStringDrawing, NSTextAlignment,
+    NSTextTab,
 };
 use objc2_foundation::{
-    NSArray, NSAttributedString, NSAttributedStringKey, NSDictionary, NSString,
+    NSArray, NSAttributedString, NSAttributedStringKey, NSDictionary, NSMutableAttributedString,
+    NSRange, NSString,
 };
 use std::collections::HashMap;
-use tray_icon::menu::{ContextMenu, Menu, MenuItem};
+use tray_icon::menu::{ContextMenu, Menu, MenuId};
 
-/// Draw table rows with fixed tab stops so every column lines up. Rows arrive
-/// with their cells separated by `\t`. The menu font is proportional and its CJK
-/// glyphs are not a whole number of cells wide, so space padding can never line a
-/// localized label up with the numbers after it; the tab stops carry the
-/// measurement instead. The leading label is left-aligned and the columns after
-/// it use right-aligned stops, so digits stack under their headers.
+/// Draw table rows with fixed tab stops so every column lines up. Cells travel as
+/// [`Cell`] values: the text sets the column width and the style decides whether
+/// a cell is drawn muted (placeholders and the header) or bold (the total), which
+/// is all a native menu can express besides position.
 ///
-/// `anchor` is the first row of the table and identifies it by id rather than by
-/// title: the resource summary and the token table both start with the same
-/// header row, so matching on titles would give them each other's tab stops.
-pub fn apply_table(menu: &Menu, anchor: &MenuItem, rows: &[String]) {
+/// The menu font is proportional and its CJK glyphs are not a whole number of
+/// cells wide, so space padding can never line a localized label up with the
+/// numbers after it; the tab stops carry the measurement instead. The leading
+/// label is left-aligned and the columns after it use right-aligned stops, so
+/// digits stack under their headers.
+///
+/// `anchor` is the first row of the table, identified by id rather than by title
+/// so two tables could never take each other's tab stops.
+pub fn apply_table(menu: &Menu, anchor: &MenuId, rows: &[Vec<Cell>]) {
     if rows.is_empty() {
         return;
     }
     // `Menu::ns_menu` is supplied by muda's public ContextMenu trait; see
     // `SymbolCache::apply` for the lifetime and main-thread reasoning.
     let native_menu = unsafe { &*(menu.ns_menu().cast::<NSMenu>()) };
-    let start = menu
-        .items()
-        .iter()
-        .position(|item| item.id() == anchor.id());
+    let start = menu.items().iter().position(|item| item.id() == anchor);
     let Some(start) = start else {
         return;
     };
     let size = NSFont::systemFontSize();
     let font =
         NSFont::userFixedPitchFontOfSize(size).unwrap_or_else(|| NSFont::systemFontOfSize(size));
+    // Bold *and* monospaced-digit, so the total stays aligned with the figures
+    // under it instead of drifting with proportional numerals.
+    let bold =
+        NSFont::monospacedDigitSystemFontOfSize_weight(size, unsafe { NSFontWeightSemibold });
     // Measure every cell in the font that will draw it, so a CJK label and an
-    // ASCII number are compared in the same pixels rather than in cells.
-    let cells: Vec<Vec<&str>> = rows.iter().map(|line| line.split('\t').collect()).collect();
-    let columns = cells.iter().map(Vec::len).max().unwrap_or(0);
+    // ASCII number are compared in the same pixels rather than in cells, and a
+    // bold total does not overflow the column it shares with regular figures.
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let mut widths = vec![0.0f64; columns];
-    for row in &cells {
+    for row in rows {
         for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(measure(&font, cell));
+            let cell_font = match cell.style {
+                CellStyle::Total => &bold,
+                _ => &font,
+            };
+            widths[index] = widths[index].max(measure(cell_font, &cell.text));
         }
     }
     let gap = measure(&font, "  ");
@@ -78,27 +88,56 @@ pub fn apply_table(menu: &Menu, anchor: &MenuItem, rows: &[String]) {
     }
     let style = NSMutableParagraphStyle::new();
     style.setTabStops(Some(&NSArray::from_retained_slice(&tabs)));
-    let font_key = unsafe { NSFontAttributeName };
-    let style_key = unsafe { NSParagraphStyleAttributeName };
     let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> =
         NSDictionary::from_retained_objects(
-            &[font_key, style_key],
+            &[unsafe { NSFontAttributeName }, unsafe {
+                NSParagraphStyleAttributeName
+            }],
             &[font.clone().into(), style.into()],
         );
+    let muted = NSColor::secondaryLabelColor();
     let items = native_menu.itemArray();
-    for (offset, line) in rows.iter().enumerate() {
+    for (offset, row) in rows.iter().enumerate() {
         let index = start + offset;
         if index >= items.count() {
             break;
         }
-        let item = items.objectAtIndex(index);
+        let line = row
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\t");
         let attributed = unsafe {
-            NSAttributedString::initWithString_attributes(
-                NSAttributedString::alloc(),
-                &NSString::from_str(line),
+            NSMutableAttributedString::initWithString_attributes(
+                NSMutableAttributedString::alloc(),
+                &NSString::from_str(&line),
                 Some(&attributes),
             )
         };
+        // Ranges are measured in UTF-16 units, the unit an NSString counts in.
+        let mut location = 0usize;
+        for (cell_index, cell) in row.iter().enumerate() {
+            if cell_index > 0 {
+                location += 1;
+            }
+            let length = cell.text.encode_utf16().count();
+            let range = NSRange::new(location, length);
+            match cell.style {
+                CellStyle::Muted => unsafe {
+                    attributed.addAttribute_value_range(
+                        NSForegroundColorAttributeName,
+                        &muted,
+                        range,
+                    );
+                },
+                CellStyle::Total => unsafe {
+                    attributed.addAttribute_value_range(NSFontAttributeName, &bold, range);
+                },
+                CellStyle::Value => {}
+            }
+            location += length;
+        }
+        let item = items.objectAtIndex(index);
         item.setAttributedTitle(Some(&attributed));
     }
 }

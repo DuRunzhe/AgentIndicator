@@ -242,7 +242,12 @@ fn main() -> Result<()> {
             for line in usage_period_lines(snapshot.period) {
                 println!("{line}");
             }
-            for line in usage_lines(&snapshot) {
+            let config = Config {
+                show_resources: false,
+                show_usage: true,
+                ..Config::default()
+            };
+            for line in table_lines(&usage_table(&[], &snapshot, &config)) {
                 println!("{line}");
             }
         } else {
@@ -411,9 +416,9 @@ struct MenuView {
     /// menu (it is part of [`Self::signature`]), so the image is only ever
     /// handed over when the row is created.
     instances: Vec<IconMenuItem>,
-    /// The two per-agent resource rows (names, then CPU/memory). Empty when the
-    /// summary is turned off.
-    resource: Vec<MenuItem>,
+    /// The resource and usage table: a header row and one row per metric. Empty
+    /// when both display options are off.
+    table: Vec<IconMenuItem>,
     /// The day/week/month selector above the token table. It is a submenu like
     /// Settings: hovering opens the three choices, and its own title echoes the
     /// selected period. Absent when the table is off.
@@ -421,9 +426,7 @@ struct MenuView {
     /// The three rows inside [`Self::usage_period`], so their marks can follow
     /// the selection and the spinner.
     usage_period_rows: Vec<MenuItem>,
-    /// The token table itself: column titles, one row per agent, and the total.
-    /// Empty when the table is turned off.
-    usage: Vec<MenuItem>,
+
     notifications: IconMenuItem,
     notification_preferences: Vec<IconMenuItem>,
     test_notification: IconMenuItem,
@@ -563,16 +566,9 @@ impl App {
         let Some(menu) = &self.menu else {
             return;
         };
-        if let Some(anchor) = menu.resource.first() {
-            let (names, values) = resource_rows(&self.current);
-            macos_menu_symbols::apply_table(&menu.menu, anchor, &[names, values]);
-        }
-        if let Some(anchor) = menu.usage.first() {
-            macos_menu_symbols::apply_table(
-                &menu.menu,
-                anchor,
-                &usage_lines(&self.usage.snapshot()),
-            );
+        if let Some(anchor) = menu.table.first() {
+            let rows = usage_table(&self.current, &self.usage.snapshot(), &self.config);
+            macos_menu_symbols::apply_table(&menu.menu, anchor.id(), &rows);
         }
         // The row text takes the colour of its lamp, darkened on a light menu.
         // `set_text` clears an attributed title, so this has to run after every
@@ -680,15 +676,9 @@ impl App {
                 item.set_text(format_instance(instance, &self.config));
                 item.set_enabled(!instance.informational && instance.state != AgentState::Stopped);
             }
-            if !menu.resource.is_empty() {
-                let (names, values) = resource_rows(&self.current);
-                for (item, text) in menu.resource.iter().zip([names, values]) {
-                    item.set_text(text);
-                }
-            }
-            if !menu.usage.is_empty() {
-                let snapshot = self.usage.snapshot();
-                for (item, text) in menu.usage.iter().zip(usage_lines(&snapshot)) {
+            if !menu.table.is_empty() {
+                let rows = usage_table(&self.current, &self.usage.snapshot(), &self.config);
+                for (item, text) in menu.table.iter().zip(table_lines(&rows)) {
                     item.set_text(text);
                 }
                 if let Some(period) = &menu.usage_period {
@@ -764,44 +754,36 @@ impl App {
             let item = IconMenuItem::new(i18n::text("no_agents"), false, idle_menu_icon(), None);
             let _ = menu.append(&item);
         }
-        // A per-agent resource summary sits below the sessions and above the
-        // Settings menu: the names on one row and the CPU/memory under each on
-        // the next. Turned off it contributes no rows at all.
-        let mut resource_items = Vec::new();
-        if self.config.show_resources {
-            // Separate the summary from the session list above it, so it reads
-            // as its own block; the second separator below closes it off from
-            // the Settings menu.
-            let _ = menu.append(&PredefinedMenuItem::separator());
-            let (names, values) = resource_rows(&self.current);
-            for text in [names, values] {
-                let item = MenuItem::new(text, false, None);
-                let _ = menu.append(&item);
-                resource_items.push(item);
-            }
-        }
-        // The token table sits below the CPU/memory summary: a day/week/month
-        // switch, a header row, one row per agent and a total. Its numbers come
-        // from the agents' own session records, recomputed in the background.
-        let mut usage_rows = Vec::new();
+        // One table below the sessions: the day/week/month switch (when the
+        // token table is on), then a header row and one row per metric. Every
+        // row carries a blank image so its text starts on the same column as
+        // the session rows above it.
+        let mut table_rows: Vec<IconMenuItem> = Vec::new();
         let mut usage_period_items = Vec::new();
         let mut usage_period_menu = None;
-        if self.config.show_usage {
+        let table = usage_table(&self.current, &self.usage.snapshot(), &self.config);
+        if table.len() > 1 {
             let _ = menu.append(&PredefinedMenuItem::separator());
-            let snapshot = self.usage.snapshot();
-            let period_menu = Submenu::new(self.usage_period_title(), true);
-            for (period, text) in usage::Period::ALL.iter().zip(self.usage_period_texts()) {
-                let item =
-                    MenuItem::with_id(format!("usage_period:{}", period.key()), text, true, None);
-                let _ = period_menu.append(&item);
-                usage_period_items.push(item);
+            if self.config.show_usage {
+                let period_menu = Submenu::new(self.usage_period_title(), true);
+                for (period, text) in usage::Period::ALL.iter().zip(self.usage_period_texts()) {
+                    let item = MenuItem::with_id(
+                        format!("usage_period:{}", period.key()),
+                        text,
+                        true,
+                        None,
+                    );
+                    let _ = period_menu.append(&item);
+                    usage_period_items.push(item);
+                }
+                let _ = menu.append(&period_menu);
+                usage_period_menu = Some(period_menu);
             }
-            let _ = menu.append(&period_menu);
-            usage_period_menu = Some(period_menu);
-            for text in usage_lines(&snapshot) {
-                let item = MenuItem::new(text, false, None);
+            let blank = blank_menu_icon();
+            for text in table_lines(&table) {
+                let item = IconMenuItem::new(text, false, blank.clone(), None);
                 let _ = menu.append(&item);
-                usage_rows.push(item);
+                table_rows.push(item);
             }
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
@@ -971,10 +953,9 @@ impl App {
             menu,
             signature,
             instances: instance_items,
-            resource: resource_items,
+            table: table_rows,
             usage_period: usage_period_menu,
             usage_period_rows: usage_period_items,
-            usage: usage_rows,
             notifications: notification_item,
             notification_preferences: notification_preference_items,
             test_notification,
@@ -1667,118 +1648,196 @@ fn format_instance(instance: &AgentInstance, config: &Config) -> String {
     text
 }
 
-/// Two menu rows summarizing per-agent resource usage. The first row carries
-/// the column titles and the second the CPU/memory under each, led by a
-/// `CPU/memory` stub so the numbers are self-describing and closed by the
-/// total. The cells are handed to [`table_text`], which lines the columns up. An
-/// agent with no live process reads `--/--` instead of `0`. Host-level figures
-/// are summarized here only; a session row never renders them.
-fn resource_rows(instances: &[AgentInstance]) -> (String, String) {
-    let totals = model::resource_totals(instances);
-    // The leading stub names the value row; its header stays blank so the total
-    // and every agent line up with the figures below them.
-    let mut labels: Vec<String> = vec![String::new()];
-    labels.extend(
-        model::RESOURCE_AGENTS
-            .iter()
-            .map(|agent| (*agent).to_owned()),
-    );
-    // The total closes the row, so it reads as the sum of the columns before it.
-    labels.push(i18n::text("resource_total").to_owned());
-    let total_cpu: f32 = totals.iter().map(|total| total.cpu).sum();
-    let total_memory = totals
-        .iter()
-        .fold(0u64, |sum, total| sum.saturating_add(total.memory_bytes));
-    let mut values: Vec<String> = vec![i18n::text("resource_stub").to_owned()];
-    values.extend(
-        totals
-            .iter()
-            .map(|total| usage_text(total.used, total.cpu, total.memory_bytes)),
-    );
-    values.push(usage_text(
-        totals.iter().any(|total| total.used),
-        total_cpu,
-        total_memory,
-    ));
-    let mut lines = table_text(&[labels, values]);
-    let values = lines.pop().unwrap_or_default();
-    let names = lines.pop().unwrap_or_default();
-    (names, values)
+/// How a table cell is drawn. A native menu can only weight and colour text, so
+/// the table uses those two: placeholders and the header sit back, the total
+/// column is bold enough to be read first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CellStyle {
+    Value,
+    Muted,
+    Total,
 }
 
-/// `CPU/memory` for one column, or `--/--` when the agent has no live process.
-fn usage_text(used: bool, cpu: f32, memory_bytes: u64) -> String {
-    if used {
-        format!("{cpu:.1}%/{}", short_bytes(memory_bytes))
-    } else {
-        "--/--".to_owned()
-    }
+#[derive(Clone, Debug)]
+pub(crate) struct Cell {
+    pub(crate) text: String,
+    pub(crate) style: CellStyle,
 }
 
-/// What a column reads when a source has nothing to report for the window. It
-/// matches the resource summary's `--/--`, so an idle agent reads the same way
-/// in both tables.
-const USAGE_EMPTY: &str = "--/--";
-
-/// The output column carries a count rather than a `total/hit` pair, so its
-/// empty cell is a single dash.
-const USAGE_EMPTY_OUTPUT: &str = "--";
-
-/// The token table, one string per menu row: the agents across the columns
-/// (closed by the total) and the three metrics down the rows. [`table_text`]
-/// turns the cells into rows whose columns line up the way the CPU/memory
-/// summary above already does.
-fn usage_lines(snapshot: &usage::UsageSnapshot) -> Vec<String> {
-    // The rows are the metrics: the first names the agents and the total, the
-    // three below it are input, output and cost. Each agent appends one cell to
-    // every row, so the agents run across the columns.
-    let mut rows: Vec<Vec<String>> = vec![
-        vec![String::new()],
-        vec![i18n::text("usage_input").to_owned()],
-        vec![i18n::text("usage_output").to_owned()],
-        vec![i18n::text("usage_cost").to_owned()],
-    ];
-    for agent in &snapshot.agents {
-        rows[0].push(agent.kind.to_owned());
-        match agent.counts {
-            Some(counts) => {
-                rows[1].push(usage_pair(counts.input, counts.input_cached));
-                rows[2].push(short_tokens(counts.output));
-                rows[3].push(usage_cost(counts.cost));
-            }
-            None => {
-                rows[1].push(USAGE_EMPTY.into());
-                rows[2].push(USAGE_EMPTY_OUTPUT.into());
-                rows[3].push(USAGE_EMPTY.into());
-            }
+impl Cell {
+    fn new(text: impl Into<String>, style: CellStyle) -> Self {
+        Self {
+            text: text.into(),
+            style,
         }
     }
-    // The total closes the table, so it reads as the sum of the columns before it.
-    let total = &snapshot.total;
-    rows[0].push(i18n::text("resource_total").to_owned());
-    if snapshot.has_data {
-        rows[1].push(usage_pair(total.input, total.input_cached));
-        rows[2].push(short_tokens(total.output));
-        rows[3].push(usage_cost(total.cost));
+
+    /// A figure, or a muted placeholder when the source has nothing to report.
+    fn figure(text: impl Into<String>, style: CellStyle) -> Self {
+        let text = text.into();
+        let style = if text == TABLE_EMPTY {
+            CellStyle::Muted
+        } else {
+            style
+        };
+        Self { text, style }
+    }
+}
+
+/// What a cell reads when its source has nothing to report for the window.
+pub(crate) const TABLE_EMPTY: &str = "--";
+
+/// The resource and usage table. Every row is one metric: the first column names
+/// it, the total follows immediately so the sum is read before the columns, and
+/// one column per agent closes the row. Resources and usage share one table so
+/// there is one header and one set of tab stops.
+pub(crate) fn usage_table(
+    instances: &[AgentInstance],
+    snapshot: &usage::UsageSnapshot,
+    config: &Config,
+) -> Vec<Vec<Cell>> {
+    let mut rows: Vec<Vec<Cell>> = Vec::new();
+    let mut header = vec![
+        Cell::new("", CellStyle::Value),
+        Cell::new(i18n::text("resource_total"), CellStyle::Total),
+    ];
+    header.extend(
+        model::RESOURCE_AGENTS
+            .iter()
+            .map(|agent| Cell::new(*agent, CellStyle::Muted)),
+    );
+    rows.push(header);
+
+    if config.show_resources && (config.show_cpu || config.show_memory) {
+        let totals = model::resource_totals(instances);
+        let any_used = totals.iter().any(|total| total.used);
+        let total_cpu: f32 = totals.iter().map(|total| total.cpu).sum();
+        let total_memory = totals
+            .iter()
+            .fold(0u64, |sum, total| sum.saturating_add(total.memory_bytes));
+        let mut cpu = vec![
+            Cell::new(i18n::text("resource_cpu"), CellStyle::Value),
+            Cell::figure(cpu_text(any_used, total_cpu), CellStyle::Total),
+        ];
+        let mut memory = vec![
+            Cell::new(i18n::text("resource_memory"), CellStyle::Value),
+            Cell::figure(memory_text(any_used, total_memory), CellStyle::Total),
+        ];
+        for total in &totals {
+            cpu.push(Cell::figure(
+                cpu_text(total.used, total.cpu),
+                CellStyle::Value,
+            ));
+            memory.push(Cell::figure(
+                memory_text(total.used, total.memory_bytes),
+                CellStyle::Value,
+            ));
+        }
+        if config.show_cpu {
+            rows.push(cpu);
+        }
+        if config.show_memory {
+            rows.push(memory);
+        }
+    }
+
+    if config.show_usage {
+        let total = snapshot.has_data.then_some(&snapshot.total);
+        let mut input = vec![
+            Cell::new(i18n::text("usage_input"), CellStyle::Value),
+            Cell::figure(input_text(total), CellStyle::Total),
+        ];
+        let mut hit = vec![
+            Cell::new(i18n::text("usage_hit"), CellStyle::Value),
+            Cell::figure(hit_text(total), CellStyle::Total),
+        ];
+        let mut output = vec![
+            Cell::new(i18n::text("usage_output"), CellStyle::Value),
+            Cell::figure(output_text(total), CellStyle::Total),
+        ];
+        let mut cost = vec![
+            Cell::new(i18n::text("usage_cost"), CellStyle::Value),
+            Cell::figure(cost_text(total), CellStyle::Total),
+        ];
+        for agent in model::RESOURCE_AGENTS {
+            let counts = snapshot
+                .agents
+                .iter()
+                .find(|usage| usage.kind == agent)
+                .and_then(|usage| usage.counts.as_ref());
+            input.push(Cell::figure(input_text(counts), CellStyle::Value));
+            hit.push(Cell::figure(hit_text(counts), CellStyle::Value));
+            output.push(Cell::figure(output_text(counts), CellStyle::Value));
+            cost.push(Cell::figure(cost_text(counts), CellStyle::Value));
+        }
+        rows.push(input);
+        rows.push(hit);
+        rows.push(output);
+        rows.push(cost);
+    }
+
+    rows
+}
+
+/// One agent's CPU share, or `--` when it has no live process.
+fn cpu_text(used: bool, cpu: f32) -> String {
+    if used {
+        format!("{cpu:.1}%")
     } else {
-        rows[1].push(USAGE_EMPTY.into());
-        rows[2].push(USAGE_EMPTY_OUTPUT.into());
-        rows[3].push(USAGE_EMPTY.into());
+        TABLE_EMPTY.to_owned()
     }
-    table_text(&rows)
 }
 
-/// A `total/hit` cell: the column's full count and how much of it was served
-/// from cache.
-fn usage_pair(total: u64, cached: u64) -> String {
-    format!("{}/{}", short_tokens(total), short_tokens(cached))
+/// One agent's resident memory, or `--` when it has no live process.
+fn memory_text(used: bool, memory_bytes: u64) -> String {
+    if used {
+        short_bytes(memory_bytes)
+    } else {
+        TABLE_EMPTY.to_owned()
+    }
 }
 
-fn usage_cost(cost: Option<f64>) -> String {
-    match cost {
-        Some(value) => format!("${value:.2}"),
-        None => USAGE_EMPTY.into(),
+fn input_text(counts: Option<&usage::TokenCounts>) -> String {
+    counts
+        .map(|counts| short_tokens(counts.input))
+        .unwrap_or_else(|| TABLE_EMPTY.to_owned())
+}
+
+/// The share of the input that came from cache. A percentage, not a pair, so the
+/// column carries one number per row.
+fn hit_text(counts: Option<&usage::TokenCounts>) -> String {
+    match counts {
+        Some(counts) if counts.input > 0 => {
+            format!(
+                "{:.0}%",
+                counts.input_cached as f64 * 100.0 / counts.input as f64
+            )
+        }
+        _ => TABLE_EMPTY.to_owned(),
     }
+}
+
+fn output_text(counts: Option<&usage::TokenCounts>) -> String {
+    counts
+        .map(|counts| short_tokens(counts.output))
+        .unwrap_or_else(|| TABLE_EMPTY.to_owned())
+}
+
+fn cost_text(counts: Option<&usage::TokenCounts>) -> String {
+    counts
+        .and_then(|counts| counts.cost)
+        .map(|cost| format!("${cost:.2}"))
+        .unwrap_or_else(|| TABLE_EMPTY.to_owned())
+}
+
+/// Plain text rows for the CLI and for platforms whose menus cannot be
+/// coloured: the cells keep their order and the styling is dropped.
+pub(crate) fn table_lines(rows: &[Vec<Cell>]) -> Vec<String> {
+    let plain: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| row.iter().map(|cell| cell.text.clone()).collect())
+        .collect();
+    table_text(&plain)
 }
 
 /// The frames of the load spinner. ASCII only, because the menu font is
@@ -1798,15 +1857,14 @@ fn usage_period_row(candidate: usage::Period, selected: bool, spinner: Option<us
 
 /// The submenu title at rest: the period it echoes.
 pub(crate) fn usage_period_title_text(period: usage::Period) -> String {
-    format!("{}:  {} ▾", i18n::text("usage_period"), period.label())
+    format!("{} ▾", period.label())
 }
 
 /// The submenu title while a scan runs, with the spinner frame in front of the
 /// period name.
 pub(crate) fn usage_period_loading_title(period: usage::Period, frame: usize) -> String {
     format!(
-        "{}:  {} {} ▾",
-        i18n::text("usage_period"),
+        "{} {} ▾",
         USAGE_SPINNER[frame % USAGE_SPINNER.len()],
         period.label()
     )
@@ -2278,6 +2336,17 @@ fn state_menu_rgba(state: AgentState) -> Vec<u8> {
     );
     draw_lamp_marks(state, &mut rgba, MENU_ICON_PIXELS);
     rgba
+}
+
+/// A fully transparent image. The table rows carry it so their text starts on
+/// the same column as the session rows above them.
+fn blank_menu_icon() -> Option<MenuIcon> {
+    MenuIcon::from_rgba(
+        vec![0; MENU_ICON_PIXELS * MENU_ICON_PIXELS * 4],
+        MENU_ICON_PIXELS as u32,
+        MENU_ICON_PIXELS as u32,
+    )
+    .ok()
 }
 
 /// Glyph for the empty session list: the hollow ring in the neutral grey. A ring
@@ -2978,42 +3047,60 @@ mod usage_table_tests {
         ])
     }
 
-    #[test]
-    fn the_table_names_the_agents_across_the_top_and_the_metrics_down_the_side() {
-        let lines = usage_lines(&fill());
-        // A header row naming the agents and the total, then input, output, cost.
-        assert_eq!(lines.len(), 4);
-        assert!(
-            lines[1].starts_with(i18n::text("usage_input")),
-            "{}",
-            lines[1]
-        );
-        assert!(
-            lines[2].starts_with(i18n::text("usage_output")),
-            "{}",
-            lines[2]
-        );
-        assert!(
-            lines[3].starts_with(i18n::text("usage_cost")),
-            "{}",
-            lines[3]
-        );
-        assert!(lines[0].trim_start().starts_with("Claude"), "{}", lines[0]);
-        // The agent names match the CPU/memory summary above, and the total
-        // closes the row.
-        for kind in crate::model::RESOURCE_AGENTS {
-            assert!(lines[0].contains(kind), "{}", lines[0]);
+    /// Every row on, which is the default configuration.
+    fn table_config(show_cpu: bool, show_memory: bool, show_usage: bool) -> Config {
+        Config {
+            show_resources: show_cpu || show_memory,
+            show_cpu,
+            show_memory,
+            show_usage,
+            ..Config::default()
         }
-        assert!(
-            lines[0].trim_end().ends_with(i18n::text("resource_total")),
-            "{}",
-            lines[0]
+    }
+
+    fn table() -> Vec<Vec<Cell>> {
+        usage_table(&[], &fill(), &table_config(true, true, true))
+    }
+
+    fn cell(rows: &[Vec<Cell>], row: usize, column: usize) -> (String, CellStyle) {
+        (rows[row][column].text.clone(), rows[row][column].style)
+    }
+
+    #[test]
+    fn the_table_names_the_rows_then_the_total_then_the_agents() {
+        let rows = table();
+        // Header plus six metrics: CPU, memory, input, hit, output, cost.
+        assert_eq!(rows.len(), 7);
+        assert_eq!(cell(&rows, 0, 0).0, "");
+        assert_eq!(
+            cell(&rows, 0, 1),
+            (i18n::text("resource_total").to_owned(), CellStyle::Total)
         );
+        for (index, agent) in crate::model::RESOURCE_AGENTS.iter().enumerate() {
+            assert_eq!(
+                cell(&rows, 0, index + 2),
+                ((*agent).to_owned(), CellStyle::Muted)
+            );
+        }
+        let metrics = [
+            i18n::text("resource_cpu"),
+            i18n::text("resource_memory"),
+            i18n::text("usage_input"),
+            i18n::text("usage_hit"),
+            i18n::text("usage_output"),
+            i18n::text("usage_cost"),
+        ];
+        for (index, label) in metrics.iter().enumerate() {
+            assert_eq!(
+                cell(&rows, index + 1, 0),
+                ((*label).to_owned(), CellStyle::Value)
+            );
+        }
     }
 
     #[test]
     fn every_row_carries_the_same_columns() {
-        let lines = usage_lines(&fill());
+        let lines = table_lines(&table());
         // macOS rows carry tab-separated cells and get their tab stops at draw
         // time, so every row must have one cell per column.
         #[cfg(target_os = "macos")]
@@ -3035,59 +3122,74 @@ mod usage_table_tests {
     }
 
     #[test]
-    fn a_pair_cell_carries_the_total_and_its_cache_hits() {
-        let lines = usage_lines(&fill());
-        assert!(lines[1].contains("22.6m/21.8m"), "{}", lines[1]);
-        assert!(lines[1].contains("8.9m/8.8m"), "{}", lines[1]);
-        // Output has no cache to hit, so the cell carries the count alone.
-        assert!(lines[2].contains("313k"), "{}", lines[2]);
-        assert!(!lines[2].contains("313k/"), "{}", lines[2]);
-        assert!(lines[3].contains("$0.15"), "{}", lines[3]);
-        // An agent without records in the window reads as no data, not zeros:
-        // OpenCode and DeepSeek are empty in every metric row, and Claude and
-        // Codex report no cost so the cost row has two more. The output cell is
-        // a count, so its placeholder is a single dash.
-        assert_eq!(lines[1].matches(USAGE_EMPTY).count(), 2, "{}", lines[1]);
+    fn the_hit_column_reads_as_a_percentage_of_the_input() {
+        let rows = table();
+        // Claude served 21.8m of 22.6m from cache, Codex 900k of 1.2m and Pi
+        // 8.845696m of 8.9m; the agents with no records stay empty.
+        assert_eq!(cell(&rows, 4, 2).0, "96%");
+        assert_eq!(cell(&rows, 4, 3).0, "75%");
+        assert_eq!(cell(&rows, 4, 6).0, "99%");
         assert_eq!(
-            lines[2].matches(USAGE_EMPTY_OUTPUT).count(),
-            2,
-            "{}",
-            lines[2]
+            cell(&rows, 4, 4),
+            (TABLE_EMPTY.to_owned(), CellStyle::Muted)
         );
-        assert_eq!(lines[3].matches(USAGE_EMPTY).count(), 4, "{}", lines[3]);
     }
 
     #[test]
-    fn the_total_column_sums_the_agents_that_reported() {
-        let lines = usage_lines(&fill());
-        let total = &fill().total;
-        assert_eq!(total.input, 22_600_000 + 1_200_000 + 8_900_000);
-        assert_eq!(total.input_cached, 21_800_000 + 900_000 + 8_845_696);
-        assert!(lines[1].trim_end().ends_with("32.7m/31.5m"), "{}", lines[1]);
-        assert!(lines[2].trim_end().ends_with("419k"), "{}", lines[2]);
-        assert!(lines[3].trim_end().ends_with("$0.15"), "{}", lines[3]);
+    fn output_and_cost_keep_their_own_rows() {
+        let rows = table();
+        // Output has no cache to hit, so it is a count on its own row.
+        assert_eq!(cell(&rows, 5, 2).0, "313k");
+        assert_eq!(cell(&rows, 5, 3).0, "40k");
+        // Only Pi recorded a cost; the others read as no data.
+        assert_eq!(cell(&rows, 6, 6).0, "$0.15");
+        assert_eq!(
+            cell(&rows, 6, 2),
+            (TABLE_EMPTY.to_owned(), CellStyle::Muted)
+        );
+    }
+
+    #[test]
+    fn the_total_column_sits_next_to_the_row_name_and_sums_what_reported() {
+        let rows = table();
+        assert_eq!(cell(&rows, 3, 1), ("32.7m".to_owned(), CellStyle::Total));
+        assert_eq!(cell(&rows, 5, 1), ("419k".to_owned(), CellStyle::Total));
+        assert_eq!(cell(&rows, 6, 1), ("$0.15".to_owned(), CellStyle::Total));
     }
 
     #[test]
     fn an_empty_table_reports_no_data_in_every_cell() {
-        let lines = usage_lines(&snapshot(vec![None; 5]));
-        assert_eq!(lines.len(), 4);
-        for line in [&lines[1], &lines[3]] {
-            assert_eq!(line.matches(USAGE_EMPTY).count(), 6, "{line}");
-        }
-        assert_eq!(
-            lines[2].matches(USAGE_EMPTY_OUTPUT).count(),
-            6,
-            "{}",
-            lines[2]
+        let rows = usage_table(
+            &[],
+            &snapshot(vec![None; 5]),
+            &table_config(true, true, true),
         );
-        #[cfg(not(target_os = "macos"))]
-        {
-            let widest = lines.iter().map(|line| display_width(line)).max().unwrap();
-            for line in &lines {
-                assert_eq!(display_width(line), widest, "{line}");
+        assert_eq!(rows.len(), 7);
+        for row in rows.iter().skip(1) {
+            for value in row.iter().skip(1) {
+                assert_eq!(value.text, TABLE_EMPTY);
+                assert_eq!(value.style, CellStyle::Muted);
             }
         }
+    }
+
+    #[test]
+    fn the_display_options_choose_which_rows_exist() {
+        let resources = usage_table(&[], &fill(), &table_config(true, true, false));
+        assert_eq!(resources.len(), 3, "header, CPU and memory");
+        let usage = usage_table(&[], &fill(), &table_config(false, false, true));
+        assert_eq!(usage.len(), 5, "header, input, hit, output and cost");
+        assert_eq!(usage[1][0].text, i18n::text("usage_input"));
+        // CPU and memory are switched separately, so either can stand alone.
+        let cpu_only = usage_table(&[], &fill(), &table_config(true, false, false));
+        assert_eq!(cpu_only.len(), 2, "header and CPU");
+        assert_eq!(cpu_only[1][0].text, i18n::text("resource_cpu"));
+        let memory_only = usage_table(&[], &fill(), &table_config(false, true, false));
+        assert_eq!(memory_only.len(), 2, "header and memory");
+        assert_eq!(memory_only[1][0].text, i18n::text("resource_memory"));
+        // Both off leaves no table at all, only the header.
+        let none = usage_table(&[], &fill(), &table_config(false, false, false));
+        assert_eq!(none.len(), 1);
     }
 
     #[test]
@@ -3180,8 +3282,6 @@ mod usage_format_tests {
         let text = format_instance(&row, &config);
         assert!(!text.contains("CPU"), "{text}");
         assert!(!text.contains("1M"), "{text}");
-        let (names, _) = resource_rows(&[row]);
-        assert!(!names.contains("宿主级"), "{names}");
     }
 
     #[test]
@@ -3218,39 +3318,51 @@ mod usage_format_tests {
     }
 
     #[test]
-    fn resource_rows_place_every_agent_with_placeholders_for_idle_ones() {
-        let (names, values) = resource_rows(&[]);
-        // One column per agent, then the total last.
-        assert!(names.contains(i18n::text("resource_total")), "{names}");
-        assert!(
-            names.trim_end().ends_with(i18n::text("resource_total")),
-            "{names}"
+    fn idle_agents_keep_their_column_and_read_as_placeholders() {
+        let rows = usage_table(
+            &[],
+            &usage::UsageSnapshot::empty(usage::Period::Week),
+            &Config {
+                show_usage: false,
+                ..Config::default()
+            },
         );
-        assert!(names.contains("Claude"), "{names}");
-        assert!(names.contains("DeepSeek"), "{names}");
-        // The value row leads with the CPU/memory stub describing its figures.
-        assert!(values.starts_with(i18n::text("resource_stub")), "{values}");
-        assert_eq!(
-            values.matches("--/--").count(),
-            model::RESOURCE_AGENTS.len() + 1
-        );
+        // One column per agent plus the row name and the total.
+        assert_eq!(rows[2].len(), model::RESOURCE_AGENTS.len() + 2);
+        for value in rows[2].iter().skip(1) {
+            assert_eq!(value.text, TABLE_EMPTY);
+            assert_eq!(value.style, CellStyle::Muted);
+        }
     }
 
     #[test]
-    fn resource_rows_show_a_used_agents_cpu_and_memory() {
-        let row = instance(ProcessUsage {
+    fn a_live_agents_cpu_and_memory_reach_their_column_and_the_total() {
+        let mut row = instance(ProcessUsage {
             cpu: 12.5,
             memory_bytes: 300 * 1024 * 1024,
             shared: false,
         });
-        let (names, values) = resource_rows(&[row]);
-        // The total equals the only used agent, and the idle agents stay blank.
-        assert_eq!(values.matches("12.5%/300M").count(), 2, "{values}");
-        assert_eq!(
-            values.matches("--/--").count(),
-            model::RESOURCE_AGENTS.len() - 1
+        row.kind = "Claude".into();
+        let rows = usage_table(
+            &[row],
+            &usage::UsageSnapshot::empty(usage::Period::Week),
+            &Config {
+                show_usage: false,
+                ..Config::default()
+            },
         );
-        assert!(names.contains(i18n::text("resource_total")), "{names}");
+        let claude = model::RESOURCE_AGENTS
+            .iter()
+            .position(|agent| *agent == "Claude")
+            .expect("claude column")
+            + 2;
+        assert_eq!(rows[1][claude].text, "12.5%");
+        assert_eq!(rows[2][claude].text, "300M");
+        // The total repeats the only used agent, and stays bold.
+        assert_eq!(rows[1][1].text, "12.5%");
+        assert_eq!(rows[1][1].style, CellStyle::Total);
+        // The columns after it stay placeholders.
+        assert_eq!(rows[1][claude + 1].text, TABLE_EMPTY);
     }
 }
 
