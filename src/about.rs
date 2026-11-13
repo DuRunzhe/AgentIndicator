@@ -98,12 +98,12 @@ mod macos {
         NSApplication, NSButton, NSColor, NSControlSize, NSFont, NSFontAttributeName,
         NSForegroundColorAttributeName, NSImageScaling, NSImageView, NSProgressIndicator,
         NSProgressIndicatorStyle, NSStringDrawing, NSStringDrawingDeprecated,
-        NSStringDrawingOptions, NSTextAlignment, NSTextField, NSUnderlineStyleAttributeName,
-        NSView, NSWindow, NSWindowButton, NSWindowStyleMask, NSWorkspace,
+        NSStringDrawingOptions, NSTextAlignment, NSTextField, NSView, NSWindow, NSWindowButton,
+        NSWindowStyleMask, NSWorkspace,
     };
     use objc2_foundation::{
-        MainThreadMarker, NSAttributedString, NSAttributedStringKey, NSDictionary, NSNumber,
-        NSPoint, NSRect, NSSize, NSString, NSURL,
+        MainThreadMarker, NSAttributedString, NSAttributedStringKey, NSDictionary, NSPoint, NSRect,
+        NSSize, NSString, NSURL,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::OnceLock;
@@ -115,15 +115,19 @@ mod macos {
 
     const PANEL_WIDTH: f64 = 380.0;
     const ICON_SIZE: f64 = 64.0;
-    const NAME_HEIGHT: f64 = 22.0;
+    /// Row height for the 15pt name. Kept on the 4px grid so every following
+    /// top edge stays on it too.
+    const NAME_HEIGHT: f64 = 24.0;
     const VERSION_HEIGHT: f64 = 16.0;
-    const COPYRIGHT_HEIGHT: f64 = 14.0;
-    const BUTTON_HEIGHT: f64 = 26.0;
+    const COPYRIGHT_HEIGHT: f64 = 16.0;
+    /// Button height for the update and close buttons, on the 4px grid.
+    const BUTTON_HEIGHT: f64 = 28.0;
     /// Link row height, shared by the navigation links and the alpha entry.
     const LINK_HEIGHT: f64 = 16.0;
-    const LINK_FONT_SIZE: f64 = 10.0;
-    const LINK_ROW_FONT_SIZE: f64 = 11.0;
-    const DESC_FONT_SIZE: f64 = 11.0;
+    /// One size for every link, so the alpha entry is not a fifth text size in
+    /// a panel that only needs three (name, body, fine print).
+    const LINK_FONT_SIZE: f64 = 12.0;
+    const DESC_FONT_SIZE: f64 = 12.0;
     /// Width the product description wraps at.
     const DESC_WIDTH: f64 = 336.0;
     const UPDATE_BUTTON_WIDTH: f64 = 240.0;
@@ -504,6 +508,7 @@ mod macos {
 
     /// Vertical layout of the About panel measured from the top edge, so the
     /// stack simply grows when a language needs more description lines.
+    #[derive(Debug)]
     struct Metrics {
         height: f64,
         icon_top: f64,
@@ -520,19 +525,28 @@ mod macos {
 
     fn metrics() -> Metrics {
         let desc_font = NSFont::systemFontOfSize(DESC_FONT_SIZE);
-        let desc_height =
-            wrapped_height(i18n::text("about_desc"), &desc_font, DESC_WIDTH).max(VERSION_HEIGHT);
-        let icon_top = 22.0;
+        // Rounded up to the grid so a language with a longer description does
+        // not push every following gap off the 4px rhythm.
+        let desc_height = (wrapped_height(i18n::text("about_desc"), &desc_font, DESC_WIDTH)
+            .max(VERSION_HEIGHT)
+            / 4.0)
+            .ceil()
+            * 4.0;
+        // Every gap is a multiple of 4. The stack runs icon, name, version,
+        // description, update actions, links, copyright, close: the copyright
+        // closes the panel instead of sitting between the description and the
+        // buttons.
+        let icon_top = 24.0;
         let name_top = icon_top + ICON_SIZE + 8.0;
-        let version_top = name_top + NAME_HEIGHT + 2.0;
-        let desc_top = version_top + VERSION_HEIGHT + 8.0;
-        let copyright_top = desc_top + desc_height + 12.0;
-        let update_top = copyright_top + COPYRIGHT_HEIGHT + 16.0;
-        let alpha_top = update_top + BUTTON_HEIGHT + 10.0;
-        let links_top = alpha_top + LINK_HEIGHT + 14.0;
-        let close_top = links_top + LINK_HEIGHT + 14.0;
+        let version_top = name_top + NAME_HEIGHT + 4.0;
+        let desc_top = version_top + VERSION_HEIGHT + 12.0;
+        let update_top = desc_top + desc_height + 20.0;
+        let alpha_top = update_top + BUTTON_HEIGHT + 8.0;
+        let links_top = alpha_top + LINK_HEIGHT + 16.0;
+        let copyright_top = links_top + LINK_HEIGHT + 20.0;
+        let close_top = copyright_top + COPYRIGHT_HEIGHT + 20.0;
         Metrics {
-            height: close_top + BUTTON_HEIGHT + 18.0,
+            height: close_top + BUTTON_HEIGHT + 24.0,
             icon_top,
             name_top,
             version_top,
@@ -642,7 +656,7 @@ mod macos {
             (i18n::text("about_link_issues"), sel!(openIssues:)),
             (i18n::text("about_link_releases"), sel!(openReleases:)),
         ];
-        let link_font = NSFont::systemFontOfSize(LINK_ROW_FONT_SIZE);
+        let link_font = NSFont::systemFontOfSize(LINK_FONT_SIZE);
         let widths: Vec<f64> = links
             .iter()
             .map(|(text, _)| measure(&link_font, text) + 14.0)
@@ -659,7 +673,7 @@ mod macos {
                 x,
                 y(layout.links_top, LINK_HEIGHT),
                 *width,
-                LINK_ROW_FONT_SIZE,
+                LINK_FONT_SIZE,
                 target,
             );
             x += width + gap;
@@ -685,6 +699,68 @@ mod macos {
         }
     }
 
+    #[cfg(test)]
+    mod layout_tests {
+        use super::*;
+
+        #[test]
+        fn every_gap_sits_on_the_four_pixel_grid() {
+            let layout = metrics();
+            let tops = [
+                layout.icon_top,
+                layout.name_top,
+                layout.version_top,
+                layout.desc_top,
+                layout.update_top,
+                layout.alpha_top,
+                layout.links_top,
+                layout.copyright_top,
+                layout.close_top,
+                layout.height,
+                layout.desc_height,
+            ];
+            for top in tops {
+                assert_eq!(top % 4.0, 0.0, "{top} is off the 4px grid in {layout:?}");
+            }
+        }
+
+        #[test]
+        fn the_stack_runs_top_to_bottom_without_collisions() {
+            let layout = metrics();
+            let stack = [
+                (layout.icon_top, ICON_SIZE),
+                (layout.name_top, NAME_HEIGHT),
+                (layout.version_top, VERSION_HEIGHT),
+                (layout.desc_top, layout.desc_height),
+                (layout.update_top, BUTTON_HEIGHT),
+                (layout.alpha_top, LINK_HEIGHT),
+                (layout.links_top, LINK_HEIGHT),
+                (layout.copyright_top, COPYRIGHT_HEIGHT),
+                (layout.close_top, BUTTON_HEIGHT),
+            ];
+            for pair in stack.windows(2) {
+                let (top, height) = pair[0];
+                let next = pair[1].0;
+                assert!(
+                    next - (top + height) >= 4.0,
+                    "rows {top}..{} and {next} collide in {layout:?}",
+                    top + height
+                );
+            }
+            assert!(layout.height >= layout.close_top + BUTTON_HEIGHT);
+        }
+
+        #[test]
+        fn the_copyright_closes_the_panel() {
+            // The fine print belongs under the links, not between the
+            // description and the buttons.
+            let layout = metrics();
+            assert!(layout.copyright_top > layout.links_top);
+            assert!(layout.close_top > layout.copyright_top);
+            assert!(layout.update_top < layout.links_top);
+        }
+    }
+
     /// Width `text` occupies in the font it will be drawn with.
     fn measure(font: &Retained<NSFont>, text: &str) -> f64 {
         let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> =
@@ -695,20 +771,18 @@ mod macos {
         unsafe { NSString::from_str(text).sizeWithAttributes(Some(&attributes)) }.width
     }
 
-    /// Small blue underlined title for a text control that acts like a link.
+    /// Small tinted title for a text control that acts like a link. It keeps the
+    /// system link colour and drops the underline, the way current macOS panels
+    /// show link rows.
     fn link_title(text: &str, font_size: f64) -> Retained<NSAttributedString> {
         let font = NSFont::systemFontOfSize(font_size);
         let color = NSColor::linkColor();
-        // NSUnderlineStyleSingle.
-        let underline = NSNumber::numberWithInt(1);
         let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> =
             NSDictionary::from_retained_objects(
-                &[
-                    unsafe { NSFontAttributeName },
-                    unsafe { NSForegroundColorAttributeName },
-                    unsafe { NSUnderlineStyleAttributeName },
-                ],
-                &[font.into(), color.into(), underline.into()],
+                &[unsafe { NSFontAttributeName }, unsafe {
+                    NSForegroundColorAttributeName
+                }],
+                &[font.into(), color.into()],
             );
         unsafe {
             NSAttributedString::initWithString_attributes(
