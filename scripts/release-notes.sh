@@ -14,18 +14,32 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 VERSION="${1:?usage: release-notes.sh <version>}"
 
-# The section of the changelog for this version: everything between its
+PREV="$(git -C "$ROOT" describe --tags --abbrev=0 "v$VERSION^" 2>/dev/null || true)"
+
+# The section of the changelog for one version: everything between its
 # `## [version]` heading and the next version heading.
 section() {
-  awk -v header="## [$VERSION]" '
+  awk -v header="## [$1]" '
     index($0, header) == 1 { inside = 1; next }
     inside && /^## \[/ { exit }
     inside { print }
-  ' "$1" | sed '/./,$!d'
+  ' "$2" | sed '/./,$!d'
 }
 
-ZH="$(section "$ROOT/CHANGELOG.md")"
-EN="$(section "$ROOT/CHANGELOG.en.md")"
+ZH="$(section "$VERSION" "$ROOT/CHANGELOG.md")"
+EN="$(section "$VERSION" "$ROOT/CHANGELOG.en.md")"
+
+# A stable tag that only promotes the preceding prerelease carries no commits of
+# its own, so git-cliff writes no section for it. Borrow the prerelease's
+# section instead of shipping an empty body: this release is exactly that work.
+if [[ -z "$ZH$EN" && -n "$PREV" ]]; then
+  PREV_VERSION="${PREV#v}"
+  ZH="$(section "$PREV_VERSION" "$ROOT/CHANGELOG.md")"
+  EN="$(section "$PREV_VERSION" "$ROOT/CHANGELOG.en.md")"
+  if [[ -n "$ZH$EN" ]]; then
+    printf 'The same changes as %s, now shipped as a stable release.\n\n' "$PREV"
+  fi
+fi
 
 if [[ -z "$ZH$EN" ]]; then
   ZH="_No changelog entry for v$VERSION._"
@@ -49,7 +63,6 @@ fi
 # The compare link GitHub's generated notes used to carry: what changed since
 # the previous tag, including the commits git-cliff does not print.
 REPO="${REPO:-DuRunzhe/AgentIndicator}"
-PREV="$(git -C "$ROOT" describe --tags --abbrev=0 "v$VERSION^" 2>/dev/null || true)"
 if [[ -n "$PREV" ]]; then
   printf '**Full Changelog**: https://github.com/%s/compare/%s...v%s\n' "$REPO" "$PREV" "$VERSION"
 fi
