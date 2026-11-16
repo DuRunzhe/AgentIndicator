@@ -8,6 +8,16 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.41] - 2026-11-16
+
+### Added
+
+- Hide the resource rows by default and label the figures on session rows
+
+### Fixed
+
+- Ask for the accessibility grant only when the switch asks for it
+
 ## [0.2.40-alpha.1] - 2026-11-16
 
 ### Added

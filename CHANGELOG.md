@@ -6,6 +6,16 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.41] - 2026-11-16
+
+### 新增
+
+- Hide the resource rows by default and label the figures on session rows
+
+### 修复
+
+- Ask for the accessibility grant only when the switch asks for it
+
 ## [0.2.40-alpha.1] - 2026-11-16
 
 ### 新增
