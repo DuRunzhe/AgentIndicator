@@ -61,13 +61,13 @@ pub struct Config {
     /// desktop application's conversations. Independent of
     /// [`Self::conversation_window`]: the two are configured separately.
     pub deepseek_desktop_window: String,
-    /// Whether the user said "not now" to the accessibility prompt the first time
-    /// a session jump could not reach the conversation.
+    /// Whether the system accessibility prompt has already been shown.
     ///
-    /// Asking once is help; asking every click is nagging. The flag is cleared
-    /// when the switch is turned on again, which is the moment the user is
-    /// deliberately re-enabling the feature.
-    pub deepseek_session_jump_prompt_dismissed: bool,
+    /// macOS shows that prompt at most once per signature, and it is also the
+    /// only thing that puts this application in the Accessibility list. So the
+    /// first ask spends the prompt and later asks open the pane directly, which
+    /// keeps one click to one window.
+    pub deepseek_accessibility_prompted: bool,
     /// Whether clicking a DeepSeek Harness desktop row may target the
     /// conversation itself, not just the window.
     ///
@@ -103,7 +103,7 @@ impl Default for Config {
             conversation_window: DEFAULT_CONVERSATION_WINDOW.into(),
             deepseek_desktop_window: DEFAULT_CONVERSATION_WINDOW.into(),
             deepseek_session_jump: true,
-            deepseek_session_jump_prompt_dismissed: false,
+            deepseek_accessibility_prompted: false,
         }
     }
 }
@@ -316,26 +316,6 @@ mod tests {
         assert!(json.contains(r#""deepseek_session_jump":false"#), "{json}");
         let back: Config = serde_json::from_str(&json).expect("deserialise");
         assert!(!back.deepseek_session_jump);
-    }
-
-    #[test]
-    fn a_dismissed_prompt_is_remembered_and_older_configs_are_not_dismissed() {
-        assert!(
-            !Config::default().deepseek_session_jump_prompt_dismissed,
-            "a fresh install must be asked once"
-        );
-        let old: Config = serde_json::from_str(r#"{"show_usage":false}"#).expect("older config");
-        assert!(!old.deepseek_session_jump_prompt_dismissed);
-
-        let mut config = Config::default();
-        config.deepseek_session_jump_prompt_dismissed = true;
-        let json = serde_json::to_string(&config).expect("serialise");
-        assert!(
-            json.contains(r#""deepseek_session_jump_prompt_dismissed":true"#),
-            "{json}"
-        );
-        let back: Config = serde_json::from_str(&json).expect("deserialise");
-        assert!(back.deepseek_session_jump_prompt_dismissed);
     }
 
     #[test]

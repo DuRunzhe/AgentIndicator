@@ -356,10 +356,6 @@ struct App {
     notifications: NotificationTracker,
     notification_service: NotificationService,
     notification_action_rx: Receiver<NotificationAction>,
-    /// Answers from the accessibility prompt a click can raise, applied on the
-    /// UI thread because they change persisted config.
-    jump_prompt_tx: Sender<JumpPromptAnswer>,
-    jump_prompt_rx: Receiver<JumpPromptAnswer>,
     notification_permission_tx: Sender<bool>,
     notification_permission_rx: Receiver<bool>,
     pending_notification_test: bool,
@@ -379,16 +375,6 @@ struct App {
     update_rx: Option<Receiver<update::Message>>,
     pending_update: Option<String>,
     restart_target: Option<PathBuf>,
-}
-
-/// What the user answered when a session jump could not reach the conversation
-/// because the accessibility grant is missing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum JumpPromptAnswer {
-    /// They went to the settings pane; nothing to remember.
-    Opened,
-    /// They said "not now": ask once, never again until they re-enable the switch.
-    Dismissed,
 }
 
 enum UserEvent {
@@ -542,21 +528,14 @@ impl App {
     ) -> Self {
         let config = Config::load();
         i18n::set_locale(&config.locale);
-        // The session-jump permission belongs to the user, and the app cannot
-        // grant it: ask the first time the tray runs without it, so the system
-        // itself puts this application in the Accessibility list and opens the
-        // pane that shows it. macOS asks at most once per signature, so this is
-        // not a nag.
-        #[cfg(target_os = "macos")]
-        if config.deepseek_session_jump && !crate::deepseek_ax::authorized() {
-            let _ = crate::deepseek_ax::request_authorization();
-        }
+        // No permission prompt here. Launching the tray is not a request to jump
+        // to a conversation, so the ask belongs to the two clicks that are:
+        // turning the switch on, and pressing the row that leads to the pane.
         let usage = usage::Worker::spawn(config.usage_period(), move || {
             let _ = usage_proxy.send_event(UserEvent::Usage);
         });
         let (action_tx, action_rx) = unbounded();
         let (notification_action_tx, notification_action_rx) = unbounded();
-        let (jump_prompt_tx, jump_prompt_rx) = unbounded();
         let (notification_permission_tx, notification_permission_rx) = unbounded();
         Self {
             _instance_lock: instance_lock,
@@ -571,8 +550,6 @@ impl App {
             notifications: NotificationTracker::default(),
             notification_service: NotificationService::new(notification_action_tx),
             notification_action_rx,
-            jump_prompt_tx,
-            jump_prompt_rx,
             notification_permission_tx,
             notification_permission_rx,
             pending_notification_test: false,
@@ -1153,19 +1130,6 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             });
         }
-        while let Ok(answer) = self.jump_prompt_rx.try_recv() {
-            match answer {
-                JumpPromptAnswer::Dismissed => {
-                    self.config.deepseek_session_jump_prompt_dismissed = true;
-                    self.config.save();
-                    self.menu = None;
-                    self.rebuild();
-                }
-                // Nothing to persist: the grant itself changes what the menu and
-                // the next click can do.
-                JumpPromptAnswer::Opened => {}
-            }
-        }
         while let Ok(granted) = self.notification_permission_rx.try_recv() {
             self.config.notifications_enabled = granted;
             self.config.save();
@@ -1309,16 +1273,29 @@ impl ApplicationHandler<UserEvent> for App {
                 thread::spawn(browser_tabs::open_automation_settings);
             } else if id == "session_jump" {
                 self.config.deepseek_session_jump = !self.config.deepseek_session_jump;
-                if self.config.deepseek_session_jump {
-                    // Turning the feature back on is a fresh intent, so a "not
-                    // now" from an earlier run no longer applies.
-                    self.config.deepseek_session_jump_prompt_dismissed = false;
-                }
                 self.config.save();
                 self.menu = None;
                 self.rebuild();
+                // Turning the feature on is the user asking for it, so this is
+                // the moment the permission is asked for. Nothing is asked until
+                // then — not on launch, and not on a click that only wanted to
+                // reach a window.
+                #[cfg(target_os = "macos")]
+                if self.config.deepseek_session_jump && !crate::deepseek_ax::authorized() {
+                    let ask = next_accessibility_ask(
+                        &mut self.config.deepseek_accessibility_prompted,
+                        false,
+                    );
+                    self.config.save();
+                    thread::spawn(move || run_accessibility_ask(ask));
+                }
             } else if id == "open_accessibility_settings" {
-                thread::spawn(open_accessibility_settings);
+                let ask = next_accessibility_ask(
+                    &mut self.config.deepseek_accessibility_prompted,
+                    crate::deepseek_jump::Capabilities::probe().accessibility,
+                );
+                self.config.save();
+                thread::spawn(move || run_accessibility_ask(ask));
             } else if id == "test_session_jump" {
                 if let Some(url) = self.jump_test_target() {
                     let options = crate::deepseek_jump::Options::from_config(&self.config);
@@ -1391,42 +1368,14 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some((web_url, pid)) = target {
                     let reuse_tabs = self.config.browser_tab_reuse;
                     let jump = crate::deepseek_jump::Options::from_config(&self.config);
-                    let session_url = web_url
-                        .as_deref()
-                        .is_some_and(crate::deepseek_jump::is_session_url);
-                    let ask = should_ask_for_accessibility(
-                        session_url,
-                        self.config.deepseek_session_jump,
-                        self.config.deepseek_session_jump_prompt_dismissed,
-                        crate::deepseek_jump::Capabilities::probe().accessibility,
-                    );
-                    let prompt_tx = self.jump_prompt_tx.clone();
-                    thread::spawn(move || {
-                        // A jump that silently only opens the window reads as a
-                        // broken feature, so the first one explains itself and
-                        // offers the fix right there. Either answer still performs
-                        // the click, which is why the jump runs last.
-                        if ask {
-                            let go = i18n::text("go_to_settings");
-                            let answer = dialog::choose(
-                                i18n::text("session_jump_ask"),
-                                i18n::menu("deepseek"),
-                                &[i18n::text("not_yet"), go],
-                                go,
-                                Some(i18n::text("not_yet")),
-                            );
-                            if answer.as_deref() == Some(go) {
-                                let _ = open_accessibility_settings();
-                                let _ = prompt_tx.send(JumpPromptAnswer::Opened);
-                            } else {
-                                let _ = prompt_tx.send(JumpPromptAnswer::Dismissed);
-                            }
-                        }
-                        match web_url {
-                            Some(url) => open_target(&url, reuse_tabs, jump, pid),
-                            None => {
-                                let _ = focus::focus(pid);
-                            }
+                    // The click performs the best jump the ladder can reach. Ask
+                    // nothing on the way: a permission prompt fired from a click
+                    // that was only trying to reach a window reads as an
+                    // obstacle, so the ask lives on the switch itself.
+                    thread::spawn(move || match web_url {
+                        Some(url) => open_target(&url, reuse_tabs, jump, pid),
+                        None => {
+                            let _ = focus::focus(pid);
                         }
                     });
                 }
@@ -2077,35 +2026,57 @@ impl App {
     }
 }
 
-/// Whether a click should ask for the accessibility grant.
+/// Which half of the accessibility ask a click performs.
 ///
-/// Asked only when the jump could actually profit from it: the switch is on, the
-/// address is a conversation, the grant is missing, and the user has not already
-/// declined. Pure so the rule can be tested without a TCC prompt.
-fn should_ask_for_accessibility(
-    is_session: bool,
-    session_level: bool,
-    dismissed: bool,
-    authorized: bool,
-) -> bool {
-    cfg!(target_os = "macos") && is_session && session_level && !authorized && !dismissed
+/// macOS adds an application to the Accessibility list only as a side effect of
+/// its own prompt, and that prompt is shown at most once per signature. So the
+/// first ask is the prompt alone — the pane is one button away inside it — and
+/// every ask after that opens the pane directly. One click, one window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AccessibilityAsk {
+    /// The system prompt, which is also what puts the app in the list.
+    Prompt,
+    /// The Accessibility pane, where the row already exists.
+    Pane,
 }
 
-/// Ask for the accessibility permission and land the user on the pane that lists
-/// this application, which is the one place the grant can be given.
-fn open_accessibility_settings() -> bool {
+/// Pick this click's half of the ask, recording that the prompt has been spent.
+///
+/// Pure so the rule can be tested without a TCC prompt. A granted app never
+/// reaches the prompt again: there is nothing left for it to add.
+fn next_accessibility_ask(prompted: &mut bool, authorized: bool) -> AccessibilityAsk {
+    if authorized || *prompted {
+        AccessibilityAsk::Pane
+    } else {
+        *prompted = true;
+        AccessibilityAsk::Prompt
+    }
+}
+
+/// Perform the ask chosen by [`next_accessibility_ask`].
+///
+/// Only ever reached from a click that asks for the grant: turning the
+/// session-jump switch on, or pressing the row that names the permission.
+/// Launching the app makes no such request.
+fn run_accessibility_ask(ask: AccessibilityAsk) -> bool {
     #[cfg(target_os = "macos")]
     {
-        // The system prompt is what adds this application to the list, so asking
-        // first means the pane already names it when it opens.
-        let _ = crate::deepseek_ax::request_authorization();
-        return std::process::Command::new("/usr/bin/open")
-            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-            .status()
-            .is_ok_and(|status| status.success());
+        return match ask {
+            AccessibilityAsk::Prompt => {
+                let _ = crate::deepseek_ax::request_authorization();
+                true
+            }
+            AccessibilityAsk::Pane => std::process::Command::new("/usr/bin/open")
+                .arg(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                )
+                .status()
+                .is_ok_and(|status| status.success()),
+        };
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = ask;
         false
     }
 }
@@ -3253,6 +3224,59 @@ mod stopped_visibility_tests {
             &states[after_preferences + 3..],
             &display.map(|(key, _)| config_value(&config, key))[..]
         );
+    }
+}
+
+#[cfg(test)]
+mod accessibility_ask_tests {
+    use super::*;
+
+    #[test]
+    fn the_first_ask_is_the_prompt_and_later_ones_are_the_pane() {
+        // The prompt is the only thing that puts the app in the Accessibility
+        // list, and macOS shows it once per signature: spending it on the first
+        // click is what lets every later click be a single window.
+        let mut prompted = false;
+        assert_eq!(
+            next_accessibility_ask(&mut prompted, false),
+            AccessibilityAsk::Prompt
+        );
+        assert!(prompted, "the prompt counts as spent once chosen");
+        assert_eq!(
+            next_accessibility_ask(&mut prompted, false),
+            AccessibilityAsk::Pane
+        );
+    }
+
+    #[test]
+    fn a_granted_app_goes_straight_to_the_pane() {
+        // With the grant in place there is nothing for the prompt to add, and the
+        // row stays useful as the way back to that pane.
+        let mut prompted = false;
+        assert_eq!(
+            next_accessibility_ask(&mut prompted, true),
+            AccessibilityAsk::Pane
+        );
+        assert!(
+            !prompted,
+            "a granted app must not record a prompt it never needed"
+        );
+    }
+
+    #[test]
+    fn a_remembered_prompt_survives_a_restart() {
+        // The prompt is once per signature, so the flag has to outlive the run
+        // that spent it: otherwise every launch would ask again to no effect.
+        let mut config = Config::default();
+        assert!(!config.deepseek_accessibility_prompted);
+        config.deepseek_accessibility_prompted = true;
+        let json = serde_json::to_string(&config).expect("serialise");
+        assert!(
+            json.contains(r#""deepseek_accessibility_prompted":true"#),
+            "{json}"
+        );
+        let back: Config = serde_json::from_str(&json).expect("deserialise");
+        assert!(back.deepseek_accessibility_prompted);
     }
 }
 
