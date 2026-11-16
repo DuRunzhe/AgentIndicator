@@ -47,6 +47,7 @@ tar -xzf agent-status-indicator-0.2.40-alpha.1-aarch64-apple-darwin.tar.gz
    在说明弹窗或验证弹窗中取消后，应用应继续运行，通知保持关闭；连续点击不得出现多个引导弹窗。
 9. 退出后重新启动：通知开关应保持此前设置。
 10. 在“设置 → 显示配置”中分别关闭已停止 Agent、时长、模型、上下文占比、已用和总上下文，实例行应立即更新且重启后保持；关闭“已停止 Agent”后，未运行 Agent 的灰色占位项应立即隐藏，再次开启后恢复。
+    CPU 与内存在新建配置下应默认关闭：删除 `~/.config/agent-status-indicator/config.json` 后启动，表格只显示 Token 用量行，会话行上也不带 CPU/内存。打开“CPU 使用率”后表格应多出 CPU 行，同时会话行尾部出现带标签的 `· CPU 12.5%`；打开“内存占用”后同理出现 `· 内存 300M`——两处受同一个开关控制，且标签必须在，否则 `300M` 容易被当成 Token 数。
 11. 开启“设置 → 开机自启”，确认 `~/Library/LaunchAgents/com.agentstatusindicator.app.plist` 已生成；再次关闭后应删除。
 12. 使用 `codex resume <thread-id>` 恢复旧会话：菜单应读取该 thread 对应 rollout 的状态、模型和上下文，而非同一目录下最近创建的其他 rollout；随后执行任务和完成任务时，状态应在约 1 秒内依次同步为“进行中”和“就绪”。
 13. 同时存在等待回复、进行中和就绪实例时，顶部应显示三种状态的数量；已停止项不参与顶部汇总。
@@ -68,7 +69,7 @@ agent-status-indicator --diagnose-usage --render --usage-period month
 ```
 
 1. 打印的三行表格应与菜单里的表格逐字一致：表头上方是 `周期: ● 当日 ○ 当周 ○ 当月`，随后是 `输入/命中`、`输出`、`费用` 表头、五行 Agent 与一行总计。
-2. 打开菜单，确认表格位于「资源汇总」下方，列之间对齐；点击周期行应在“日 → 周 → 月 → 日”之间循环，箭头所指项随之改变，表格数字按新维度重算（≤10 秒内，通常 1 秒内）。
+2. 打开菜单，确认表格位于会话列表下方、设置入口上方，列之间对齐；点击周期行应在“日 → 周 → 月 → 日”之间循环，箭头所指项随之改变，表格数字按新维度重算（≤10 秒内，通常 1 秒内）。
 3. 与各 Agent 自带统计对数：
    - Claude Code：在会话里运行 `/status`（或 `/cost`）对比本次会话的 input/output token；本表的 `输入` 为 `input_tokens + cache_creation + cache_read`。
    - Codex：rollout 里最后一条 `token_count` 的 `total_token_usage` 与本表同一会话的累计一致（本表按事件差值累计，不是把多条累计值相加）。

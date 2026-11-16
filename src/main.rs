@@ -245,8 +245,12 @@ fn main() -> Result<()> {
             for line in usage_period_lines(snapshot.period) {
                 println!("{line}");
             }
+            // The printed table is the token block alone: `--diagnose-usage`
+            // exists to check those numbers, and the two resource rows would
+            // need a live process sample to mean anything.
             let config = Config {
-                show_resources: false,
+                show_cpu: false,
+                show_memory: false,
                 show_usage: true,
                 ..Config::default()
             };
@@ -588,7 +592,7 @@ impl App {
             restart_target: None,
         }
     }
-    /// Draw the resource summary and the token table with tab stops, so their
+    /// Draw the resource rows and the token rows with tab stops, so their
     /// columns line up whatever the menu font does with a localized label.
     #[cfg(target_os = "macos")]
     fn apply_table_fonts(&self) {
@@ -1664,7 +1668,7 @@ fn visible_instances<'a>(
         .filter(move |instance| instance.state != AgentState::Stopped || show_stopped)
 }
 
-fn display_settings() -> [(&'static str, &'static str); 10] {
+fn display_settings() -> [(&'static str, &'static str); 9] {
     [
         ("duration", i18n::text("show_duration")),
         ("model", i18n::text("show_model")),
@@ -1673,7 +1677,6 @@ fn display_settings() -> [(&'static str, &'static str); 10] {
         ("context_total", i18n::text("show_context_total")),
         ("cpu", i18n::text("show_cpu")),
         ("memory", i18n::text("show_memory")),
-        ("resources", i18n::text("show_resources")),
         ("usage", i18n::text("show_usage")),
         ("stopped_agents", i18n::text("show_stopped_agents")),
     ]
@@ -1730,7 +1733,6 @@ pub(crate) fn config_value(config: &Config, key: &str) -> bool {
         "context_total" => config.show_context_total,
         "cpu" => config.show_cpu,
         "memory" => config.show_memory,
-        "resources" => config.show_resources,
         "usage" => config.show_usage,
         "stopped_agents" => config.show_stopped_agents,
         _ => false,
@@ -1746,7 +1748,6 @@ fn toggle_config(config: &mut Config, key: &str) {
         "context_total" => config.show_context_total = !config.show_context_total,
         "cpu" => config.show_cpu = !config.show_cpu,
         "memory" => config.show_memory = !config.show_memory,
-        "resources" => config.show_resources = !config.show_resources,
         "usage" => config.show_usage = !config.show_usage,
         "stopped_agents" => config.show_stopped_agents = !config.show_stopped_agents,
         _ => {}
@@ -1795,13 +1796,23 @@ fn format_instance(instance: &AgentInstance, config: &Config) -> String {
     if let Some(usage) = &instance.usage {
         // DeepSeek conversations run through one host process whose figures are
         // host-level, and any other GUI host shared by sibling sessions is the
-        // same: leave them to the summary and never show them on a session row.
+        // same: leave them to the table and never show them on a session row.
         if !usage.shared && !instance.kind.starts_with("DeepSeek") {
+            // Each figure carries its own label. `300M` on its own reads like a
+            // token count, and the token rows sit right below in the same menu.
             if config.show_cpu {
-                text.push_str(&format!(" · CPU {:.1}%", usage.cpu));
+                text.push_str(&format!(
+                    " · {} {:.1}%",
+                    i18n::text("resource_cpu"),
+                    usage.cpu
+                ));
             }
             if config.show_memory {
-                text.push_str(&format!(" · {}", short_bytes(usage.memory_bytes)));
+                text.push_str(&format!(
+                    " · {} {}",
+                    i18n::text("resource_memory"),
+                    short_bytes(usage.memory_bytes)
+                ));
             }
         }
     }
@@ -1868,7 +1879,7 @@ pub(crate) fn usage_table(
     );
     rows.push(header);
 
-    if config.show_resources && (config.show_cpu || config.show_memory) {
+    if config.show_cpu || config.show_memory {
         let totals = model::resource_totals(instances);
         let any_used = totals.iter().any(|total| total.used);
         let total_cpu: f32 = totals.iter().map(|total| total.cpu).sum();
@@ -3208,12 +3219,11 @@ mod stopped_visibility_tests {
     #[test]
     fn display_settings_include_stopped_agents_toggle() {
         let keys = display_settings();
-        assert_eq!(keys.len(), 10);
+        assert_eq!(keys.len(), 9);
         assert!(keys.iter().any(|(key, _)| *key == "usage"));
         assert!(keys.iter().any(|(key, _)| *key == "stopped_agents"));
         assert!(keys.iter().any(|(key, _)| *key == "cpu"));
         assert!(keys.iter().any(|(key, _)| *key == "memory"));
-        assert!(keys.iter().any(|(key, _)| *key == "resources"));
         let hidden = Config {
             show_stopped_agents: false,
             ..Config::default()
@@ -3291,10 +3301,10 @@ mod usage_table_tests {
         ])
     }
 
-    /// Every row on, which is the default configuration.
+    /// Every row on, which the table tests need regardless of the shipped
+    /// default (a fresh install shows only the usage rows).
     fn table_config(show_cpu: bool, show_memory: bool, show_usage: bool) -> Config {
         Config {
-            show_resources: show_cpu || show_memory,
             show_cpu,
             show_memory,
             show_usage,
@@ -3481,6 +3491,16 @@ mod usage_format_tests {
     use super::*;
     use crate::model::ProcessUsage;
 
+    /// CPU and memory are off on a fresh install, so a test that is about those
+    /// figures has to switch them on the way the settings menu would.
+    fn resource_config() -> Config {
+        Config {
+            show_cpu: true,
+            show_memory: true,
+            ..Config::default()
+        }
+    }
+
     fn instance(usage: ProcessUsage) -> AgentInstance {
         AgentInstance {
             key: "1".into(),
@@ -3502,7 +3522,7 @@ mod usage_format_tests {
 
     #[test]
     fn cpu_and_memory_render_for_a_session_private_process() {
-        let config = Config::default();
+        let config = resource_config();
         let row = instance(ProcessUsage {
             cpu: 12.5,
             memory_bytes: 300 * 1024 * 1024,
@@ -3510,12 +3530,15 @@ mod usage_format_tests {
         });
         let text = format_instance(&row, &config);
         assert!(text.contains("CPU 12.5%"), "{text}");
-        assert!(text.contains("300M"), "{text}");
+        assert!(
+            text.contains(&format!("{} 300M", i18n::text("resource_memory"))),
+            "a memory figure carries its label so it cannot be read as tokens: {text}"
+        );
     }
 
     #[test]
     fn a_shared_host_row_hides_its_usage_and_carries_no_marker() {
-        let config = Config::default();
+        let config = resource_config();
         let row = instance(ProcessUsage {
             cpu: 1.0,
             memory_bytes: 1024 * 1024,
@@ -3530,7 +3553,7 @@ mod usage_format_tests {
 
     #[test]
     fn deepseek_rows_show_no_usage_even_without_a_shared_host() {
-        let config = Config::default();
+        let config = resource_config();
         let mut row = instance(ProcessUsage {
             cpu: 2.0,
             memory_bytes: 8 * 1024 * 1024,
@@ -3549,7 +3572,7 @@ mod usage_format_tests {
         let config = Config {
             show_cpu: false,
             show_memory: false,
-            ..Config::default()
+            ..resource_config()
         };
         let row = instance(ProcessUsage {
             cpu: 9.0,
@@ -3568,7 +3591,7 @@ mod usage_format_tests {
             &usage::UsageSnapshot::empty(usage::Period::Week),
             &Config {
                 show_usage: false,
-                ..Config::default()
+                ..resource_config()
             },
         );
         // One column per agent plus the row name and the total.
@@ -3592,7 +3615,7 @@ mod usage_format_tests {
             &usage::UsageSnapshot::empty(usage::Period::Week),
             &Config {
                 show_usage: false,
-                ..Config::default()
+                ..resource_config()
             },
         );
         let claude = model::RESOURCE_AGENTS

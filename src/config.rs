@@ -36,10 +36,18 @@ pub struct Config {
     pub show_context_percent: bool,
     pub show_context_used: bool,
     pub show_context_total: bool,
+    /// Whether a session row carries its CPU figure, and whether the table gets
+    /// its CPU row.
+    ///
+    /// One switch for one number: the figure on the row and the one in the
+    /// table are the same measurement, so asking for one and hiding the other
+    /// would only make the two easy to confuse.
     pub show_cpu: bool,
+    /// Whether a session row carries its memory figure, and whether the table
+    /// gets its memory row.
     pub show_memory: bool,
-    pub show_resources: bool,
-    /// The token table below the resource summary.
+    /// The token rows of the merged table, and the day/week/month switch above
+    /// it.
     pub show_usage: bool,
     /// Which [`crate::usage::Period`] the token table covers.
     pub usage_period: String,
@@ -82,9 +90,11 @@ impl Default for Config {
             show_context_percent: true,
             show_context_used: true,
             show_context_total: true,
-            show_cpu: true,
-            show_memory: true,
-            show_resources: true,
+            // A fresh install shows the token rows only. The two resource rows
+            // are opt-in, and each switch answers for both places the figure
+            // appears — the session row and the table.
+            show_cpu: false,
+            show_memory: false,
             show_usage: true,
             usage_period: DEFAULT_USAGE_PERIOD.into(),
             show_stopped_agents: true,
@@ -119,10 +129,33 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        config_path()
-            .and_then(|path| fs::File::open(path).ok())
-            .and_then(|file| serde_json::from_reader(file).ok())
-            .unwrap_or_default()
+        let Some(file) = config_path().and_then(|path| fs::File::open(path).ok()) else {
+            return Self::default();
+        };
+        let Ok(value) = serde_json::from_reader::<_, serde_json::Value>(file) else {
+            return Self::default();
+        };
+        Self::from_value(value)
+    }
+
+    /// Read a config file, folding in the retired `show_resources` gate.
+    ///
+    /// That key used to gate the table's two resource rows while `show_cpu` and
+    /// `show_memory` answered only for the session rows. The gate is gone and
+    /// those two now answer for both places, so a file that had the gate closed
+    /// means the figures were unwanted wherever they appeared: keeping the two
+    /// switches as they stand would resurrect rows the user had turned off. The
+    /// key disappears the next time the file is written.
+    fn from_value(mut value: serde_json::Value) -> Self {
+        if let Some(object) = value.as_object_mut() {
+            let gate_closed =
+                object.get("show_resources").and_then(|gate| gate.as_bool()) == Some(false);
+            if gate_closed {
+                object.insert("show_cpu".into(), serde_json::Value::Bool(false));
+                object.insert("show_memory".into(), serde_json::Value::Bool(false));
+            }
+        }
+        serde_json::from_value(value).unwrap_or_default()
     }
     pub fn save(&self) {
         let Some(path) = config_path() else { return };
@@ -165,7 +198,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_config_fields_default_to_visible() {
+    fn missing_config_fields_fall_back_to_the_defaults() {
         let config: Config = serde_json::from_str(r#"{"notifications_enabled":true}"#).unwrap();
         assert!(config.notifications_enabled);
         assert!(config.notify_waiting_confirmation);
@@ -178,13 +211,42 @@ mod tests {
         assert!(config.show_context_percent);
         assert!(config.show_context_used);
         assert!(config.show_context_total);
-        assert!(config.show_cpu);
-        assert!(config.show_memory);
-        assert!(config.show_resources);
+        // The resource rows are opt-in: a fresh install shows the token table
+        // and leaves the two resource switches off.
+        assert!(!config.show_cpu);
+        assert!(!config.show_memory);
         assert!(config.show_usage);
         assert_eq!(config.usage_period, DEFAULT_USAGE_PERIOD);
         assert!(config.show_stopped_agents);
         assert_eq!(config.conversation_window, DEFAULT_CONVERSATION_WINDOW);
+    }
+
+    #[test]
+    fn a_retired_resource_gate_folds_into_the_two_row_switches() {
+        // The gate used to hide the table's CPU and memory rows while those two
+        // switches still governed the session rows, so a closed gate means the
+        // figures were unwanted in both places. Neither may come back on
+        // upgrade, and the retired key must not survive the next save.
+        let closed = serde_json::from_str::<serde_json::Value>(
+            r#"{"show_resources":false,"show_cpu":true,"show_memory":true}"#,
+        )
+        .expect("a legacy config");
+        let config = Config::from_value(closed);
+        assert!(!config.show_cpu);
+        assert!(!config.show_memory);
+
+        // An open gate leaves each switch exactly as the user left it.
+        let open = serde_json::from_str::<serde_json::Value>(
+            r#"{"show_resources":true,"show_cpu":true,"show_memory":false}"#,
+        )
+        .expect("a legacy config");
+        let config = Config::from_value(open);
+        assert!(config.show_cpu);
+        assert!(!config.show_memory);
+
+        // Saving drops the retired key instead of carrying it forward.
+        let json = serde_json::to_string(&config).expect("serialise");
+        assert!(!json.contains("show_resources"), "{json}");
     }
 
     #[test]
