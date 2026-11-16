@@ -50,7 +50,7 @@ tar -xzf agent-status-indicator-0.2.39-aarch64-apple-darwin.tar.gz
 11. 开启“设置 → 开机自启”，确认 `~/Library/LaunchAgents/com.agentstatusindicator.app.plist` 已生成；再次关闭后应删除。
 12. 使用 `codex resume <thread-id>` 恢复旧会话：菜单应读取该 thread 对应 rollout 的状态、模型和上下文，而非同一目录下最近创建的其他 rollout；随后执行任务和完成任务时，状态应在约 1 秒内依次同步为“进行中”和“就绪”。
 13. 同时存在等待回复、进行中和就绪实例时，顶部应显示三种状态的数量；已停止项不参与顶部汇总。
-14. 打开 DeepSeek Harness 桌面端并开始一个会话：菜单里应出现 `DeepSeek Harness (<项目>) · <会话标题>` 一行（与 ChatGPT、Pi 等行同格式，不再带“终端/桌面端”形态标记），状态在一次采集周期（约 2 秒）内变为“进行中”并显示模型与上下文；再开一个会话应新增一行，两行点击都回到桌面端窗口。
+14. 打开 DeepSeek Harness 桌面端并开始一个会话：菜单里应出现 `DeepSeek Harness (<项目>) · <会话标题>` 一行（与 ChatGPT、Pi 等行同格式，不再带“终端/桌面端”形态标记），状态在一次采集周期（约 2 秒）内变为“进行中”并显示模型与上下文；再开一个会话应新增一行，两行点击都应切到各自的会话（详见「DeepSeek Harness 桌面端验收 → 会话级跳转」）。
 15. 在桌面端触发需要人工确认/选择（提问、审批）：对应行应显示“等待回复”或“等待确认”；继续生成后回到“进行中”，一轮结束后变为“就绪”。
 15b. 让一个会话跑失败（例如在沙箱内触发一次失败命令，或断开网络让请求出错）：该行应变为红色“异常”并触发异常通知；随后在该会话里继续对话，新的事件写入日志后应恢复为“进行中/就绪”。
 15c. 把某会话的 `permissions.approval` 设为 `never`（自动确认）：关闭“自动确认模式仍通知”后，该会话进入等待态时不应再发通知。
@@ -96,22 +96,48 @@ agent-status-indicator --diagnose-deepseek-desktop
 
 非默认 `DSH_HOME` 启动的桌面端：`hosts[].home` 应指向该目录，`sessions` 应来自其 profile，而不是 `~/.dsh`。
 
-会话显示范围：把“设置 → 会话显示范围”切到 15 分钟，长时间未使用的已结束会话应从菜单消失，进行中/等待中的会话必须保留。
+会话显示范围：把“设置 → DeepSeek Harness → 会话显示范围”切到 15 分钟，长时间未使用的已结束会话应从菜单消失，进行中/等待中的会话必须保留。
 
-点击行为：点击任意桌面端会话行应把应用窗口带到前台。手动把窗口最小化后点击应还原；用窗口关闭按钮关掉窗口（应用仍驻留）后点击应重建窗口。已实现的路由就是 `dsh://open`：
+### 会话级跳转
+
+设置里与桌面端相关的一切都在同一个分组「设置 → DeepSeek Harness」下：会话显示范围（子菜单）、会话级跳转开关、一行权限入口（未授权时文案为「会话级跳转需要辅助功能授权，点击前往授权」，已授权时变为「打开辅助功能设置」），以及「测试会话级跳转」自检行。
+
+首次在**未授权**状态点击任意桌面端会话行，应弹出「会话级跳转需要辅助功能授权，是否前往设置？」：
+
+- 选「前往设置」→ 打开系统设置并定位到辅助功能面板（App 已在列表里，勾选即可）
+- 选「暂不」→ 本次只把窗口带到前台，并且之后点击不再重复询问；把「会话级跳转」关掉再打开后，会重新询问一次
+
+点击任意桌面端会话行应直接切到该会话，而不是只把窗口带到前台。行为按能力逐级降级，每一级都能单独验证：
+
+1. **原生路由**（`dsh://session/<id>`）：当前所有已发布版本都不支持，`--diagnose-deepseek-desktop` 的 `sessionJump.nativeRoute` 应为 `false`。上游一旦支持，`src/deepseek_jump.rs` 里的 `NATIVE_ROUTE_MIN_VERSION` 改成对应版本号即可启用，行上的地址已经就是这个形状。
+2. **辅助功能**：托盘在应用的侧栏里按标题找到该会话的行并“按下”，随后读窗口标题确认切换成功。
+3. **仅窗口**：前两级都不可用时退化为 `dsh://open`（还原最小化窗口、重建被关闭的窗口），与历史行为一致。
+
+验证步骤：
+
+- **授权链路**：设置 → DeepSeek Harness →「会话级跳转需要辅助功能授权，点击前往授权」。首次点击会触发系统弹窗把 AgentStatusIndicator 加入“辅助功能”列表，确认弹窗后系统设置定位到该面板，手动打开开关；授权后同一行文案应变为「打开辅助功能设置」（这一行始终存在，方便随时回到该面板）。
+- **一键自检**：设置 → DeepSeek Harness →「测试会话级跳转」应弹框给出结论（可用 / 只有窗口）。结论与 `session-jump.log` 的 `jump route=` 行一致。也可用冒烟用例验证（会真实操作桌面窗口，因此默认 `ignored`）：
+```bash
+cargo test -- --ignored smoke_press_session
+cargo test -- --ignored smoke_open
+```
+- **成功切换**：菜单里有两个不同标题的会话行时，依次点击，窗口标题与内容应各自切换；第 2 级生效时 `--diagnose-deepseek-desktop` 的 `sessionJump.rungs` 应为 `["accessibility","window"]`。
+- **同名会话**：在同一项目下建两个同名会话（例如都叫“同步最新代码”），点击应落在所属项目（workspace）的那一行；行地址里带 `workspace=` 参数就是为了这个。
+- **窗口不在前台/最小化**：最小化后点击应还原并切换；用关闭按钮关掉窗口（应用仍驻留）后点击应重建窗口再切换。
+- **降级（关掉开关）**：设置 → DeepSeek Harness → 「点击关闭会话级跳转」后点击任意会话行，只把窗口带到前台，`sessionJump` 相关行为不再触发。
+- **降级（未授权）**：在系统设置里撤销辅助功能授权，重新点击会话行应仍然把窗口带到前台（不弹错误、不卡住）。
+- **降级（找不到会话）**：会话从侧栏消失（例如在应用内删除或切到别的 project）后点击该行，应在数秒内退化为窗口聚焦。
+
+调试与复现：
 
 ```bash
-open dsh://open     # 等价于点击一行时的动作
+open dsh://open                                     # 仅窗口（第 3 级），等价于 `open_window()`
+open "dsh://session/<id>?title=<标题>&workspace=<项目名>"   # 带会话的地址（第 1 级的形状；当前版本会走第 2/3 级）
 ```
 
-会话级深链接目前不可用，这是上游限制，不是本项目的遗漏：
+上游限制（本轮实现绕开的正是这一层）：桌面端 shell 的 `open-url` 只处理 `dsh://open` 与 `dsh://open/`，其它 `dsh://` URL 被静默忽略且 `open` 仍返回 0；前端（`dsh-web-frontend`）也没有任何 URL 路由（bundle 里不存在 `location.search`/`location.hash`/`pushState`）。因此第 1 级目前只能“按版本号预判”，不能靠探测确认——这也是它默认关闭、并保留第 2 级作为过渡的原因。
 
-- 桌面端 shell 的 `open-url` 处理器只处理 `dsh://open` 与 `dsh://open/`，其它 `dsh://` URL 一律忽略（`open` 命令仍返回 0，不会报错，因此“能打开”不代表被识别）。
-- 前端（`dsh-web-frontend`）没有任何 URL 路由：bundle 里不存在 `location.search`/`location.hash`/`pushState`，当前会话只存在于内存状态中。
-- 官方文档同样确认没有该类锚点：`dsh-client-ui-trajectory` 的 README 写明 “no anchor deep links”，`dsh-client-ui-workspace` 写明 “no fuzzy content search or event deep links”；`dsh-api-session-controller` 说明导航属于 UI 消费方职责。
-- 探测复现：`open "dsh://open/session/<id>"` 与 `open "dsh://open?session=<id>"` 都会静默走同一条 `dsh://open` 分支之外的空路径，不产生会话切换。
-
-若上游后续支持（例如 shell 转发带会话参数的 `dsh://` URL，或前端引入 URL 路由），只需给 `desktop_rows` 填上 `open_url` 即可，焦点链路已经支持按行取 URL。
+辅助功能这一级依赖 Electron 应用侧的 UI 结构（`AXOutline` → 工作区分组 → 会话行），属于“用 UI 结构当契约”：DSH 改版后可能失效，失效时的表现是第 3 级（只带出窗口），不会误跳——因为每次按下都会用窗口标题校验目标。
 
 ## 性能检查
 

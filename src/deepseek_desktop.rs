@@ -898,12 +898,50 @@ fn session_cache_root_for(home: &Path) -> PathBuf {
 /// `deepseek-harness` binaries ever take.
 pub const APP_BUNDLE: &str = "DeepSeek Harness.app";
 
-/// The one URL route the desktop shell serves: it brings the primary window
-/// forward, restoring a minimized window and recreating a closed one. Every
-/// other `dsh://` URL is ignored by the shell, and the frontend has no
-/// conversation-addressing URL of its own, so activating the application is the
-/// deepest focus a tray row can perform.
-pub const OPEN_URL: &str = "dsh://open";
+/// The one route that brings the desktop window forward without naming a
+/// conversation. Kept here because the focus path and the README both named it
+/// from this module before session routes existed; the scheme itself lives in
+/// [`crate::deepseek_jump`], which also owns the session-addressed route.
+pub const OPEN_URL: &str = crate::deepseek_jump::OPEN_URL;
+
+/// The install locations macOS searches for the desktop application, in order.
+///
+/// A copy installed by the user lives in `~/Applications`; the updater and the
+/// installer both write to `/Applications` when it is writable.
+pub fn installed_bundle() -> Option<PathBuf> {
+    let mut candidates = vec![Path::new("/Applications").join(APP_BUNDLE)];
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join("Applications").join(APP_BUNDLE));
+    }
+    candidates.into_iter().find(|path| path.exists())
+}
+
+/// The installed application's `CFBundleShortVersionString`.
+///
+/// Read from the bundle rather than from a running process: the tray decides
+/// which navigation routes to attempt before anything is clicked, and the app
+/// may not be running at all. An install that cannot be found or read reports no
+/// version, which every capability gate treats as "not supported".
+pub fn installed_version() -> Option<String> {
+    let plist = std::fs::read_to_string(installed_bundle()?.join("Contents/Info.plist")).ok()?;
+    plist_string(&plist, "CFBundleShortVersionString")
+}
+
+/// One `<string>` value of an XML property list.
+///
+/// The desktop application's `Info.plist` ships as UTF-8 XML, so the value is
+/// read without a plist parser or a helper process: the key's own `<key>` tag is
+/// located first, and the value is the next `<string>` after it. A binary plist
+/// (which this bundle does not use) yields `None` rather than a wrong answer.
+fn plist_string(plist: &str, key: &str) -> Option<String> {
+    let marker = format!("<key>{key}</key>");
+    let rest = &plist[plist.find(&marker)? + marker.len()..];
+    let open = rest.find("<string>")?;
+    let value = &rest[open + "<string>".len()..];
+    let close = value.find("</string>")?;
+    let value = value[..close].trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
 
 /// Whether a process the shared agent matcher could not name belongs to the
 /// DeepSeek Harness desktop application.

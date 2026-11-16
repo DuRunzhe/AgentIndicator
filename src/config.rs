@@ -53,6 +53,19 @@ pub struct Config {
     /// desktop application's conversations. Independent of
     /// [`Self::conversation_window`]: the two are configured separately.
     pub deepseek_desktop_window: String,
+    /// Whether the user said "not now" to the accessibility prompt the first time
+    /// a session jump could not reach the conversation.
+    ///
+    /// Asking once is help; asking every click is nagging. The flag is cleared
+    /// when the switch is turned on again, which is the moment the user is
+    /// deliberately re-enabling the feature.
+    pub deepseek_session_jump_prompt_dismissed: bool,
+    /// Whether clicking a DeepSeek Harness desktop row may target the
+    /// conversation itself, not just the window.
+    ///
+    /// A switch rather than a mode: the ladder always degrades on its own, so
+    /// turning this off is only ever "stop trying to reach the conversation".
+    pub deepseek_session_jump: bool,
 }
 
 impl Default for Config {
@@ -79,6 +92,8 @@ impl Default for Config {
             locale: "auto".into(),
             conversation_window: DEFAULT_CONVERSATION_WINDOW.into(),
             deepseek_desktop_window: DEFAULT_CONVERSATION_WINDOW.into(),
+            deepseek_session_jump: true,
+            deepseek_session_jump_prompt_dismissed: false,
         }
     }
 }
@@ -220,6 +235,45 @@ mod tests {
         let back: Config = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(back.conversation_window, "15m");
         assert_eq!(back.deepseek_desktop_window, "12h");
+    }
+
+    #[test]
+    fn the_session_jump_switch_defaults_on_and_round_trips() {
+        assert!(
+            Config::default().deepseek_session_jump,
+            "a fresh install must try the deepest destination it can reach"
+        );
+        // An older config file does not carry the key: missing means on, so an
+        // upgrade improves the click instead of silently keeping the old one.
+        let old: Config = serde_json::from_str(r#"{"show_usage":false}"#).expect("older config");
+        assert!(old.deepseek_session_jump);
+
+        let mut config = Config::default();
+        config.deepseek_session_jump = false;
+        let json = serde_json::to_string(&config).expect("serialise");
+        assert!(json.contains(r#""deepseek_session_jump":false"#), "{json}");
+        let back: Config = serde_json::from_str(&json).expect("deserialise");
+        assert!(!back.deepseek_session_jump);
+    }
+
+    #[test]
+    fn a_dismissed_prompt_is_remembered_and_older_configs_are_not_dismissed() {
+        assert!(
+            !Config::default().deepseek_session_jump_prompt_dismissed,
+            "a fresh install must be asked once"
+        );
+        let old: Config = serde_json::from_str(r#"{"show_usage":false}"#).expect("older config");
+        assert!(!old.deepseek_session_jump_prompt_dismissed);
+
+        let mut config = Config::default();
+        config.deepseek_session_jump_prompt_dismissed = true;
+        let json = serde_json::to_string(&config).expect("serialise");
+        assert!(
+            json.contains(r#""deepseek_session_jump_prompt_dismissed":true"#),
+            "{json}"
+        );
+        let back: Config = serde_json::from_str(&json).expect("deserialise");
+        assert!(back.deepseek_session_jump_prompt_dismissed);
     }
 
     #[test]

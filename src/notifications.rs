@@ -132,7 +132,13 @@ pub fn should_notify(instance: &AgentInstance, config: &crate::config::Config) -
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NotificationAction {
     FocusPid(u32),
-    FocusUrl { url: String, reuse_tabs: bool },
+    FocusUrl {
+        url: String,
+        reuse_tabs: bool,
+        /// The row's process, kept so a URL no platform rung can act on (a
+        /// DeepSeek session route outside macOS) still activates the window.
+        pid: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,6 +159,7 @@ impl NotificationRequest {
                 // This setting is applied by App just before delivery. The default
                 // keeps requests useful to non-UI callers and tests.
                 reuse_tabs: true,
+                pid: instance.pid,
             })
             .unwrap_or(NotificationAction::FocusPid(instance.pid));
         Self {
@@ -283,8 +290,56 @@ mod tests {
             NotificationAction::FocusUrl {
                 url: "http://127.0.0.1:3000".into(),
                 reuse_tabs: false,
+                pid: 10,
             }
         );
+    }
+
+    #[test]
+    fn a_session_route_reaches_the_notification_with_its_process() {
+        // A DeepSeek desktop conversation carries a session route rather than a
+        // page. The notification keeps both the address and the row's process:
+        // the route is what the ladder presses, the process is what a platform
+        // with no rung for it can still activate.
+        let request = NotificationRequest::from_instance(
+            &AgentInstance {
+                key: "desktop:session-a".into(),
+                kind: "DeepSeek Harness".into(),
+                label: "DeepSeek Harness (nita) · 同步代码".into(),
+                pid: 43958,
+                cwd: None,
+                state: AgentState::Waiting,
+                state_from_session: true,
+                uptime: Duration::ZERO,
+                model: None,
+                context: None,
+                open_url: Some(
+                    "dsh://session/session-a?title=%E5%90%8C%E6%AD%A5%E4%BB%A3%E7%A0%81&workspace=nita"
+                        .into(),
+                ),
+                automatic_confirmation_mode: false,
+                informational: false,
+                usage: None,
+            },
+            0,
+        )
+        .with_browser_tab_reuse(true);
+        let NotificationAction::FocusUrl {
+            url,
+            reuse_tabs,
+            pid,
+        } = request.action
+        else {
+            panic!("a session row must deliver its address");
+        };
+        assert!(crate::deepseek_jump::is_session_url(&url));
+        assert_eq!(pid, 43958);
+        // The tab setting belongs to the browser and must not be able to change
+        // how a scheme address is delivered.
+        assert!(reuse_tabs);
+        let target = crate::deepseek_jump::SessionTarget::parse(&url).expect("a session target");
+        assert_eq!(target.id, "session-a");
+        assert_eq!(target.workspace.as_deref(), Some("nita"));
     }
 
     #[test]

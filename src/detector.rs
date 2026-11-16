@@ -695,7 +695,7 @@ fn desktop_alert_row(
 /// 2. Everything else a CLI serves opens the web UI too when the window is *not*
 ///    running: the application cannot be activated, so its web UI is the only
 ///    destination the conversation has. While the window is open the same
-///    conversations belong to it and bring it forward.
+///    conversations belong to it, and the row addresses the conversation there.
 ///
 /// A driver reaches a conversation when it serves the whole profile — the `dsh
 /// web` server, which lists every workspace — or the conversation's own project.
@@ -703,8 +703,22 @@ fn desktop_alert_row(
 /// that serves no URL never wins the lookup.
 ///
 /// The web UI has no per-conversation route, so a destination is the UI, not one
-/// conversation inside it.
+/// conversation inside it. The desktop window does: a row the window owns carries
+/// the conversation's own route, which the jump ladder either hands to the app,
+/// presses in its sidebar, or resolves to the window alone.
 fn session_target(
+    session: &crate::deepseek_desktop::DesktopSession,
+    drivers: &[DeepSeekDriver],
+    host_running: bool,
+) -> Option<String> {
+    if let Some(url) = web_session_target(session, drivers, host_running) {
+        return Some(url);
+    }
+    host_running.then(|| crate::deepseek_jump::SessionTarget::route(session))
+}
+
+/// The web UI a CLI driver serves this conversation through, if any.
+fn web_session_target(
     session: &crate::deepseek_desktop::DesktopSession,
     drivers: &[DeepSeekDriver],
     host_running: bool,
@@ -1827,9 +1841,33 @@ fn claude_title(transcript: &Path) -> Option<String> {
 /// was recognized as, the profile it points at, the conversations read from that
 /// profile's projection cache, and what one scan of that cache costs.
 pub fn diagnose_deepseek_desktop() -> Value {
+    // Which rung a click can reach, so a report explains a click that only
+    // brought the window forward instead of leaving it to guesswork.
+    let capabilities = crate::deepseek_jump::Capabilities::probe();
+    let example_route = crate::deepseek_jump::SessionTarget {
+        id: "session-id".into(),
+        title: Some("conversation title".into()),
+        workspace: None,
+    }
+    .url();
+    let jump_rungs: Vec<&str> = crate::deepseek_jump::ladder(
+        &example_route,
+        crate::deepseek_jump::Options::default(),
+        capabilities,
+    )
+    .iter()
+    .map(|rung| rung.key())
+    .collect();
     let mut result = serde_json::json!({
         "sessionCacheRoot": crate::deepseek_desktop::session_cache_root()
             .map(|path| path.display().to_string()),
+        "installedVersion": crate::deepseek_desktop::installed_version(),
+        "sessionJump": {
+            "nativeRoute": capabilities.native_route,
+            "accessibility": capabilities.accessibility,
+            // Deepest first: the rungs a click would actually try.
+            "rungs": jump_rungs,
+        },
         "hosts": [],
         "processes": [],
         "sessions": [],
@@ -2624,9 +2662,23 @@ mod tests {
             Some("http://127.0.0.1:3080/")
         );
 
-        // Another conversation belongs to the window while it is open…
+        // Another conversation belongs to the window while it is open, so the
+        // row addresses the conversation itself: the ladder decides whether that
+        // route, the sidebar or only the window is reachable.
         let other = desktop_session("session-other", AgentState::Ready);
-        assert_eq!(session_target(&other, &drivers, true), None);
+        let route = session_target(&other, &drivers, true).expect("a session route");
+        assert!(
+            crate::deepseek_jump::is_session_url(&route),
+            "the window-owned row must address its conversation: {route}"
+        );
+        assert!(route.contains("session-other"), "{route}");
+        // The route carries the workspace the sidebar groups the conversation
+        // under, which is what tells two same-titled conversations apart.
+        assert!(route.contains("workspace=nita"), "{route}");
+        assert_eq!(
+            crate::deepseek_jump::SessionTarget::parse(&route).map(|target| target.id),
+            Some("session-other".into())
+        );
         // …and to the web UI when it is not, because the window cannot be
         // activated and that UI is the only destination left.
         assert_eq!(
@@ -2642,8 +2694,10 @@ mod tests {
             Some("http://127.0.0.1:3080/")
         );
 
-        // No CLI serving a destination: the window is the only place to go.
-        assert_eq!(session_target(&session, &[], true), None);
+        // No CLI serving a destination: the window is the only place to go, so a
+        // running window means a session route and no window means nowhere.
+        assert!(session_target(&session, &[], true)
+            .is_some_and(|route| crate::deepseek_jump::is_session_url(&route)));
         assert_eq!(session_target(&session, &[], false), None);
         // A CLI with no listening address cannot be navigated to either. A
         // terminal CLI is scoped to its own project and still offers no URL.
@@ -2652,7 +2706,8 @@ mod tests {
             web_url: None,
             driven: Some("session-driven".into()),
         }];
-        assert_eq!(session_target(&session, &silent, true), None);
+        assert!(session_target(&session, &silent, true)
+            .is_some_and(|route| crate::deepseek_jump::is_session_url(&route)));
         assert_eq!(session_target(&session, &silent, false), None);
     }
 

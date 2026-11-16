@@ -4,7 +4,10 @@ mod claude_statusline;
 mod codex_state;
 mod config;
 mod deepseek;
+#[cfg(target_os = "macos")]
+mod deepseek_ax;
 mod deepseek_desktop;
+mod deepseek_jump;
 mod detector;
 mod dialog;
 mod focus;
@@ -349,6 +352,10 @@ struct App {
     notifications: NotificationTracker,
     notification_service: NotificationService,
     notification_action_rx: Receiver<NotificationAction>,
+    /// Answers from the accessibility prompt a click can raise, applied on the
+    /// UI thread because they change persisted config.
+    jump_prompt_tx: Sender<JumpPromptAnswer>,
+    jump_prompt_rx: Receiver<JumpPromptAnswer>,
     notification_permission_tx: Sender<bool>,
     notification_permission_rx: Receiver<bool>,
     pending_notification_test: bool,
@@ -368,6 +375,16 @@ struct App {
     update_rx: Option<Receiver<update::Message>>,
     pending_update: Option<String>,
     restart_target: Option<PathBuf>,
+}
+
+/// What the user answered when a session jump could not reach the conversation
+/// because the accessibility grant is missing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JumpPromptAnswer {
+    /// They went to the settings pane; nothing to remember.
+    Opened,
+    /// They said "not now": ask once, never again until they re-enable the switch.
+    Dismissed,
 }
 
 enum UserEvent {
@@ -521,11 +538,21 @@ impl App {
     ) -> Self {
         let config = Config::load();
         i18n::set_locale(&config.locale);
+        // The session-jump permission belongs to the user, and the app cannot
+        // grant it: ask the first time the tray runs without it, so the system
+        // itself puts this application in the Accessibility list and opens the
+        // pane that shows it. macOS asks at most once per signature, so this is
+        // not a nag.
+        #[cfg(target_os = "macos")]
+        if config.deepseek_session_jump && !crate::deepseek_ax::authorized() {
+            let _ = crate::deepseek_ax::request_authorization();
+        }
         let usage = usage::Worker::spawn(config.usage_period(), move || {
             let _ = usage_proxy.send_event(UserEvent::Usage);
         });
         let (action_tx, action_rx) = unbounded();
         let (notification_action_tx, notification_action_rx) = unbounded();
+        let (jump_prompt_tx, jump_prompt_rx) = unbounded();
         let (notification_permission_tx, notification_permission_rx) = unbounded();
         Self {
             _instance_lock: instance_lock,
@@ -540,6 +567,8 @@ impl App {
             notifications: NotificationTracker::default(),
             notification_service: NotificationService::new(notification_action_tx),
             notification_action_rx,
+            jump_prompt_tx,
+            jump_prompt_rx,
             notification_permission_tx,
             notification_permission_rx,
             pending_notification_test: false,
@@ -883,13 +912,57 @@ impl App {
             ));
         }
         let _ = settings.append(&conversation_menu);
-        let deepseek_menu = Submenu::new(i18n::menu("deepseek_window"), true);
+        // Everything about DeepSeek Harness lives under one group: the range that
+        // decides which conversations get a row, the switch that decides how deep
+        // a click reaches, and the system permission that switch depends on. The
+        // range stays a submenu so the group does not open as a list of five
+        // durations beside three unrelated rows.
+        let deepseek_menu = Submenu::new(i18n::menu("deepseek"), true);
+        let deepseek_range = Submenu::new(i18n::menu("deepseek_window"), true);
         for (key, _) in config::CONVERSATION_WINDOWS {
-            let _ = deepseek_menu.append(&IconMenuItem::with_id(
+            let _ = deepseek_range.append(&IconMenuItem::with_id(
                 format!("deepseek_window:{key}"),
                 i18n::conversation_window_label(key),
                 true,
                 menu_toggle_icon(self.config.deepseek_desktop_window == key),
+                None,
+            ));
+        }
+        let _ = deepseek_menu.append(&deepseek_range);
+        let _ = deepseek_menu.append(&PredefinedMenuItem::separator());
+        let session_jump = IconMenuItem::with_id(
+            "session_jump",
+            session_jump_label(self.config.deepseek_session_jump),
+            true,
+            menu_toggle_icon(self.config.deepseek_session_jump),
+            None,
+        );
+        let _ = deepseek_menu.append(&session_jump);
+        // The permission is the only part the app cannot grant itself. One row
+        // carries both jobs: it states what is missing and performs the ask, and
+        // when the grant exists it stays as the plain way back to that pane —
+        // a row that vanished after granting left the user with no way to find
+        // the setting again.
+        let capabilities = crate::deepseek_jump::Capabilities::probe();
+        if cfg!(target_os = "macos") {
+            let label = if !capabilities.accessibility && self.config.deepseek_session_jump {
+                i18n::text("accessibility_permission")
+            } else {
+                i18n::text("accessibility_settings")
+            };
+            let _ = deepseek_menu.append(&MenuItem::with_id(
+                "open_accessibility_settings",
+                label,
+                true,
+                None,
+            ));
+            // Verifying the feature must not need a log file or a second pair of
+            // eyes: one row runs the real ladder against a live conversation and
+            // says which rung it reached.
+            let _ = deepseek_menu.append(&MenuItem::with_id(
+                "test_session_jump",
+                i18n::text("test_session_jump"),
+                self.config.deepseek_session_jump,
                 None,
             ));
         }
@@ -1009,6 +1082,15 @@ fn startup_action_label(enabled: bool) -> &'static str {
     }
 }
 
+/// The DeepSeek session-jump row: the row's label names what clicking it does.
+fn session_jump_label(enabled: bool) -> &'static str {
+    if enabled {
+        i18n::text("disable_session_jump")
+    } else {
+        i18n::text("enable_session_jump")
+    }
+}
+
 fn browser_tab_action_label(enabled: bool) -> &'static str {
     if enabled {
         i18n::text("disable_browser_tabs")
@@ -1052,15 +1134,33 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop.exit();
             return;
         }
+        let jump = crate::deepseek_jump::Options::from_config(&self.config);
         while let Ok(action) = self.notification_action_rx.try_recv() {
             thread::spawn(move || match action {
                 NotificationAction::FocusPid(pid) => {
                     let _ = focus::focus(pid);
                 }
-                NotificationAction::FocusUrl { url, reuse_tabs } => {
-                    let _ = web::focus_url(&url, reuse_tabs);
+                NotificationAction::FocusUrl {
+                    url,
+                    reuse_tabs,
+                    pid,
+                } => {
+                    open_target(&url, reuse_tabs, jump, pid);
                 }
             });
+        }
+        while let Ok(answer) = self.jump_prompt_rx.try_recv() {
+            match answer {
+                JumpPromptAnswer::Dismissed => {
+                    self.config.deepseek_session_jump_prompt_dismissed = true;
+                    self.config.save();
+                    self.menu = None;
+                    self.rebuild();
+                }
+                // Nothing to persist: the grant itself changes what the menu and
+                // the next click can do.
+                JumpPromptAnswer::Opened => {}
+            }
         }
         while let Ok(granted) = self.notification_permission_rx.try_recv() {
             self.config.notifications_enabled = granted;
@@ -1203,6 +1303,34 @@ impl ApplicationHandler<UserEvent> for App {
                 thread::spawn(notification_settings::open_settings);
             } else if id == "open_automation_settings" {
                 thread::spawn(browser_tabs::open_automation_settings);
+            } else if id == "session_jump" {
+                self.config.deepseek_session_jump = !self.config.deepseek_session_jump;
+                if self.config.deepseek_session_jump {
+                    // Turning the feature back on is a fresh intent, so a "not
+                    // now" from an earlier run no longer applies.
+                    self.config.deepseek_session_jump_prompt_dismissed = false;
+                }
+                self.config.save();
+                self.menu = None;
+                self.rebuild();
+            } else if id == "open_accessibility_settings" {
+                thread::spawn(open_accessibility_settings);
+            } else if id == "test_session_jump" {
+                if let Some(url) = self.jump_test_target() {
+                    let options = crate::deepseek_jump::Options::from_config(&self.config);
+                    thread::spawn(move || match crate::deepseek_jump::open(&url, options) {
+                        outcome if outcome.route != crate::deepseek_jump::Route::Window => {
+                            dialog::notice(
+                                i18n::text("session_jump_ok"),
+                                i18n::text("test_session_jump"),
+                            )
+                        }
+                        _ => dialog::notice(
+                            i18n::text("session_jump_failed"),
+                            i18n::text("test_session_jump"),
+                        ),
+                    });
+                }
             } else if id == "refresh" {
                 let _ = self.refresh_tx.try_send(WorkerCommand::Refresh);
             } else if id == "restart_detector" {
@@ -1258,11 +1386,43 @@ impl ApplicationHandler<UserEvent> for App {
                     .map(|instance| (instance.open_url.clone(), instance.pid));
                 if let Some((web_url, pid)) = target {
                     let reuse_tabs = self.config.browser_tab_reuse;
+                    let jump = crate::deepseek_jump::Options::from_config(&self.config);
+                    let session_url = web_url
+                        .as_deref()
+                        .is_some_and(crate::deepseek_jump::is_session_url);
+                    let ask = should_ask_for_accessibility(
+                        session_url,
+                        self.config.deepseek_session_jump,
+                        self.config.deepseek_session_jump_prompt_dismissed,
+                        crate::deepseek_jump::Capabilities::probe().accessibility,
+                    );
+                    let prompt_tx = self.jump_prompt_tx.clone();
                     thread::spawn(move || {
-                        if let Some(url) = web_url {
-                            let _ = web::focus_url(&url, reuse_tabs);
-                        } else {
-                            let _ = focus::focus(pid);
+                        // A jump that silently only opens the window reads as a
+                        // broken feature, so the first one explains itself and
+                        // offers the fix right there. Either answer still performs
+                        // the click, which is why the jump runs last.
+                        if ask {
+                            let go = i18n::text("go_to_settings");
+                            let answer = dialog::choose(
+                                i18n::text("session_jump_ask"),
+                                i18n::menu("deepseek"),
+                                &[i18n::text("not_yet"), go],
+                                go,
+                                Some(i18n::text("not_yet")),
+                            );
+                            if answer.as_deref() == Some(go) {
+                                let _ = open_accessibility_settings();
+                                let _ = prompt_tx.send(JumpPromptAnswer::Opened);
+                            } else {
+                                let _ = prompt_tx.send(JumpPromptAnswer::Dismissed);
+                            }
+                        }
+                        match web_url {
+                            Some(url) => open_target(&url, reuse_tabs, jump, pid),
+                            None => {
+                                let _ = focus::focus(pid);
+                            }
                         }
                     });
                 }
@@ -1853,6 +2013,90 @@ fn usage_period_row(candidate: usage::Period, selected: bool, spinner: Option<us
         _ => "○",
     };
     format!("{mark} {}", candidate.label())
+}
+
+/// Open the destination a row carries.
+///
+/// A DeepSeek Harness address walks the session ladder, which decides for itself
+/// whether the conversation, the sidebar or only the window is reachable; every
+/// other address is a web page or another application's deep link and keeps its
+/// own behaviour.
+fn open_target(url: &str, reuse_tabs: bool, options: crate::deepseek_jump::Options, pid: u32) {
+    if url.starts_with("dsh://") {
+        let outcome = crate::deepseek_jump::open(url, options);
+        if !outcome.delivered {
+            // No rung could act on this address here, which is the normal state
+            // outside macOS: activating the application the row belongs to is
+            // what a click did before session routes existed.
+            let _ = focus::focus(pid);
+        }
+        return;
+    }
+    let _ = web::focus_url(url, reuse_tabs);
+}
+
+impl App {
+    /// A conversation the self-test can jump to.
+    ///
+    /// The most interesting row is one the user is already watching — a
+    /// conversation mid-turn or waiting for them — and any desktop conversation
+    /// will do when none is: the test only needs a session address.
+    fn jump_test_target(&self) -> Option<String> {
+        use crate::model::AgentState;
+        let candidates: Vec<&AgentInstance> = self
+            .current
+            .iter()
+            .filter(|instance| {
+                instance
+                    .open_url
+                    .as_deref()
+                    .is_some_and(crate::deepseek_jump::is_session_url)
+            })
+            .collect();
+        candidates
+            .iter()
+            .find(|instance| {
+                matches!(
+                    instance.state,
+                    AgentState::Working | AgentState::Waiting | AgentState::WaitingReply
+                )
+            })
+            .or_else(|| candidates.first())
+            .and_then(|instance| instance.open_url.clone())
+    }
+}
+
+/// Whether a click should ask for the accessibility grant.
+///
+/// Asked only when the jump could actually profit from it: the switch is on, the
+/// address is a conversation, the grant is missing, and the user has not already
+/// declined. Pure so the rule can be tested without a TCC prompt.
+fn should_ask_for_accessibility(
+    is_session: bool,
+    session_level: bool,
+    dismissed: bool,
+    authorized: bool,
+) -> bool {
+    cfg!(target_os = "macos") && is_session && session_level && !authorized && !dismissed
+}
+
+/// Ask for the accessibility permission and land the user on the pane that lists
+/// this application, which is the one place the grant can be given.
+fn open_accessibility_settings() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // The system prompt is what adds this application to the list, so asking
+        // first means the pane already names it when it opens.
+        let _ = crate::deepseek_ax::request_authorization();
+        return std::process::Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .status()
+            .is_ok_and(|status| status.success());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 /// The submenu title at rest: the period it echoes.

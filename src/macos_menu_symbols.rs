@@ -8,8 +8,8 @@
 use crate::{
     browser_tab_action_label, claude_action_label, claude_statusline,
     config::{Config, CONVERSATION_WINDOWS},
-    display_settings, i18n, notification_action_label, notification_preferences, startup,
-    startup_action_label, toggle_label, Cell, CellStyle,
+    display_settings, i18n, notification_action_label, notification_preferences,
+    session_jump_label, startup, startup_action_label, toggle_label, Cell, CellStyle,
 };
 use objc2::MainThreadMarker;
 use objc2::{rc::Retained, runtime::AnyObject, AnyThread};
@@ -250,6 +250,7 @@ struct SettingsSignature {
     locale: String,
     conversation_window: String,
     deepseek_desktop_window: String,
+    deepseek_session_jump: bool,
 }
 
 impl SymbolCache {
@@ -327,6 +328,7 @@ impl SettingsSignature {
             locale: config.locale.clone(),
             conversation_window: config.conversation_window.clone(),
             deepseek_desktop_window: config.deepseek_desktop_window.clone(),
+            deepseek_session_jump: config.deepseek_session_jump,
         }
     }
 }
@@ -383,7 +385,10 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
     let language_owner = i18n::menu("language");
     let display_owner = i18n::menu("display");
     let hosted_owner = i18n::menu("chatgpt_window");
-    let deepseek_owner = i18n::menu("deepseek_window");
+    // The DeepSeek Harness group holds the range submenu plus the jump switch, so
+    // the product group and the range inside it are separate owners now.
+    let deepseek_owner = i18n::menu("deepseek");
+    let deepseek_range_owner = i18n::menu("deepseek_window");
 
     add(&mut symbols, "", settings_owner.into(), "gearshape", None);
     // Submenu titles are rows of their parent, so each one is owned by the
@@ -416,10 +421,19 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
         "clock.arrow.circlepath",
         None,
     );
+    // The group is the desktop application's own settings: a sparkle marks it as
+    // the AI-application group rather than a capability of this tray.
     add(
         &mut symbols,
         settings_owner,
         deepseek_owner.into(),
+        "sparkles",
+        None,
+    );
+    add(
+        &mut symbols,
+        deepseek_owner,
+        deepseek_range_owner.into(),
         "clock.arrow.circlepath",
         None,
     );
@@ -571,12 +585,44 @@ fn menu_symbols(config: &Config) -> HashMap<SymbolTarget, SymbolKey> {
         let (name, color) = toggle_symbol(config.deepseek_desktop_window == key);
         add(
             &mut symbols,
-            deepseek_owner,
+            deepseek_range_owner,
             i18n::conversation_window_label(key).into(),
             name,
             color,
         );
     }
+    // The switch reads like every other switch in this menu; the permission row
+    // only exists while the grant is missing, so its symbol is the hand that asks
+    // for it, in the action colour the other "open settings" rows use.
+    let (name, color) = toggle_symbol(config.deepseek_session_jump);
+    add(
+        &mut symbols,
+        deepseek_owner,
+        session_jump_label(config.deepseek_session_jump).into(),
+        name,
+        color,
+    );
+    // The row reads as an action when granted and as a warning when not, so both
+    // labels carry the same symbol and only the wording changes.
+    for label in [
+        i18n::text("accessibility_permission"),
+        i18n::text("accessibility_settings"),
+    ] {
+        add(
+            &mut symbols,
+            deepseek_owner,
+            label.into(),
+            "hand.raised",
+            Some([0, 122, 255]),
+        );
+    }
+    add(
+        &mut symbols,
+        deepseek_owner,
+        i18n::text("test_session_jump").into(),
+        "play.circle",
+        None,
+    );
     // The period selector is a submenu; a calendar marks it as the date-range
     // control and hints that it opens more than one choice. The title carries a
     // spinner while a scan runs, so every frame is registered too.
@@ -681,6 +727,39 @@ mod tests {
     /// two range submenus (which used a different helper) kept their icons and
     /// every other nested row silently lost its check mark or header symbol.
     #[test]
+    fn the_session_jump_row_tracks_the_switch() {
+        let deepseek = i18n::menu("deepseek");
+        for enabled in [true, false] {
+            let config = Config {
+                deepseek_session_jump: enabled,
+                ..Default::default()
+            };
+            let symbols = menu_symbols(&config);
+            let symbol = symbols
+                .get(&SymbolTarget {
+                    owner: deepseek.to_owned(),
+                    item: session_jump_label(enabled).to_owned(),
+                })
+                .map(|symbol| symbol.name);
+            assert_eq!(
+                symbol,
+                Some(if enabled {
+                    "checkmark.circle.fill"
+                } else {
+                    "circle"
+                })
+            );
+            // The label itself must change with the switch, or the row would
+            // describe the wrong action after a toggle.
+            assert_ne!(
+                session_jump_label(true),
+                session_jump_label(false),
+                "the row names the action it performs"
+            );
+        }
+    }
+
+    #[test]
     fn every_settings_row_is_keyed_by_its_owning_submenu() {
         let config = Config::default();
         let symbols = menu_symbols(&config);
@@ -703,11 +782,30 @@ mod tests {
             i18n::menu("notifications"),
             i18n::menu("browser"),
             i18n::menu("chatgpt_window"),
-            i18n::menu("deepseek_window"),
+            i18n::menu("deepseek"),
             i18n::menu("language"),
             i18n::menu("display"),
         ] {
             assert_keyed(settings, owner);
+        }
+
+        // The DeepSeek group owns the range submenu and its own rows; the range
+        // submenu in turn owns the five durations.
+        assert_keyed(i18n::menu("deepseek"), i18n::menu("deepseek_window"));
+        assert_keyed(
+            i18n::menu("deepseek"),
+            session_jump_label(config.deepseek_session_jump),
+        );
+        assert_keyed(
+            i18n::menu("deepseek"),
+            i18n::text("accessibility_permission"),
+        );
+        assert_keyed(i18n::menu("deepseek"), i18n::text("accessibility_settings"));
+        for (key, _) in CONVERSATION_WINDOWS {
+            assert_keyed(
+                i18n::menu("deepseek_window"),
+                i18n::conversation_window_label(key),
+            );
         }
 
         // Rows nested one level deeper, owned by their own submenu.
