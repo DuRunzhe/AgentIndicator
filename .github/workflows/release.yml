@@ -73,14 +73,14 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
 
   # Assemble one cross-platform npm tarball from every build and publish it.
-  # Only runs when an NPM_TOKEN secret is configured (automation token with
-  # bypass-2FA; see npmjs.com -> Access Tokens).
+  # Needs an NPM_TOKEN secret (automation token with bypass-2FA; see
+  # npmjs.com -> Access Tokens). A missing token fails the job: skipping the
+  # publish step silently would leave the tag published on GitHub but absent
+  # from npm, and report the release as green.
   publish-npm:
     name: publish npm package
     needs: [build, macos-notarize]
     runs-on: ubuntu-latest
-    env:
-      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -114,11 +114,14 @@ jobs:
           chmod +x bin/*/agent-status-indicator 2>/dev/null || true
           ls -R bin
       - name: Publish to npm
-        if: env.HAS_NPM_TOKEN != ''
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::NPM_TOKEN is not configured, so $GITHUB_REF_NAME cannot be published to npm."
+            exit 1
+          fi
           printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > ~/.npmrc
           mkdir -p dist
           npm pack --pack-destination dist
