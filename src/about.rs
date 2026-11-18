@@ -69,10 +69,36 @@ pub fn open() -> Option<AboutPanel> {
     {
         macos::open()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_about();
+        None
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "linux")))]
     {
         None
     }
+}
+
+/// Linux 没有 `NSWindow` 等价物，用 zenity/kdialog 弹一个文本版关于窗口：
+/// 版本、描述、仓库/问题/发布链接与版权。不含更新按钮——更新请重跑安装脚本
+/// 或访问 releases 页面。
+#[cfg(target_os = "linux")]
+fn linux_about() {
+    let repository = env!("CARGO_PKG_REPOSITORY");
+    let body = format!(
+        "AgentStatusIndicator v{}\n\n{}\n\n{}: {}\n{}: {}/issues\n{}: {}/releases\n\n{}",
+        env!("CARGO_PKG_VERSION"),
+        crate::i18n::text("about_desc"),
+        crate::i18n::text("about_link_home"),
+        repository,
+        crate::i18n::text("about_link_issues"),
+        repository,
+        crate::i18n::text("about_link_releases"),
+        repository,
+        crate::i18n::text("about_copyright"),
+    );
+    crate::dialog::notice(&body, crate::i18n::menu("about"));
 }
 
 /// Human-readable status text for a progress stage.
