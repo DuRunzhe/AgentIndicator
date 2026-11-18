@@ -8,6 +8,16 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.46-alpha.1] - 2026-11-18
+
+### Added
+
+- Install or remove xdg-utils from the settings menu
+
+### Fixed
+
+- Keep dialog text in the log when no dialog backend is installed
+
 ## [0.2.44-alpha.1] - 2026-11-18
 
 ### Added
