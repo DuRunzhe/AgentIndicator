@@ -90,7 +90,16 @@ fn install() -> std::io::Result<()> {
     );
     #[cfg(target_os = "linux")]
     let content = format!(
-        "[Desktop Entry]\nType=Application\nName=AgentStatusIndicator\nExec={}\nX-GNOME-Autostart-enabled=true\n",
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=AgentStatusIndicator\n\
+         Comment=Native tray monitor for AI coding agents\n\
+         Exec={}\n\
+         Icon=agent-status-indicator\n\
+         Terminal=false\n\
+         Categories=Utility;\n\
+         StartupNotify=false\n\
+         X-GNOME-Autostart-enabled=true\n",
         desktop_escape(&executable.to_string_lossy())
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
