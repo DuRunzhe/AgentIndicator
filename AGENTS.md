@@ -8,9 +8,13 @@ Project-specific rules for AI coding agents. Architecture: `README.md`. Manual t
 cargo test                          # required; CI runs `cargo test --locked` on macOS, Linux and Windows
 cargo fmt                           # keep the tree rustfmt-clean
 bash scripts/build-release.sh       # release build (remaps the local path)
-cargo run --release                 # run the tray
 cargo run --release -- --diagnose   # probe without the tray
+cargo run --release                 # run the tray on Linux; on macOS use the .app below
 bash scripts/package-macos-app.sh   # build the .app (ad-hoc signed unless ASI_SIGN_IDENTITY is set)
+open app/darwin-arm64/AgentStatusIndicator.app
+                                    # macOS: the only way to run the tray. A bare binary has
+                                    # no bundle, so UNUserNotificationCenter throws
+                                    # "bundleProxyForCurrentProcess is nil" at startup.
 ```
 
 ## Platforms
