@@ -28,6 +28,7 @@ mod terminal;
 mod update;
 mod usage;
 mod web;
+mod xdg_utils;
 
 use anyhow::Result;
 use config::Config;
@@ -396,6 +397,12 @@ enum ActionResult {
         uninstall: bool,
         result: Result<(), String>,
     },
+    /// Linux only: the xdg-utils row finished (or failed) behind the menu.
+    #[cfg(target_os = "linux")]
+    XdgUtils {
+        uninstall: bool,
+        result: Result<(), xdg_utils::Failure>,
+    },
     Finished,
 }
 
@@ -441,6 +448,10 @@ struct MenuView {
     display: Vec<IconMenuItem>,
     browser_tabs: IconMenuItem,
     claude_statusline: IconMenuItem,
+    /// Linux only: the row that installs or removes `xdg-utils`, the one
+    /// runtime dependency the installer cannot check for itself.
+    #[cfg(target_os = "linux")]
+    xdg_utils: MenuItem,
     /// The state each row of [`Self::icon_items`] was last drawn with. A row
     /// only gets a new icon when its setting actually changed: every icon
     /// handed to the native menu is a fresh bitmap, and re-rasterising all of
@@ -722,6 +733,14 @@ impl App {
             menu.claude_statusline
                 .set_text(claude_action_label(claude_installed));
             menu.claude_statusline.set_enabled(!self.action_busy);
+            // The dependency is queried on every refresh: it can appear or
+            // vanish outside the app (a package manager run in a terminal).
+            #[cfg(target_os = "linux")]
+            {
+                menu.xdg_utils
+                    .set_text(xdg_utils::action_label(xdg_utils::is_installed()));
+                menu.xdg_utils.set_enabled(!self.action_busy);
+            }
             menu.startup.set_enabled(!self.action_busy);
             for (item, (key, label)) in menu.display.iter().zip(display_settings()) {
                 item.set_text(toggle_label(config_value(&self.config, key), label));
@@ -879,6 +898,20 @@ impl App {
             None,
         );
         let _ = settings.append(&claude_statusline);
+        // Linux only: one runtime dependency the app cannot ship itself. The
+        // row lives beside the other rows that change the system, and flips
+        // between install and uninstall exactly like the collector row above.
+        #[cfg(target_os = "linux")]
+        let xdg_utils = {
+            let item = MenuItem::with_id(
+                "xdg_utils",
+                xdg_utils::action_label(xdg_utils::is_installed()),
+                !self.action_busy,
+                None,
+            );
+            let _ = settings.append(&item);
+            item
+        };
         // Two independent ranges: the hosted (ChatGPT) conversations and the
         // DeepSeek Harness desktop conversations have different lifetimes, so
         // one setting cannot serve both.
@@ -1017,6 +1050,8 @@ impl App {
             display: display_items,
             browser_tabs,
             claude_statusline,
+            #[cfg(target_os = "linux")]
+            xdg_utils,
             icon_states,
         }
     }
@@ -1150,6 +1185,22 @@ impl ApplicationHandler<UserEvent> for App {
                 self.config.browser_tab_reuse = enabled;
                 self.config.save();
             }
+            #[cfg(target_os = "linux")]
+            if let ActionResult::XdgUtils { uninstall, result } = &result {
+                match (uninstall, result) {
+                    (false, Ok(())) => dialog::notice(
+                        i18n::text("xdg_install_done"),
+                        i18n::text("install_xdg_utils"),
+                    ),
+                    (true, Ok(())) => dialog::notice(
+                        i18n::text("xdg_uninstall_done"),
+                        i18n::text("uninstall_xdg_utils"),
+                    ),
+                    (_, Err(failure)) => {
+                        dialog::notice(&xdg_utils::failure_text(failure), i18n::menu("settings"))
+                    }
+                }
+            }
             if let ActionResult::ClaudeStatusLine { uninstall, result } = result {
                 match (uninstall, result) {
                     (true, Ok(())) => dialog::notice(
@@ -1265,6 +1316,9 @@ impl ApplicationHandler<UserEvent> for App {
                     };
                     let _ = tx.send(ActionResult::ClaudeStatusLine { uninstall, result });
                 });
+            } else if id == "xdg_utils" {
+                #[cfg(target_os = "linux")]
+                self.toggle_xdg_utils();
             } else if id == "open_login_settings" {
                 thread::spawn(startup::open_settings);
             } else if id == "open_notification_settings" {
@@ -1407,6 +1461,51 @@ impl ApplicationHandler<UserEvent> for App {
 }
 
 impl App {
+    /// Install or remove the Linux runtime dependency.
+    ///
+    /// It runs the package manager, so it needs root: the row asks first (the
+    /// action changes the system outside the app), then hands the work to a
+    /// thread so the tray keeps drawing while apt/dnf works.
+    #[cfg(target_os = "linux")]
+    fn toggle_xdg_utils(&mut self) {
+        if self.action_busy {
+            return;
+        }
+        let uninstall = xdg_utils::is_installed();
+        let title = xdg_utils::action_label(uninstall);
+        let confirm = if uninstall {
+            i18n::text("uninstall")
+        } else {
+            i18n::text("install")
+        };
+        let prompt = if uninstall {
+            i18n::text("xdg_uninstall_prompt")
+        } else {
+            i18n::text("xdg_install_prompt")
+        };
+        let choice = dialog::choose(
+            prompt,
+            title,
+            &[i18n::text("cancel"), confirm],
+            confirm,
+            Some(i18n::text("cancel")),
+        );
+        if choice.as_deref() != Some(confirm) {
+            return;
+        }
+        self.action_busy = true;
+        self.rebuild();
+        let tx = self.action_tx.clone();
+        thread::spawn(move || {
+            let result = if uninstall {
+                xdg_utils::uninstall()
+            } else {
+                xdg_utils::install()
+            };
+            let _ = tx.send(ActionResult::XdgUtils { uninstall, result });
+        });
+    }
+
     /// Take the newest status snapshot, notify on what needs attention, and
     /// redraw the menu.
     fn apply_scan(&mut self) {
