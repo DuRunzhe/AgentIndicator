@@ -30,7 +30,7 @@
 
 ## 安装
 
-当前已发布 **v0.2.41**：macOS arm64 为 Developer ID 签名 + 公证的应用包，x86_64 macOS、Windows、Linux 的二进制与 npm 包由 [release workflow](.github/workflows/release.yml) 一并产出。
+当前已发布 **v0.2.41**：macOS arm64 为 Developer ID 签名 + 公证的应用包，x86_64 macOS、Windows 以及 Linux（x86_64 / ARM64 两种主流架构）的二进制与 npm 包由 [release workflow](.github/workflows/release.yml) 一并产出。
 
 ### curl（macOS / Linux）
 
@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 
 - **macOS（Apple Silicon）**：无需手动处理。安装脚本会自动下载公证的 `.app` 并装入 `/Applications`（不可写时回退 `~/Applications`），之后可从启动台（Launchpad）或 `open -a AgentStatusIndicator` 启动，不会被 Gatekeeper 拦截；命令行二进制则装入 `${PREFIX:-$HOME/.local}/bin`。
 - **macOS（x86_64）**：该架构目前未随 Release 发布公证 `.app`，此方式只安装命令行二进制；需要应用包请改用 npm / Bun 渠道。
-- **Linux**：无需手动处理。安装脚本已自动写入桌面入口 `$XDG_DATA_HOME`（默认 `~/.local/share`）下的 `applications/agent-status-indicator.desktop` 与 `icons/hicolor/…` 图标；桌面环境支持 AppIndicator/StatusNotifier 即可从应用列表启动。
+- **Linux**：无需手动处理。安装脚本按 `uname -m` 选择产物，x86_64 与 ARM64（aarch64）均有官方二进制；脚本还会自动写入桌面入口 `$XDG_DATA_HOME`（默认 `~/.local/share`）下的 `applications/agent-status-indicator.desktop` 与 `icons/hicolor/…` 图标；桌面环境支持 AppIndicator/StatusNotifier 即可从应用列表启动。
 
 ### npm（跨平台）
 
@@ -93,9 +93,10 @@ $lnk.TargetPath = $exe
 $lnk.Save()
 ```
 
-**Linux**：写入桌面入口（桌面环境需支持 AppIndicator/StatusNotifier）。
+**Linux**：写入桌面入口（桌面环境需支持 AppIndicator/StatusNotifier）。目录名按架构区分：x86_64 为 `linux-x64`，ARM64（aarch64）为 `linux-arm64`。
 
 ```bash
+# ARM64 机器请把 linux-x64 换成 linux-arm64
 BIN="$(npm root -g)/agent-status-indicator/bin/linux-x64/agent-status-indicator"
 mkdir -p ~/.local/share/applications
 cat > ~/.local/share/applications/agent-status-indicator.desktop <<EOF
@@ -144,6 +145,7 @@ $lnk.Save()
 **Linux**：
 
 ```bash
+# ARM64 机器请把 linux-x64 换成 linux-arm64
 BIN="$(bun pm root -g)/agent-status-indicator/bin/linux-x64/agent-status-indicator"
 mkdir -p ~/.local/share/applications
 cat > ~/.local/share/applications/agent-status-indicator.desktop <<EOF
@@ -157,7 +159,9 @@ Categories=Utility;
 EOF
 ```
 
-### Homebrew（macOS）
+### Homebrew（macOS / Linux）
+
+本项目同时支持 Homebrew on Linux（x86_64 与 ARM64）。macOS 与 Linux 各自按架构取对应的 Release 产物；Linux 下公式会自动安装 `libayatana-appindicator`（带 GTK3 依赖），因为托盘后端在运行时加载该库。Linux 产物基于 Ubuntu 24.04 构建，需要 glibc 2.39+（Ubuntu 24.04+、Debian 13+ 等）。
 
 本项目的 Homebrew tap 就是源码仓库本身，`Formula/agent-status-indicator.rb` 随版本一起提交在这里。Homebrew 7 起第三方 tap 必须先信任一次才能加载其中的公式（记录在 `~/.homebrew/trust.json`，可用 `brew untrust DuRunzhe/agentindicator` 撤销），所以第一次安装要先把本仓库注册为 tap 并信任：
 
@@ -193,6 +197,8 @@ Homebrew tap 只安装**命令行二进制**（真实位置 `$(brew --prefix)/op
   ```
 
 - 确实需要在 Launchpad / Spotlight 中出现的 `.app`：请改用 npm 或 Bun 方式安装（内含公证的 `.app`），Homebrew 方式卸载即可，不必两种都装。
+
+**Linux**：brew 安装不写桌面入口。请在桌面会话内直接运行 `agent-status-indicator`，或用应用“设置”里的「开机自启」（XDG autostart）。鼠标托盘图标需要桌面环境提供 AppIndicator/StatusNotifier 支持（GNOME 需安装 AppIndicator 扩展）；`brew services` 不推荐用于 Linux，systemd user unit 不会继承桌面会话的显示变量。
 
 ### PowerShell（Windows）
 
@@ -368,7 +374,7 @@ DeepSeek Harness 终端会话与桌面端走两条路径：终端 `dsh` 进程�
 | `windows` | Windows WinRT Toast 通知与前台激活回调 | 0 |
 | `notify-rust`（zbus 后端） | Linux Freedesktop D-Bus 通知与“打开会话”动作 | 0 |
 
-Linux 运行时需桌面环境提供 AppIndicator/StatusNotifier 支持；Windows 使用系统通知区域；macOS 使用 NSStatusItem。
+Linux 运行时需桌面环境提供 AppIndicator/StatusNotifier 支持（GNOME 需安装 AppIndicator 扩展）；官方 Linux 产物基于 Ubuntu 24.04 构建，x86_64 与 ARM64 共用同一 glibc 基线（2.39+，适用于 Ubuntu 24.04+、Debian 13+ 等当前主流发行版）。Windows 使用系统通知区域；macOS 使用 NSStatusItem。
 
 ## 性能验收指标
 
@@ -386,7 +392,7 @@ Linux 运行时需桌面环境提供 AppIndicator/StatusNotifier 支持；Window
 | 桌面端单会话变化 | ≤ 15 ms | 投影缓存整篇重写，单篇 2–25 KB，实测约 11 ms 解析 |
 | 安装体积 | ≤ 15 MB（压缩后） | 单个 strip + LTO 二进制 |
 
-CI 应在 macOS arm64/x64、Windows x64、Linux x64 上记录 RSS、CPU、扫描耗时和菜单更新时间；超过预算即阻止发布。
+CI 应在 macOS arm64/x64、Windows x64、Linux x64/ARM64 上记录 RSS、CPU、扫描耗时和菜单更新时间；超过预算即阻止发布。
 
 ## 当前实现进度
 

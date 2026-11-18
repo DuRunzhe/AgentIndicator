@@ -16,7 +16,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # ubuntu-24.04-arm is a GitHub-hosted arm64 runner: the Linux cfg
+        # branch gets real ARM64 coverage instead of only being cross-compiled
+        # at release time.
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
       # Keep build-machine paths out of binaries, mirroring release builds.

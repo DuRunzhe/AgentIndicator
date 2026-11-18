@@ -235,7 +235,7 @@ ps -o pid,%cpu,rss,etime,command -p "$(pgrep -x agent-status-indicator)"
 
 ## Linux 启动（自动化冒烟）
 
-`ci.yml` 在 `ubuntu-latest` 上用 `xvfb-run` 启动托盘，并在 20 秒内等待 `--debug-ui` 写出 UI 快照：进程必须仍然存活，日志里不得出现 `GTK has not been initialized` 或 `panicked`。GTK 初始化、菜单构建或事件循环的回归都会让该 job 失败。真实的托盘图标与菜单点击仍需按下面的手动步骤在 Linux 机器上验收。
+`ci.yml` 在 `ubuntu-latest`（x86_64）与 `ubuntu-24.04-arm`（ARM64）上用 `xvfb-run` 启动托盘，并在 20 秒内等待 `--debug-ui` 写出 UI 快照：进程必须仍然存活，日志里不得出现 `GTK has not been initialized` 或 `panicked`。GTK 初始化、菜单构建或事件循环的回归都会让该 job 失败。真实的托盘图标与菜单点击仍需按下面的手动步骤在 Linux 机器上验收。
 
 ### Linux 托盘图标（容器内验证，无需桌面）
 
@@ -253,6 +253,22 @@ DISPLAY=:99 xdotool mousemove <图标坐标> click 3   # 右键应弹出完整�
 ```
 
 应用在找不到 StatusNotifier host 时会回退到 XEmbed，由 stalonetray 负责显示；菜单激活由事件循环里的 GTK 迭代派发，所以点击 “Quit” 应当让进程退出。这两点任缺其一（未 `gtk::init`、未泵 GTK 主循环），图标或菜单就会是空白。
+
+### Homebrew on Linux（手动）
+
+在 Ubuntu 24.04 的 x86_64 与 ARM64 上分别执行：
+
+```bash
+brew tap DuRunzhe/agentindicator https://github.com/DuRunzhe/AgentIndicator
+brew trust DuRunzhe/agentindicator
+brew install DuRunzhe/agentindicator/agent-status-indicator
+agent-status-indicator --version   # 版本号应与 release tag 一致
+ldd "$(brew --prefix)/opt/agent-status-indicator/bin/agent-status-indicator" \
+  | grep "not found" || echo "all shared libraries resolved"
+agent-status-indicator             # 桌面会话内应出现托盘图标，右键能展开菜单
+```
+
+公式在 Linux 上会安装 `libayatana-appindicator`（带 GTK3）、`xdotool` 与 `zstd`；Homebrew 安装时会给二进制补上 rpath，托盘后端 `dlopen` 才能找到 Homebrew 目录里的 libayatana-appindicator3。若托盘图标不出现，先确认桌面会话提供 StatusNotifier host（GNOME 需 AppIndicator 扩展），且不要在 `brew services` 的 systemd user unit 里启动（它不继承显示变量）。验证完成后 `brew uninstall DuRunzhe/agentindicator/agent-status-indicator` 清理。
 
 ## 终端聚焦手动验收（Windows / Linux）
 

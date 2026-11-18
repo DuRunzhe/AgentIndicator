@@ -1,8 +1,12 @@
 #!/bin/bash
-# Fill the two macOS sha256 values in Formula/agent-status-indicator.rb with
+# Fill the per-platform sha256 values in Formula/agent-status-indicator.rb with
 # the hashes published by CI for the given tag. The formula lives in this
 # repository, which is also the Homebrew tap, so there is nowhere else to copy
 # it: commit the change with the release.
+#
+# Four assets are covered: macOS and Linux, each on arm64 (aarch64) and x86_64.
+# Every one of them must be published before this script succeeds, otherwise the
+# formula would ship a hash that does not match its url.
 #
 # Usage:
 #   bash scripts/fill-release-shas.sh v0.2.13
@@ -31,23 +35,32 @@ fetch_sha() {
     tmp="$(mktemp -d)"
     gh release download "v$TAG" --repo "$REPO" --pattern "$asset" --dir "$tmp" --clobber \
       >/dev/null 2>&1 || true
-    sha="$(tr -d '[:space:]' < "$tmp/$asset" 2>/dev/null || true)"
+    if [[ -f "$tmp/$asset" ]]; then
+      sha="$(tr -d '[:space:]' < "$tmp/$asset")"
+    fi
     rm -rf "$tmp"
   fi
   printf '%s' "$sha"
   [[ -n "$sha" ]]
 }
 
-ARM=$(fetch_sha aarch64-apple-darwin) \
-  || { echo "cannot fetch aarch64 sha (release v$TAG not ready?)" >&2; exit 1; }
-X64=$(fetch_sha x86_64-apple-darwin) \
-  || { echo "cannot fetch x86_64 sha (release v$TAG not ready?)" >&2; exit 1; }
-echo "v$TAG  aarch64=$ARM"
-echo "v$TAG  x86_64=$X64"
+ARM_MAC=$(fetch_sha aarch64-apple-darwin) \
+  || { echo "cannot fetch aarch64-apple-darwin sha (release v$TAG not ready?)" >&2; exit 1; }
+X64_MAC=$(fetch_sha x86_64-apple-darwin) \
+  || { echo "cannot fetch x86_64-apple-darwin sha (release v$TAG not ready?)" >&2; exit 1; }
+X64_LINUX=$(fetch_sha x86_64-unknown-linux-gnu) \
+  || { echo "cannot fetch x86_64-unknown-linux-gnu sha (release v$TAG not ready?)" >&2; exit 1; }
+ARM_LINUX=$(fetch_sha aarch64-unknown-linux-gnu) \
+  || { echo "cannot fetch aarch64-unknown-linux-gnu sha (release v$TAG has no ARM64 Linux asset yet)" >&2; exit 1; }
 
-python3 - "$FORMULA" "$ARM" "$X64" <<'PY'
+echo "v$TAG  mac arm64   = $ARM_MAC"
+echo "v$TAG  mac x86_64  = $X64_MAC"
+echo "v$TAG  linux arm64 = $ARM_LINUX"
+echo "v$TAG  linux x64   = $X64_LINUX"
+
+python3 - "$FORMULA" "$ARM_MAC" "$X64_MAC" "$X64_LINUX" "$ARM_LINUX" <<'PY'
 import re, sys
-path, arm, x64 = sys.argv[1:4]
+path, arm_mac, x64_mac, x64_linux, arm_linux = sys.argv[1:6]
 s = open(path).read()
 
 def replace_in_block(s, asset, value):
@@ -60,8 +73,10 @@ def replace_in_block(s, asset, value):
     )
     return head + tail
 
-s = replace_in_block(s, 'agent-status-indicator-aarch64-apple-darwin.tar.gz', arm)
-s = replace_in_block(s, 'agent-status-indicator-x86_64-apple-darwin.tar.gz', x64)
+s = replace_in_block(s, 'agent-status-indicator-aarch64-apple-darwin.tar.gz', arm_mac)
+s = replace_in_block(s, 'agent-status-indicator-x86_64-apple-darwin.tar.gz', x64_mac)
+s = replace_in_block(s, 'agent-status-indicator-x86_64-unknown-linux-gnu.tar.gz', x64_linux)
+s = replace_in_block(s, 'agent-status-indicator-aarch64-unknown-linux-gnu.tar.gz', arm_linux)
 open(path, 'w').write(s)
 print("updated", path)
 PY

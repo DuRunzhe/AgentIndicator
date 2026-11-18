@@ -83,6 +83,9 @@ case "$OS-$ARCH" in
   Darwin-x86_64|Darwin-amd64) TARGET=x86_64-apple-darwin ;;
   Linux-x86_64|Linux-amd64) TARGET=x86_64-unknown-linux-gnu ;;
   Linux-aarch64|Linux-arm64) TARGET=aarch64-unknown-linux-gnu ;;
+  Linux-armv7l|Linux-armv6l|Linux-i686|Linux-i386)
+    echo "暂不支持 32 位 Linux（$ARCH）；请改用 x86_64 或 ARM64（aarch64）版本，或从源码构建：cargo build --release" >&2
+    exit 1 ;;
   *) echo "暂不支持的平台: $OS-$ARCH" >&2; exit 1 ;;
 esac
 

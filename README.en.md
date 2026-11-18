@@ -30,7 +30,7 @@ The menu bar holds a single status item: its icon shows the highest state in pla
 
 ## Installation
 
-The current release is **v0.2.41**: a Developer ID signed and notarized app bundle for macOS arm64, plus binaries for x86_64 macOS, Windows and Linux and the npm package, all produced by the [release workflow](.github/workflows/release.yml).
+The current release is **v0.2.41**: a Developer ID signed and notarized app bundle for macOS arm64, plus binaries for x86_64 macOS, Windows and Linux (both x86_64 and ARM64, the two mainstream architectures) and the npm package, all produced by the [release workflow](.github/workflows/release.yml).
 
 ### curl (macOS / Linux)
 
@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/DuRunzhe/AgentIndicator/main/script
 
 - **macOS (Apple Silicon)**: nothing to do. The script automatically downloads the notarized `.app` and installs it into `/Applications` (falling back to `~/Applications` when it is not writable); launch it from Launchpad or with `open -a AgentStatusIndicator` — Gatekeeper will not block it. The CLI binary goes to `${PREFIX:-$HOME/.local}/bin`.
 - **macOS (x86_64)**: no notarized `.app` is published for this architecture yet, so this method installs the CLI binary only; use the npm / Bun channels if you want an app bundle.
-- **Linux**: nothing to do. The script already writes the desktop entry under `$XDG_DATA_HOME` (default `~/.local/share`) as `applications/agent-status-indicator.desktop` together with the `icons/hicolor/…` icons; it shows up in launchers as long as the desktop environment supports AppIndicator/StatusNotifier.
+- **Linux**: nothing to do. The script picks the asset from `uname -m`, and both x86_64 and ARM64 (aarch64) binaries are published. It also writes the desktop entry under `$XDG_DATA_HOME` (default `~/.local/share`) as `applications/agent-status-indicator.desktop` together with the `icons/hicolor/…` icons; it shows up in launchers as long as the desktop environment supports AppIndicator/StatusNotifier.
 
 ### npm (cross-platform)
 
@@ -93,9 +93,10 @@ $lnk.TargetPath = $exe
 $lnk.Save()
 ```
 
-**Linux**: add a desktop entry (the desktop environment must support AppIndicator/StatusNotifier).
+**Linux**: add a desktop entry (the desktop environment must support AppIndicator/StatusNotifier). The directory name depends on the architecture: `linux-x64` on x86_64, `linux-arm64` on ARM64 (aarch64).
 
 ```bash
+# On ARM64, replace linux-x64 with linux-arm64
 BIN="$(npm root -g)/agent-status-indicator/bin/linux-x64/agent-status-indicator"
 mkdir -p ~/.local/share/applications
 cat > ~/.local/share/applications/agent-status-indicator.desktop <<EOF
@@ -144,6 +145,7 @@ $lnk.Save()
 **Linux**:
 
 ```bash
+# On ARM64, replace linux-x64 with linux-arm64
 BIN="$(bun pm root -g)/agent-status-indicator/bin/linux-x64/agent-status-indicator"
 mkdir -p ~/.local/share/applications
 cat > ~/.local/share/applications/agent-status-indicator.desktop <<EOF
@@ -157,7 +159,9 @@ Categories=Utility;
 EOF
 ```
 
-### Homebrew (macOS)
+### Homebrew (macOS / Linux)
+
+Homebrew on Linux is supported too (x86_64 and ARM64). macOS and Linux each download the Release asset for their architecture; on Linux the formula installs `libayatana-appindicator` (which pulls in GTK3), because the tray backend loads that library at runtime. The Linux binaries are built on Ubuntu 24.04, so they need glibc 2.39+ (Ubuntu 24.04+, Debian 13+ and newer).
 
 The Homebrew tap for this project is the source repository itself: `Formula/agent-status-indicator.rb` is committed here alongside the code. Since Homebrew 7 a third-party tap must be trusted once before its formulae load (recorded in `~/.homebrew/trust.json`; undo with `brew untrust DuRunzhe/agentindicator`), so the first install registers this repository as the tap and trusts it:
 
@@ -193,6 +197,8 @@ The Homebrew tap installs the **raw CLI binary only** (real path `$(brew --prefi
   ```
 
 - If you really want a `.app` that shows up in Launchpad / Spotlight: install via npm or Bun instead (they bundle the notarized `.app`) and uninstall the Homebrew one — there is no need to keep both.
+
+**Linux**: a brew install writes no desktop entry. Run `agent-status-indicator` inside the desktop session, or enable “start at login” in the Settings menu (XDG autostart). The tray icon needs AppIndicator/StatusNotifier support from the desktop environment (GNOME needs the AppIndicator extension). `brew services` is not recommended on Linux: a systemd user unit does not inherit the session's display variables.
 
 ### PowerShell (Windows)
 
@@ -347,7 +353,7 @@ DeepSeek Harness takes two paths. A terminal `dsh` process is read per project f
 | `windows` | Windows WinRT toast notifications and foreground activation callbacks | 0 |
 | `notify-rust` (zbus backend) | Linux Freedesktop D-Bus notifications and “open session” actions | 0 |
 
-On Linux the desktop environment must provide AppIndicator/StatusNotifier support; Windows uses the notification area; macOS uses `NSStatusItem`.
+On Linux the desktop environment must provide AppIndicator/StatusNotifier support (GNOME needs the AppIndicator extension); the official Linux binaries are built on Ubuntu 24.04, and x86_64 and ARM64 share the same glibc baseline (2.39+, i.e. Ubuntu 24.04+, Debian 13+ and other current mainstream distributions). Windows uses the notification area; macOS uses `NSStatusItem`.
 
 ## Performance acceptance targets
 

@@ -20,9 +20,19 @@ jobs:
           - os: macos-15-intel
             target: x86_64-apple-darwin
             asset: agent-status-indicator-x86_64-apple-darwin.tar.gz
-          - os: ubuntu-latest
+          # Pin the desktop baseline instead of `ubuntu-latest`: the published
+          # x86_64 and ARM64 binaries must share one glibc version, so a silent
+          # migration of the floating label must not raise it for one arch only.
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             asset: agent-status-indicator-x86_64-unknown-linux-gnu.tar.gz
+          # GitHub-hosted arm64 runner: natively builds the ARM64 Linux asset
+          # that Raspberry Pi, AWS Graviton and Apple-Silicon VM users need. A
+          # cross build under qemu would take far longer and cannot run the
+          # resulting tests here.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: agent-status-indicator-aarch64-unknown-linux-gnu.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset: agent-status-indicator-x86_64-pc-windows-msvc.zip
@@ -96,11 +106,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for archive in artifacts/*; do
+          for archive in artifacts/*.tar.gz artifacts/*.zip; do
+            [[ -f "$archive" ]] || continue
             case "$archive" in
               *aarch64-apple-darwin*)         dir="bin/darwin-arm64" ;;
               *x86_64-apple-darwin*)          dir="bin/darwin-x64" ;;
               *x86_64-unknown-linux-gnu*)     dir="bin/linux-x64" ;;
+              *aarch64-unknown-linux-gnu*)    dir="bin/linux-arm64" ;;
               *x86_64-pc-windows-msvc*)       dir="bin/win32-x64" ;;
               *) continue ;;
             esac
