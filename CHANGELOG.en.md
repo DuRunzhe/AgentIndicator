@@ -8,6 +8,12 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.43] - 2026-11-18
+
+### Added
+
+- Support ARM64 Linux in releases, npm and Homebrew
+
 ## [0.2.41] - 2026-11-16
 
 ### Added

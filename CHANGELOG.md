@@ -6,6 +6,12 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.43] - 2026-11-18
+
+### 新增
+
+- Support ARM64 Linux in releases, npm and Homebrew
+
 ## [0.2.41] - 2026-11-16
 
 ### 新增
