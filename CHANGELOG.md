@@ -6,6 +6,17 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.44-alpha.1] - 2026-11-18
+
+### 新增
+
+- Implement dsh:// handoff via xdg-open and warn about xdg-utils (linux)
+
+### 修复
+
+- Implement Linux dialog backend so "Start at login" works (dialog)
+- Implement Linux about dialog via zenity/kdialog (about)
+
 ## [0.2.43] - 2026-11-18
 
 ### 新增

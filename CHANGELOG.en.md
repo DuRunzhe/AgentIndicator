@@ -8,6 +8,17 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.44-alpha.1] - 2026-11-18
+
+### Added
+
+- Implement dsh:// handoff via xdg-open and warn about xdg-utils (linux)
+
+### Fixed
+
+- Implement Linux dialog backend so "Start at login" works (dialog)
+- Implement Linux about dialog via zenity/kdialog (about)
+
 ## [0.2.43] - 2026-11-18
 
 ### Added
