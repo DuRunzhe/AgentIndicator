@@ -313,10 +313,14 @@ pub fn open_window() -> bool {
 
 /// Hand an URL to the OS.
 ///
-/// The scheme is registered by the desktop application on macOS, which is the
-/// only platform where the tray can address it; elsewhere the handler is
-/// reported missing so the caller keeps its pre-existing behaviour instead of
-/// shelling out to a command that does not exist.
+/// macOS registers the scheme through the desktop application and `open` is the
+/// way to reach it. Linux uses `xdg-open`, but only after confirming the scheme
+/// actually has a handler: when it does not, `xdg-open` either fails or pops a
+/// desktop error dialog, and reporting "delivered" for that would swallow the
+/// failure. Any missing tool (`xdg-open` / `xdg-mime`) degrades to `false` so
+/// the ladder falls back instead of blocking.
+///
+/// Windows has no scheme bridge yet and keeps reporting the handler as missing.
 fn hand_to_os(url: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -325,11 +329,64 @@ fn hand_to_os(url: &str) -> bool {
             .status()
             .is_ok_and(|status| status.success());
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        return linux_open(url);
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "linux")))]
     {
         let _ = url;
         false
     }
+}
+
+/// Linux: 交给桌面环境处理 `dsh://`。
+#[cfg(target_os = "linux")]
+fn linux_open(url: &str) -> bool {
+    use std::process::Command;
+
+    if !command_exists("xdg-open") {
+        return false;
+    }
+    // scheme 未注册时不要调用 xdg-open：它会失败或弹桌面错误框。
+    // xdg-mime 不可用时无法判断，交给 xdg-open 自己决定。
+    if let Some(handler) = query_scheme_handler(url) {
+        if handler.trim().is_empty() {
+            log(&format!(
+                "jump route=window skipped reason=no-handler url={url}"
+            ));
+            return false;
+        }
+    }
+    Command::new("xdg-open")
+        .arg(url)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// 查询 `xdg-mime` 给出的默认 handler；`None` 表示查不了（工具缺失）。
+#[cfg(target_os = "linux")]
+fn query_scheme_handler(url: &str) -> Option<String> {
+    let scheme = url.split_once(':').map_or("", |(scheme, _)| scheme);
+    if scheme.is_empty() {
+        return None;
+    }
+    let mime = format!("x-scheme-handler/{scheme}");
+    let output = std::process::Command::new("xdg-mime")
+        .args(["query", "default", &mime])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn command_exists(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|directory| directory.join(program).is_file())
+    })
 }
 
 /// Append one line to the session-jump log.

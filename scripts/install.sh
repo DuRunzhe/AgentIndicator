@@ -67,6 +67,30 @@ EOF
   echo "已创建 Linux 桌面入口：$data_root/applications/agent-status-indicator.desktop"
 }
 
+# Linux 上「打开会话 / 打开链接」依赖桌面环境的 URL handler。
+# 本脚本默认以非 root 身份运行（PREFIX=$HOME/.local/bin），不擅自调用
+# sudo apt install，只在缺失时按发行版给出安装提示。
+check_linux_runtime_deps() {
+  missing=""
+  command -v xdg-open >/dev/null 2>&1 || missing="$missing xdg-open"
+  command -v xdg-mime >/dev/null 2>&1 || missing="$missing xdg-mime"
+  [ -z "$missing" ] && return 0
+
+  echo "提示: 未找到:${missing}（属于 xdg-utils 包）" >&2
+  echo "      「打开会话」与「打开链接」需要它；缺失时这些操作会静默降级为仅前置窗口。" >&2
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "      Debian/Ubuntu:  sudo apt install xdg-utils" >&2
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "      Fedora/RHEL:    sudo dnf install xdg-utils" >&2
+  elif command -v pacman >/dev/null 2>&1; then
+    echo "      Arch:           sudo pacman -S xdg-utils" >&2
+  elif command -v zypper >/dev/null 2>&1; then
+    echo "      openSUSE:       sudo zypper install xdg-utils" >&2
+  else
+    echo "      请用你的包管理器安装 xdg-utils" >&2
+  fi
+}
+
 if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
   VERSION=$(resolve_latest_version)
 fi
@@ -123,6 +147,7 @@ chmod +x "$PREFIX/agent-status-indicator"
 
 if [ "$OS" = "Linux" ]; then
   install_linux_desktop "$PREFIX"
+  check_linux_runtime_deps
 fi
 
 # macOS: also install the notarized .app bundle, so the tray app shows up in
