@@ -84,6 +84,9 @@ fn linux_choose(message: &str, title: &str, buttons: &[&str], default: &str) -> 
                 return Some(ok.to_owned());
             }
         }
+        // 没有可用的对话框后端：至少把结果写进日志，别让一次点击的结论凭空消失
+        // （Tray 从桌面启动时 stderr 会落到会话日志或启动它的终端）。
+        eprintln!("{title}: {message}");
         // 没有可用的对话框后端：视为已确认（否则调用方会把用户操作当成取消）
         return Some(ok.to_owned());
     }
@@ -144,6 +147,7 @@ fn linux_choose(message: &str, title: &str, buttons: &[&str], default: &str) -> 
         }
     }
     // 没有可用的对话框后端：用户是主动点击菜单触发的，按默认按钮继续
+    eprintln!("{title}: {message}");
     Some(default.to_owned())
 }
 
