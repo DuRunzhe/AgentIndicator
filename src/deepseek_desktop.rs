@@ -62,12 +62,19 @@ struct LogSignals {
     approval_asked: bool,
     /// An `ask_user_question` call whose result has not arrived.
     ///
-    /// This is the only reliable way to see a question: while one is pending the
-    /// desktop projection reports no open step at all, and its
+    /// This is the only reliable way to see a tool question: while one is
+    /// pending the desktop projection reports no open step at all, and its
     /// `userQuestions.active` row stayed empty in every observation, so the
     /// pending tool call is what distinguishes "waiting for the user" from
-    /// "working".
+    /// "working". A natural-language closing question is handled by
+    /// [`Self::reply_requested`].
     question_pending: bool,
+    /// The last assistant text of the most recent completed turn ended with a
+    /// question, and no user message or new turn has followed it.
+    ///
+    /// A natural-language question has no tool call to pair, so this mirrors
+    /// the terminal reader's closing-question heuristic.
+    reply_requested: bool,
     /// A spent retry budget with no later evidence of recovery.
     error: bool,
     /// Event types this build does not recognize. Reported by the diagnostic so
@@ -150,6 +157,20 @@ struct CachedSession {
     /// What this scan reports after applying the event-log signals. Derived from
     /// `facts` on every read.
     applied: Option<DesktopSession>,
+}
+
+/// The fields one scan needs to decide whether a conversation's event log has
+/// to be consulted, snapshotted so the log lookup does not borrow the cache.
+struct ObservationCandidate {
+    id: String,
+    /// The newest prompt the projection knows, the anchor of the failure window.
+    activity: SystemTime,
+    /// Whether the projection still shows a step or tool call in flight.
+    turn_open: bool,
+    /// Whether the projection itself lists an answerable question.
+    projected_wait: bool,
+    /// Whether an earlier scan reported a wait or a failure for it.
+    reported_attention: bool,
 }
 
 /// What the last scan found while reading the profile.
@@ -461,40 +482,76 @@ impl DeepSeekDesktopAnalyzer {
     /// more often than [`SIGNAL_CHECK_INTERVAL`].
     fn resolve_signals(&mut self) -> u32 {
         let now = Instant::now();
-        let mut unjudged_total = 0;
-        // Which conversations the event log has to be consulted for.
-        //
-        // A conversation with a step in flight is checked while it works and
-        // while it waits for a prompt.
-        //
-        // A failed turn is the harder case: the projection releases the step
-        // when the turn ends, so a failure leaves a session that looks finished
-        // — no open step, no pending call, "ready". Three situations cover it:
-        // the session was already failed on the previous scan (keep it
-        // observed), its log has moved inside the failure window (the failure
-        // may be exactly what moved it), or it is seen for the first time after
-        // running unattended (an app restart must not lose a failure that is
-        // still the last thing in the log).
         let now_wall = SystemTime::now();
-        let active: Vec<String> = self
+        let mut unjudged_total = 0;
+        // Which conversations the event log has to be consulted for:
+        //
+        // * a step or tool call in flight (`turn_open`) — it is working, or
+        //   waiting for an approval or a question;
+        // * the projection itself lists an answerable question
+        //   (`projected_wait`), which outranks an open step: a timed question
+        //   stays answerable while the agent keeps working;
+        // * an earlier scan already reported a wait or a failure, so it stays
+        //   observed until the log settles it;
+        // * the newest prompt is inside the failure window (`fresh`), because a
+        //   failure can close its own turn and leave no other trace;
+        // * the log moved since the last read. The projection checkpoint is
+        //   written behind the session (every `writeIntervalMs` or
+        //   `writeEveryEvents` events), so an event written in that gap — a
+        //   question, above all — is invisible in the cached rows until the next
+        //   checkpoint. A conversation already under observation is re-read as
+        //   soon as its log moves, instead of waiting out the checkpoint: a
+        //   question asked late in a long turn used to read as "ready" for a
+        //   whole checkpoint interval because `lastPromptAt` had aged out.
+        let candidates: Vec<ObservationCandidate> = self
             .cache
             .values()
             .filter_map(|cached| {
                 let session = cached.facts.as_ref()?;
-                let fresh = now_wall
-                    .duration_since(session.activity)
-                    .is_ok_and(|age| age < FAILURE_OBSERVATION_WINDOW);
-                // `applied` carries the failure found on an earlier scan; the raw
-                // projection decides the rest.
-                let reported_error = cached
-                    .applied
-                    .as_ref()
-                    .is_some_and(|s| s.state == AgentState::Error);
-                (session.turn_open || reported_error || fresh).then(|| session.id.clone())
+                Some(ObservationCandidate {
+                    id: session.id.clone(),
+                    activity: session.activity,
+                    turn_open: session.turn_open,
+                    projected_wait: session.state == AgentState::WaitingReply,
+                    reported_attention: cached.applied.as_ref().is_some_and(|applied| {
+                        matches!(
+                            applied.state,
+                            AgentState::Waiting | AgentState::WaitingReply | AgentState::Error
+                        )
+                    }),
+                })
             })
             .collect();
+        let mut active: Vec<String> = Vec::new();
+        let mut resolved_logs: HashMap<String, Option<PathBuf>> = HashMap::new();
+        for candidate in &candidates {
+            let fresh = now_wall
+                .duration_since(candidate.activity)
+                .is_ok_and(|age| age < FAILURE_OBSERVATION_WINDOW);
+            let wanted = candidate.turn_open
+                || candidate.projected_wait
+                || candidate.reported_attention
+                || fresh;
+            // Only a conversation already under observation can have "moved";
+            // an idle one with no signals history needs no log lookup at all.
+            let observed = self.signals.contains_key(&candidate.id);
+            if !wanted && !observed {
+                continue;
+            }
+            let log = self.session_log(&candidate.id, now);
+            let signature = log.as_deref().and_then(log_signature);
+            let moved = observed
+                && self
+                    .signals
+                    .get(&candidate.id)
+                    .is_some_and(|state| state.log != signature);
+            if wanted || moved {
+                resolved_logs.insert(candidate.id.clone(), log);
+                active.push(candidate.id.clone());
+            }
+        }
         for id in &active {
-            let log = self.session_log(id, now);
+            let log = resolved_logs.get(id).cloned().flatten();
             let signature = log.as_deref().and_then(log_signature);
             // Cached signals are reused while the log has not moved. A log that
             // did move may have gained or lost a prompt or a failure, so its
@@ -551,14 +608,19 @@ impl DeepSeekDesktopAnalyzer {
                     continue;
                 }
                 // Same precedence as the CLI reader: a prompt that needs the
-                // user outranks a failure, and a still-open step outranks a
-                // spent retry — the step may still recover or be retried by the
-                // user, while the projection is the authority on it.
+                // user outranks a failure, and an open step outranks a spent
+                // retry — the step may still recover or be retried by the user,
+                // while the projection is the authority on it. The projection's
+                // own answerable question outranks the open step as well: the
+                // agent can keep working after a timed question's foreground
+                // wait expires while the question card still needs an answer.
                 let projected = facts.state;
-                let state = if signals.question_pending {
+                let state = if signals.question_pending || signals.reply_requested {
                     AgentState::WaitingReply
                 } else if signals.approval_asked {
                     AgentState::Waiting
+                } else if matches!(projected, AgentState::WaitingReply | AgentState::Waiting) {
+                    projected
                 } else if facts.turn_open {
                     AgentState::Working
                 } else if signals.error {
@@ -585,7 +647,8 @@ impl DeepSeekDesktopAnalyzer {
                 });
             }
         }
-        // A conversation that neither works nor shows a failure needs no signals.
+        // A conversation that neither works nor shows a wait or a failure needs
+        // no signals.
         self.signals.retain(|id, _| active.contains(id));
         unjudged_total
     }
@@ -678,6 +741,7 @@ impl DeepSeekDesktopAnalyzer {
         serde_json::json!({
             "approvalAsked": read.is_some_and(|state| state.signals.approval_asked),
             "questionPending": read.is_some_and(|state| state.signals.question_pending),
+            "replyRequested": read.is_some_and(|state| state.signals.reply_requested),
             "error": read.is_some_and(|state| state.signals.error),
             "unknownEvents": read.map_or(0, |state| state.signals.unknown_events),
             "logSignature": read.and_then(|state| state.log).map(|(size, _)| size),
@@ -744,6 +808,8 @@ fn log_signals(text: &str) -> LogSignals {
     let mut signals = LogSignals::default();
     let mut asked: Vec<String> = Vec::new();
     let mut question_calls: Vec<String> = Vec::new();
+    let mut reply_requested = false;
+    let mut last_text: Option<String> = None;
     let mut timeline = crate::deepseek::Timeline::default();
     for event in crate::deepseek::session_events(text) {
         use crate::deepseek::EventRole;
@@ -783,9 +849,32 @@ fn log_signals(text: &str) -> LogSignals {
             EventRole::Unknown => timeline.saw_unknown(),
             _ => {}
         }
+        // A turn that ends on a question is the natural-language form of
+        // "waiting for a reply", the same heuristic the terminal reader uses.
+        // A later user message or a new turn means the agent moved on.
+        match event["type"].as_str() {
+            Some("user/message") => {
+                reply_requested = false;
+                last_text = None;
+            }
+            Some("assistant/message") => {
+                last_text = crate::deepseek::last_text_block(&data["message"]["content"]);
+            }
+            Some("turn/start") => {
+                reply_requested = false;
+                last_text = None;
+            }
+            Some("turn/end") => {
+                reply_requested = last_text
+                    .take()
+                    .is_some_and(|text| crate::deepseek::ends_with_question(&text));
+            }
+            _ => {}
+        }
     }
     signals.approval_asked = !asked.is_empty();
     signals.question_pending = !question_calls.is_empty();
+    signals.reply_requested = reply_requested;
     signals.error = timeline.failure_current();
     signals.unknown_events = timeline.unknown_events();
     signals.retry_unjudged = timeline.unjudged_retries();
@@ -1582,9 +1671,10 @@ mod tests {
 
     #[test]
     fn a_pending_question_is_waiting_for_a_reply() {
-        // The desktop projection reports no open step while a question is on
-        // screen, so this pair of events is the only thing that distinguishes
-        // "waiting for the user" from "working".
+        // The desktop projection reports no open step while a tool question is
+        // on screen, so this pair of events distinguishes "waiting for the
+        // user" from "working". A natural-language closing question is the
+        // other form, covered separately.
         let call = "{\"type\":\"tool/call\",\"data\":{\"callId\":\"q1\",\"name\":\"ask_user_question\"}}\n";
         let signals = log_signals(call);
         assert!(signals.question_pending);
@@ -1601,6 +1691,30 @@ mod tests {
             "{call}{{\"type\":\"tool/result\",\"data\":{{\"message\":{{\"source\":{{\"callId\":\"other\"}}}}}}}}\n"
         );
         assert!(log_signals(&unrelated).question_pending);
+    }
+
+    #[test]
+    fn a_turn_that_ends_on_a_question_is_waiting_for_a_reply() {
+        // A natural-language question has no tool call to pair; the same
+        // closing-question heuristic the terminal reader uses is applied to the
+        // last assistant text of a completed turn.
+        let asked = "{\"type\":\"user/message\",\"data\":{}}\n{\"type\":\"assistant/message\",\"data\":{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"已完成。要我继续吗？\"}]}}}\n{\"type\":\"turn/end\",\"data\":{}}\n";
+        let signals = log_signals(asked);
+        assert!(signals.reply_requested);
+        assert!(!signals.question_pending);
+        // A later user message clears it.
+        let answered = format!("{asked}{{\"type\":\"user/message\",\"data\":{{}}}}\n");
+        assert!(!log_signals(&answered).reply_requested);
+        // So does a new turn without a user message: the agent moved on.
+        let continued = format!("{asked}{{\"type\":\"turn/start\",\"data\":{{}}}}\n");
+        assert!(!log_signals(&continued).reply_requested);
+        // Only the turn's last assistant text counts: a later tool-call message
+        // with no text is not a closing question.
+        let tool_after = "{\"type\":\"user/message\",\"data\":{}}\n{\"type\":\"assistant/message\",\"data\":{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"要我继续吗？\"}]}}}\n{\"type\":\"assistant/message\",\"data\":{\"message\":{\"content\":[{\"type\":\"tool-call\"}]}}}\n{\"type\":\"turn/end\",\"data\":{}}\n";
+        assert!(!log_signals(tool_after).reply_requested);
+        // A plain statement is not a question.
+        let statement = "{\"type\":\"assistant/message\",\"data\":{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"已完成。\"}]}}}\n{\"type\":\"turn/end\",\"data\":{}}\n";
+        assert!(!log_signals(statement).reply_requested);
     }
 
     #[test]
@@ -1667,6 +1781,19 @@ mod tests {
     /// A desktop profile laid out like the real one: a projection cache next to
     /// the compressed session log the same session id writes.
     fn fake_profile(id: &str, events: &str) -> PathBuf {
+        let document = session_document(rows(
+            json!({ "turn": 1, "step": 3, "firstTokenTime": null }),
+            json!({}),
+            json!([]),
+            json!("等确认"),
+        ));
+        fake_profile_with_document(id, &document, events)
+    }
+
+    /// The same profile with a chosen projection document. The document is
+    /// written first and the log second, which leaves the log newer than the
+    /// checkpoint exactly as a live write-behind does.
+    fn fake_profile_with_document(id: &str, document: &Value, events: &str) -> PathBuf {
         let home = std::env::temp_dir().join(format!(
             "asi-desktop-profile-{}-{}",
             std::process::id(),
@@ -1674,15 +1801,9 @@ mod tests {
         ));
         let cache = home.join("storages/session_projcache/sessions");
         std::fs::create_dir_all(&cache).unwrap();
-        let document = session_document(rows(
-            json!({ "turn": 1, "step": 3, "firstTokenTime": null }),
-            json!({}),
-            json!([]),
-            json!("等确认"),
-        ));
         std::fs::write(
             cache.join(format!("{id}.json")),
-            serde_json::to_string(&document).unwrap(),
+            serde_json::to_string(document).unwrap(),
         )
         .unwrap();
         let log = home
@@ -1885,6 +2006,206 @@ mod tests {
         );
         analyzer.refresh(Some(&home));
         assert_eq!(analyzer.sessions(None)[0].state, AgentState::Ready);
+    }
+
+    #[test]
+    fn a_projection_question_outranks_an_open_step() {
+        if !zstd_available() {
+            return;
+        }
+        // A timed question outlives its foreground wait: the projection keeps
+        // listing it as answerable while the agent goes on working. The row
+        // must stay "waiting for reply" instead of falling back to "working",
+        // because the question card still needs the user.
+        let id = "session-projection-question";
+        let mut document_rows = rows(
+            json!({ "turn": 1, "step": 2, "firstTokenTime": null }),
+            json!({}),
+            json!([{
+                "callId": "q1",
+                "questions": [{ "id": "a", "question": "继续吗？" }],
+                "state": "continued"
+            }]),
+            json!("等你决定"),
+        );
+        document_rows["userQuestions"]["val"]["timed"] = json!(true);
+        let home = fake_profile_with_document(
+            id,
+            &session_document(document_rows),
+            "{\"type\":\"tool/call\",\"data\":{\"callId\":\"q1\",\"name\":\"ask_user_question\"}}\n{\"type\":\"tool/result\",\"data\":{\"message\":{\"source\":{\"callId\":\"q1\"}}}}\n",
+        );
+
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&home));
+        let sessions = analyzer.sessions(None);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].state, AgentState::WaitingReply);
+        assert_eq!(
+            analyzer.signal_report(id)["questionPending"].as_bool(),
+            Some(false),
+            "the projection, not the log, is what reports this question"
+        );
+    }
+
+    #[test]
+    fn a_closing_question_reads_as_waiting_for_a_reply() {
+        if !zstd_available() {
+            return;
+        }
+        // A turn that ends on a natural-language question is the same wait as
+        // an unanswered tool question; the tray follows the terminal reader's
+        // heuristic instead of showing "ready" until the user speaks again.
+        let id = "session-text-question";
+        let home = fake_profile_with_document(
+            id,
+            &session_document(rows(json!(null), json!({}), json!([]), json!("等回答"))),
+            "{\"type\":\"user/message\",\"data\":{}}\n{\"type\":\"assistant/message\",\"data\":{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"已完成。要我继续吗？\"}]}}}\n{\"type\":\"turn/end\",\"data\":{}}\n",
+        );
+
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&home));
+        let sessions = analyzer.sessions(None);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].state, AgentState::WaitingReply);
+        assert_eq!(
+            analyzer.signal_report(id)["replyRequested"].as_bool(),
+            Some(true)
+        );
+
+        // The user answers: a new user message ends the wait.
+        let log = home
+            .join("sessions")
+            .join("--Users-me-code-app--")
+            .join(id)
+            .join("session.v4.jsonl.zstd");
+        compress(
+            "{\"type\":\"user/message\",\"data\":{}}\n{\"type\":\"assistant/message\",\"data\":{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"已完成。要我继续吗？\"}]}}}\n{\"type\":\"turn/end\",\"data\":{}}\n{\"type\":\"user/message\",\"data\":{}}\n",
+            &log,
+        );
+        analyzer.refresh(Some(&home));
+        assert_eq!(analyzer.sessions(None)[0].state, AgentState::Ready);
+    }
+
+    #[test]
+    fn a_pending_question_is_found_before_the_checkpoint_catches_up() {
+        if !zstd_available() {
+            return;
+        }
+        // The projection checkpoint is written behind the log (every
+        // `writeIntervalMs` or `writeEveryEvents` events). Here the checkpoint
+        // is taken after the assistant message closed the step and before the
+        // question's tool call is written, which leaves rows that say "ready";
+        // the log moving is what makes the next scan read it anyway.
+        let id = "session-question-before-checkpoint";
+        let stale_prompt = json!(now_millis().saturating_sub(10 * 60 * 1000));
+        let mut working = rows(
+            json!({ "turn": 1, "step": 2, "firstTokenTime": null }),
+            json!({}),
+            json!([]),
+            json!("等你回答"),
+        );
+        working["sessionListMetadata"]["val"]["lastPromptAt"] = stale_prompt.clone();
+        let home = fake_profile_with_document(
+            id,
+            &session_document(working),
+            "{\"type\":\"step/start\",\"data\":{\"turn\":1,\"step\":2}}\n",
+        );
+
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&home));
+        assert_eq!(
+            analyzer.sessions(None)[0].state,
+            AgentState::Working,
+            "the session starts under observation"
+        );
+
+        // The step closes and the question is written, but the next checkpoint
+        // has not landed: the cached rows have no open step and no pending call.
+        let cache = home
+            .join("storages/session_projcache/sessions")
+            .join(format!("{id}.json"));
+        let mut waiting = rows(json!(null), json!({}), json!([]), json!("等你回答"));
+        waiting["sessionListMetadata"]["val"]["lastPromptAt"] = stale_prompt;
+        std::fs::write(
+            &cache,
+            serde_json::to_string(&session_document(waiting)).unwrap(),
+        )
+        .unwrap();
+        let log = home
+            .join("sessions")
+            .join("--Users-me-code-app--")
+            .join(id)
+            .join("session.v4.jsonl.zstd");
+        compress(
+            "{\"type\":\"tool/call\",\"data\":{\"callId\":\"q1\",\"name\":\"ask_user_question\"}}\n",
+            &log,
+        );
+
+        analyzer.refresh(Some(&home));
+        let sessions = analyzer.sessions(None);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].state,
+            AgentState::WaitingReply,
+            "a question written past the checkpoint must not wait for the checkpoint"
+        );
+        assert_eq!(
+            analyzer.signal_report(id)["questionPending"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_question_answered_past_the_checkpoint_is_not_waiting() {
+        if !zstd_available() {
+            return;
+        }
+        // The same checkpoint gap, but the answer is already in the log by the
+        // time the scan reads it: the extra read must settle the row instead of
+        // leaving a stale wait.
+        let id = "session-question-answered-past-checkpoint";
+        let stale_prompt = json!(now_millis().saturating_sub(10 * 60 * 1000));
+        let mut working = rows(
+            json!({ "turn": 1, "step": 2, "firstTokenTime": null }),
+            json!({}),
+            json!([]),
+            json!("已经回答"),
+        );
+        working["sessionListMetadata"]["val"]["lastPromptAt"] = stale_prompt.clone();
+        let home = fake_profile_with_document(
+            id,
+            &session_document(working),
+            "{\"type\":\"step/start\",\"data\":{\"turn\":1,\"step\":2}}\n",
+        );
+
+        let mut analyzer = DeepSeekDesktopAnalyzer::default();
+        analyzer.refresh(Some(&home));
+        assert_eq!(analyzer.sessions(None)[0].state, AgentState::Working);
+
+        let cache = home
+            .join("storages/session_projcache/sessions")
+            .join(format!("{id}.json"));
+        let mut settled = rows(json!(null), json!({}), json!([]), json!("已经回答"));
+        settled["sessionListMetadata"]["val"]["lastPromptAt"] = stale_prompt;
+        std::fs::write(
+            &cache,
+            serde_json::to_string(&session_document(settled)).unwrap(),
+        )
+        .unwrap();
+        let log = home
+            .join("sessions")
+            .join("--Users-me-code-app--")
+            .join(id)
+            .join("session.v4.jsonl.zstd");
+        compress(
+            "{\"type\":\"tool/call\",\"data\":{\"callId\":\"q1\",\"name\":\"ask_user_question\"}}\n{\"type\":\"tool/result\",\"data\":{\"message\":{\"source\":{\"callId\":\"q1\"}}}}\n",
+            &log,
+        );
+
+        analyzer.refresh(Some(&home));
+        let sessions = analyzer.sessions(None);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].state, AgentState::Ready);
     }
 
     #[test]

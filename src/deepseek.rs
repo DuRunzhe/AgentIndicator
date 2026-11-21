@@ -730,7 +730,8 @@ fn json_truthy(value: &Value) -> bool {
     }
 }
 
-fn last_text_block(content: &Value) -> Option<String> {
+/// The last non-empty text block of a message, shared by both session readers.
+pub(crate) fn last_text_block(content: &Value) -> Option<String> {
     content
         .as_array()?
         .iter()
@@ -742,7 +743,8 @@ fn last_text_block(content: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn ends_with_question(text: &str) -> bool {
+/// Whether the text ends with a question mark, ignoring trailing punctuation.
+pub(crate) fn ends_with_question(text: &str) -> bool {
     matches!(text.trim_end_matches(|c: char| c.is_whitespace() || "\"'”’）)]】}。.!！*_`~～".contains(c)).chars().last(), Some('?' | '？'))
 }
 
