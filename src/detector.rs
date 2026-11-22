@@ -24,6 +24,10 @@ pub struct Detector {
     deepseek_desktop: crate::deepseek_desktop::DeepSeekDesktopAnalyzer,
     opencode: crate::opencode::OpenCodeAnalyzer,
     pi: crate::pi::PiAnalyzer,
+    gemini: crate::gemini::GeminiAnalyzer,
+    grok: crate::grok::GrokAnalyzer,
+    cursor: crate::cursor::CursorAnalyzer,
+    cursor_desktop: crate::cursor_desktop::CursorDesktopAnalyzer,
     terminal: crate::terminal::TerminalProbe,
     /// How long a finished hosted (ChatGPT) conversation keeps its row; `None`
     /// keeps it forever. Set from the config and updated when the menu changes
@@ -51,6 +55,10 @@ impl Detector {
             deepseek_desktop: crate::deepseek_desktop::DeepSeekDesktopAnalyzer::default(),
             opencode: crate::opencode::OpenCodeAnalyzer::default(),
             pi: crate::pi::PiAnalyzer::default(),
+            gemini: crate::gemini::GeminiAnalyzer::default(),
+            grok: crate::grok::GrokAnalyzer::default(),
+            cursor: crate::cursor::CursorAnalyzer::default(),
+            cursor_desktop: crate::cursor_desktop::CursorDesktopAnalyzer::default(),
             terminal: crate::terminal::TerminalProbe::default(),
             // Read the saved setting so a restart (and `--diagnose`) reports the
             // same window the menu shows.
@@ -109,6 +117,70 @@ impl Detector {
         (sessions, hidden, self.deepseek_desktop.alert())
     }
 
+    /// The Cursor IDE's Composer rows, most actionable first, plus the host row
+    /// when it has no live session and the overflow row when the cap hid some.
+    ///
+    /// Every row carries the host process's CPU/memory with `shared`, because
+    /// one Electron process serves every composer; the resource summary counts
+    /// the host once.
+    fn cursor_desktop_rows(
+        &mut self,
+        pid: u32,
+        uptime: Duration,
+        usage: ProcessUsage,
+        window: Option<Duration>,
+    ) -> Vec<AgentInstance> {
+        let (sessions, hidden) = self.cursor_desktop.overview(window);
+        let kind = display_name("cursor");
+        let mut rows: Vec<AgentInstance> = sessions
+            .into_iter()
+            .map(|session| {
+                let age = session
+                    .created
+                    .and_then(|created| created.elapsed().ok())
+                    .unwrap_or(uptime);
+                AgentInstance {
+                    key: format!("cursor-desktop:{pid}:{}", session.id),
+                    kind: kind.into(),
+                    label: session_label(kind, session.cwd.as_deref(), session.title.as_deref()),
+                    pid,
+                    cwd: session.cwd,
+                    state: session.state,
+                    uptime: age,
+                    model: session.model,
+                    context: session.context,
+                    open_url: None,
+                    automatic_confirmation_mode: false,
+                    informational: false,
+                    state_from_session: true,
+                    usage: Some(usage),
+                }
+            })
+            .collect();
+        if rows.is_empty() {
+            rows.push(AgentInstance {
+                key: format!("cursor-desktop:{pid}"),
+                kind: kind.into(),
+                label: kind.into(),
+                pid,
+                cwd: None,
+                state: AgentState::Ready,
+                uptime,
+                model: None,
+                context: None,
+                open_url: None,
+                automatic_confirmation_mode: false,
+                informational: false,
+                // The application is running; no conversation row exists, so
+                // this is not a finished turn.
+                state_from_session: false,
+                usage: Some(usage),
+            });
+        }
+        rows.extend(cursor_overflow_row(pid, hidden));
+        rows
+    }
+
     pub fn scan(&mut self) -> Vec<AgentInstance> {
         #[cfg(target_os = "macos")]
         {
@@ -129,6 +201,16 @@ impl Detector {
             .iter()
             .filter_map(|(pid, process)| agent_kind(process).map(|kind| (*pid, process, kind)))
             .filter(|(_, process, kind)| !has_agent_parent(process, kind, &self.system))
+            .collect();
+        // The Cursor IDE is one GUI host for every Composer session; its rows
+        // come from the app's global composer database, not the process tree.
+        let cursor_host = roots
+            .iter()
+            .find(|(_, process, kind)| *kind == "cursor" && is_cursor_desktop_process(process))
+            .map(|(pid, process, _)| (pid.as_u32(), Duration::from_secs(process.run_time())));
+        let roots: Vec<_> = roots
+            .into_iter()
+            .filter(|(_, process, kind)| !(*kind == "cursor" && is_cursor_desktop_process(process)))
             .collect();
         // Snapshot the desktop host's identity before `roots` is consumed by the
         // scan below: these rows are built afterwards, from the session cache.
@@ -216,6 +298,14 @@ impl Detector {
             instances.extend(desktop_alert_row(*pid, alert));
         }
         enrich_pi_instances(&mut instances, &mut self.pi);
+        enrich_agent_instances(&mut instances, display_name("gemini"), &mut self.gemini);
+        enrich_agent_instances(&mut instances, display_name("grok"), &mut self.grok);
+        enrich_agent_instances(&mut instances, display_name("cursor"), &mut self.cursor);
+        if let Some((pid, uptime)) = cursor_host {
+            let usage = sysinfo_tree_usage(Pid::from_u32(pid), &self.system, true);
+            let window = self.conversation_window;
+            instances.extend(self.cursor_desktop_rows(pid, uptime, usage, window));
+        }
         for kind in supported_kinds() {
             if !instances
                 .iter()
@@ -231,10 +321,6 @@ impl Detector {
     #[cfg(target_os = "macos")]
     fn scan_macos(&mut self) -> Vec<AgentInstance> {
         let processes = self.macos_processes.processes();
-        // The desktop application is one process tree that owns every
-        // conversation it has open, so it is detected first and reported from
-        // the profile's session cache rather than from the process tree: one
-        // row per live conversation, all pointing at the application window.
         let desktop_hosts = desktop_roots(&processes);
         let desktop_groups: Vec<Vec<u32>> = desktop_hosts
             .iter()
@@ -255,6 +341,22 @@ impl Detector {
                 !desktop_groups
                     .iter()
                     .any(|group| group.contains(&process.pid))
+            })
+            .collect();
+        // The Cursor IDE is one GUI host for every Composer session; its rows
+        // come from the app's global composer database, not from the process
+        // tree. Exclude the host from the normal rows and report it below.
+        let cursor_host = roots
+            .iter()
+            .find(|(process, kind, _)| {
+                *kind == "cursor" && is_cursor_desktop_main(&process.executable, &process.command)
+            })
+            .map(|(process, _, _)| (process.pid, process.uptime));
+        let roots: Vec<_> = roots
+            .into_iter()
+            .filter(|(process, kind, _)| {
+                !(*kind == "cursor"
+                    && is_cursor_desktop_main(&process.executable, &process.command))
             })
             .collect();
         let tracked_pids: Vec<_> = roots
@@ -458,6 +560,14 @@ impl Detector {
             *snapshot = drivers.clone();
         }
         enrich_pi_instances(&mut instances, &mut self.pi);
+        enrich_agent_instances(&mut instances, display_name("gemini"), &mut self.gemini);
+        enrich_agent_instances(&mut instances, display_name("grok"), &mut self.grok);
+        enrich_agent_instances(&mut instances, display_name("cursor"), &mut self.cursor);
+        if let Some((pid, uptime)) = cursor_host {
+            let usage = usage_for_root(pid, &processes, true);
+            let window = self.conversation_window;
+            instances.extend(self.cursor_desktop_rows(pid, uptime, usage, window));
+        }
         for kind in supported_kinds() {
             if !instances
                 .iter()
@@ -611,7 +721,7 @@ fn desktop_rows(
             // better than a wrong number.
             uptime: session.run.unwrap_or(Duration::ZERO),
             model: session.model.clone(),
-            context: session.context.clone(),
+            context: session.context,
             // Where a row navigates follows whoever is driving the conversation:
             // the `dsh web` UI when a CLI owns it, otherwise the desktop window,
             // which has no per-conversation deep link yet.
@@ -634,6 +744,27 @@ fn desktop_overflow_row(pid: u32, hidden: usize) -> Option<AgentInstance> {
     (hidden > 0).then(|| AgentInstance {
         key: format!("desktop:{pid}:more"),
         kind: display_name("deepseek").into(),
+        label: crate::i18n::hidden_sessions(hidden),
+        pid,
+        cwd: None,
+        state: AgentState::Ready,
+        uptime: Duration::ZERO,
+        model: None,
+        context: None,
+        open_url: None,
+        automatic_confirmation_mode: false,
+        informational: true,
+        state_from_session: false,
+        usage: None,
+    })
+}
+
+/// The Cursor IDE's overflow row. Same shape as the DeepSeek one, with a kind
+/// and key that sort and group with the Cursor rows.
+fn cursor_overflow_row(pid: u32, hidden: usize) -> Option<AgentInstance> {
+    (hidden > 0).then(|| AgentInstance {
+        key: format!("cursor-desktop:{pid}:more"),
+        kind: display_name("cursor").into(),
         label: crate::i18n::hidden_sessions(hidden),
         pid,
         cwd: None,
@@ -823,8 +954,10 @@ fn is_desktop_host(process: &Process) -> bool {
     desktop_host_from_parts(&command, &path)
 }
 
-fn supported_kinds() -> [&'static str; 5] {
-    ["claude", "codex", "opencode", "deepseek", "pi"]
+fn supported_kinds() -> [&'static str; 8] {
+    [
+        "claude", "codex", "opencode", "deepseek", "pi", "gemini", "grok", "cursor",
+    ]
 }
 
 #[cfg(target_os = "macos")]
@@ -1005,11 +1138,162 @@ fn command_tokens(command: &str) -> impl Iterator<Item = &str> {
         .filter(|token| !token.is_empty())
 }
 
+/// The executable's path when it has one; otherwise the command line's first
+/// token, which is the path a shell used to start it.
+fn process_path<'a>(executable: &'a str, command: &'a str) -> &'a str {
+    if executable.contains(['/', '\\']) {
+        return executable;
+    }
+    command
+        .split_whitespace()
+        .next()
+        .filter(|token| token.contains(['/', '\\']))
+        .unwrap_or(executable)
+}
+
+/// The executed program's basename, lower-cased. A quote is stripped because
+/// Windows may report the executable with one.
+fn executable_basename(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+        .trim_matches('"')
+        .to_ascii_lowercase()
+}
+
+/// Whether a command line reaches an npm package's entry file. The package must
+/// sit directly under a `node_modules` directory and be followed by something
+/// that looks like a file, so a bare `…/@scope/pkg` argument is not an agent.
+fn is_package_entry(text: &str, package: &str) -> bool {
+    let normalized = text.replace('\\', "/");
+    let needle = format!("node_modules/{package}");
+    let mut rest = normalized.as_str();
+    while let Some(found) = rest.find(&needle) {
+        let after = &rest[found + needle.len()..];
+        if let Some(tail) = after.strip_prefix('/') {
+            if tail.split('/').any(|segment| segment.contains('.')) {
+                return true;
+            }
+        }
+        rest = &rest[found + 1..];
+    }
+    false
+}
+
+/// Whether one command-line token is an executable shim named `name` inside a
+/// `bin` or `.bin` directory, the shape npm links onto `PATH`.
+fn is_named_bin_entry(token: &str, name: &str) -> bool {
+    let token = token.trim_matches(|c| c == '"' || c == '\\');
+    if token.starts_with('-') {
+        return false;
+    }
+    let normalized = token.replace('\\', "/");
+    let mut segments = normalized.rsplit('/');
+    let Some(last) = segments.next() else {
+        return false;
+    };
+    last == name && matches!(segments.next(), Some("bin" | ".bin"))
+}
+
+/// Whether a process is Gemini CLI, however it was installed.
+///
+/// Gemini CLI is an npm package, so a global install runs it through Node with
+/// the package's entry file on the command line; a standalone install still
+/// exposes a `gemini` binary. Both shapes are recognised, and only the
+/// executable plus its entry file are considered so `grep gemini` is not an
+/// agent.
+fn is_gemini_cli(executable: &str, command: &str) -> bool {
+    matches!(
+        executable_basename(executable).as_str(),
+        "gemini" | "gemini.exe" | "gemini.cmd"
+    ) || (is_js_runtime(executable)
+        && (is_package_entry(command, "@google/gemini-cli")
+            || command_tokens(command).any(|token| is_named_bin_entry(token, "gemini"))))
+}
+
+/// Whether a process is Grok CLI. The official binary is `grok`; the installer
+/// also links it as `agent` inside `~/.grok/bin`, and the downloaded executable
+/// is named `grok-<platform>-<arch>`, so the path is consulted for both.
+fn is_grok_cli(executable: &str) -> bool {
+    let name = executable_basename(executable);
+    if name == "grok" || name == "grok.exe" || name.starts_with("grok-") {
+        return true;
+    }
+    if name == "agent" || name == "agent.exe" {
+        return is_under(executable, "/.grok/");
+    }
+    false
+}
+
+/// Whether an executable path (or the target it links to) contains `marker`.
+/// The installers for Grok and Cursor both link an `agent` onto `PATH`; the
+/// link target is what distinguishes them.
+fn is_under(executable: &str, marker: &str) -> bool {
+    let normalized = executable.replace('\\', "/").to_ascii_lowercase();
+    if normalized.contains(marker) {
+        return true;
+    }
+    std::fs::canonicalize(executable)
+        .ok()
+        .map(|path| {
+            path.to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+        })
+        .is_some_and(|path| path.contains(marker))
+}
+
+/// Whether a process is Cursor's CLI agent. The binary is installed as
+/// `cursor-agent`; the path check covers a versioned download whose basename has
+/// a suffix, and the generic `agent` name only when it lives in a cursor-agent
+/// directory (Grok's installer also links an `agent`).
+fn is_cursor_cli(executable: &str) -> bool {
+    let name = executable_basename(executable);
+    let path = executable.replace('\\', "/").to_ascii_lowercase();
+    name.starts_with("cursor-agent")
+        || path.contains("/cursor-agent/")
+        || (name == "agent"
+            && (path.contains("/.cursor/bin/") || is_under(executable, "cursor-agent")))
+}
+
+/// Whether a process is the Cursor desktop application's main process, as
+/// opposed to its helpers or the `cursor-agent` CLI.
+///
+/// The main process is what owns the global composer database; its renderer and
+/// utility children are not rows. On macOS the application bundle's path is the
+/// discriminator, so a `cursor` binary on `PATH` is not mistaken for the IDE.
+/// Elsewhere Electron names every helper `cursor` and adds `--type=…`.
+fn is_cursor_desktop_main(executable: &str, command: &str) -> bool {
+    let name = executable_basename(executable);
+    if name != "cursor" && name != "cursor.exe" {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if command
+            .split_whitespace()
+            .any(|argument| argument.starts_with("--type="))
+        {
+            return false;
+        }
+        let executable = executable.replace('\\', "/");
+        let command = command.replace('\\', "/");
+        executable.contains("/Cursor.app/") || command.contains("/Cursor.app/")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        !command
+            .split_whitespace()
+            .any(|argument| argument.starts_with("--type="))
+    }
+}
+
 /// The executed program's basename, matched against the known agent binaries.
 /// Only the executable is considered for the CLI agents: command lines routinely
-/// mention agent names (`which pi`) without being that agent. The one exception
-/// is `dsh`, which ships as an npm package and is recognised from its command
-/// line by [`is_dsh_cli`].
+/// mention agent names (`which pi`) without being that agent. The exceptions are
+/// `dsh` and Gemini CLI, which ship as npm packages and are recognised from their
+/// command line, and Grok's `agent` symlink.
 ///
 /// The DeepSeek Harness desktop application is matched by its bundle directory
 /// instead: its executable is the product name with a space, which no CLI
@@ -1018,6 +1302,18 @@ fn command_tokens(command: &str) -> impl Iterator<Item = &str> {
 fn agent_kind_from_executable(executable: &str, command: &str) -> Option<&'static str> {
     if executable.contains(crate::deepseek_desktop::APP_BUNDLE) {
         return Some("deepseek");
+    }
+    if is_gemini_cli(executable, command) {
+        return Some("gemini");
+    }
+    // `ps comm=` sometimes reports only the basename for a symlinked agent;
+    // the command line still carries the path that resolves it.
+    let path = process_path(executable, command);
+    if is_grok_cli(path) {
+        return Some("grok");
+    }
+    if is_cursor_cli(path) {
+        return Some("cursor");
     }
     let name = Path::new(executable)
         .file_name()?
@@ -1029,6 +1325,7 @@ fn agent_kind_from_executable(executable: &str, command: &str) -> Option<&'stati
         "codex" => Some("codex"),
         "opencode" => Some("opencode"),
         "pi" => Some("pi"),
+        "cursor" => Some("cursor"),
         "dsh" | "deepseek-harness" => Some("deepseek"),
         _ if is_dsh_cli(executable, command) => Some("deepseek"),
         _ => None,
@@ -1042,6 +1339,11 @@ fn agent_kind_from_executable(executable: &str, command: &str) -> Option<&'stati
 /// stay hidden instead of masquerading as a session.
 #[cfg(target_os = "macos")]
 fn is_host_integration(process: &ProcessRecord) -> bool {
+    // The Cursor IDE lives inside its own bundle but is the host we report,
+    // not a helper to hide.
+    if is_cursor_desktop_main(&process.executable, &process.command) {
+        return false;
+    }
     if is_bundled_in_application(Path::new(&process.executable)) {
         return true;
     }
@@ -1075,6 +1377,12 @@ fn has_process_agent_parent(
     kind: &str,
     processes: &[ProcessRecord],
 ) -> bool {
+    // A `cursor-agent` launched from Cursor's own integrated terminal sits
+    // under the IDE host in the process tree. The host is not the CLI's parent
+    // agent, so it must not hide the CLI's row; a Cursor helper, which shares
+    // the IDE's executable name on other platforms, still must be hidden.
+    let cursor_cli =
+        kind == "cursor" && is_cursor_cli(process_path(&process.executable, &process.command));
     let by_pid: HashMap<_, _> = processes
         .iter()
         .map(|process| (process.pid, process))
@@ -1086,6 +1394,10 @@ fn has_process_agent_parent(
             break;
         };
         if process_kind(candidate) == Some(kind) {
+            if cursor_cli && is_cursor_desktop_main(&candidate.executable, &candidate.command) {
+                parent = candidate.ppid;
+                continue;
+            }
             return true;
         }
         parent = candidate.ppid;
@@ -1380,7 +1692,7 @@ fn hosted_codex_instances(
                 state_from_session: true,
                 uptime: rollout_uptime(&rollout).unwrap_or(process.uptime),
                 model: facts.model.clone(),
-                context: facts.context.clone(),
+                context: facts.context,
                 open_url: codex_thread_url(&rollout),
                 automatic_confirmation_mode: facts.automatic_confirmation_mode,
                 informational: false,
@@ -1432,13 +1744,16 @@ fn kind_order(kind: &str) -> usize {
     // Display order of every row the tray can show. Hosted sessions (ChatGPT)
     // sort next to the agent they embed. Kept in sync with `display_name` by
     // `kind_order_covers_every_agent_kind`.
-    const ORDER: [&str; 6] = [
+    const ORDER: [&str; 9] = [
         "Claude",
         "Codex",
         "ChatGPT",
         "OpenCode",
         "DeepSeek Harness",
         "Pi",
+        "Gemini",
+        "Grok",
+        "Cursor",
     ];
     // The terminal form sorts with the agent it belongs to.
     let kind = if kind == DEEPSEEK_TERMINAL_KIND {
@@ -1521,6 +1836,103 @@ fn enrich_pi_instances(instances: &mut [AgentInstance], analyzer: &mut crate::pi
             })
             .collect();
         for ((index, _, _), facts) in rows.into_iter().zip(analyzer.analyze(&cwd, &live)) {
+            let Some(facts) = facts else {
+                continue;
+            };
+            let instance = &mut instances[index];
+            instance.model = facts.model;
+            instance.context = facts.context;
+            if let Some(state) = facts.state {
+                instance.state = state;
+                instance.state_from_session = true;
+            }
+            instance.label = session_label(
+                &instance.kind,
+                instance.cwd.as_deref(),
+                facts.title.as_deref(),
+            );
+        }
+    }
+}
+
+/// The session reader behind one CLI agent. Every one of them resolves a
+/// session per live process from the project directory it runs in.
+trait AgentSessionSource {
+    fn analyze(
+        &mut self,
+        cwd: &Path,
+        live: &[crate::agent_sessions::LiveSession],
+    ) -> Vec<Option<crate::agent_sessions::AgentFacts>>;
+}
+
+impl AgentSessionSource for crate::gemini::GeminiAnalyzer {
+    fn analyze(
+        &mut self,
+        cwd: &Path,
+        live: &[crate::agent_sessions::LiveSession],
+    ) -> Vec<Option<crate::agent_sessions::AgentFacts>> {
+        crate::gemini::GeminiAnalyzer::analyze(self, cwd, live)
+    }
+}
+
+impl AgentSessionSource for crate::grok::GrokAnalyzer {
+    fn analyze(
+        &mut self,
+        cwd: &Path,
+        live: &[crate::agent_sessions::LiveSession],
+    ) -> Vec<Option<crate::agent_sessions::AgentFacts>> {
+        crate::grok::GrokAnalyzer::analyze(self, cwd, live)
+    }
+}
+
+impl AgentSessionSource for crate::cursor::CursorAnalyzer {
+    fn analyze(
+        &mut self,
+        cwd: &Path,
+        live: &[crate::agent_sessions::LiveSession],
+    ) -> Vec<Option<crate::agent_sessions::AgentFacts>> {
+        crate::cursor::CursorAnalyzer::analyze(self, cwd, live)
+    }
+}
+
+/// Bind each live CLI process to its own session and apply the facts. Several
+/// processes can share one project directory, so rows are grouped by `cwd` and
+/// every process in the group is bound to a distinct session; without that two
+/// agents in one directory would mirror whichever session was written last.
+fn enrich_agent_instances<T: AgentSessionSource>(
+    instances: &mut [AgentInstance],
+    display: &str,
+    analyzer: &mut T,
+) {
+    use crate::agent_sessions::LiveSession;
+
+    let mut by_cwd: HashMap<PathBuf, Vec<(usize, Duration)>> = HashMap::new();
+    for (index, instance) in instances.iter().enumerate() {
+        if instance.kind != display
+            || instance.state == AgentState::Stopped
+            || instance.pid == 0
+            || instance.informational
+        {
+            continue;
+        }
+        let Some(cwd) = instance.cwd.clone() else {
+            continue;
+        };
+        by_cwd
+            .entry(cwd)
+            .or_default()
+            .push((index, instance.uptime));
+    }
+    let now = SystemTime::now();
+    for (cwd, mut rows) in by_cwd {
+        rows.sort_by_key(|(index, _)| instances[*index].pid);
+        let live: Vec<LiveSession> = rows
+            .iter()
+            .map(|(_, uptime)| LiveSession {
+                started: now.checked_sub(*uptime).unwrap_or(now),
+            })
+            .collect();
+        for ((index, _), facts) in rows.into_iter().zip(analyzer.analyze(&cwd, &live)) {
             let Some(facts) = facts else {
                 continue;
             };
@@ -2047,8 +2459,22 @@ fn executable(process: &Process) -> String {
 }
 
 #[cfg(not(target_os = "macos"))]
+fn is_cursor_desktop_process(process: &Process) -> bool {
+    let path = process
+        .exe()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| executable(process));
+    is_cursor_desktop_main(&path, &command_line(process))
+}
+
+#[cfg(not(target_os = "macos"))]
 fn agent_kind(process: &Process) -> Option<&'static str> {
     let name = executable(process);
+    let path = process
+        .exe()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| name.clone());
+    let command = command_line(process);
     // The ChatGPT desktop app ships the same headless Codex app-server on
     // Windows, driven by the GUI instead of a terminal session.
     if name == "codex"
@@ -2059,13 +2485,27 @@ fn agent_kind(process: &Process) -> Option<&'static str> {
     {
         return None;
     }
+    if is_gemini_cli(&path, &command) {
+        return Some("gemini");
+    }
+    let path = process_path(&path, &command);
+    if is_grok_cli(path) {
+        return Some("grok");
+    }
+    if is_cursor_cli(path) {
+        return Some("cursor");
+    }
     match name.as_str() {
         "claude" => Some("claude"),
         "codex" => Some("codex"),
         "opencode" => Some("opencode"),
         "pi" => Some("pi"),
+        "gemini" => Some("gemini"),
+        "grok" => Some("grok"),
+        "cursor" => Some("cursor"),
+        "cursor-agent" => Some("cursor"),
         "dsh" | "deepseek-harness" => Some("deepseek"),
-        _ if is_dsh_cli(&name, &command_line(process)) => Some("deepseek"),
+        _ if is_dsh_cli(&name, &command) => Some("deepseek"),
         _ => None,
     }
 }
@@ -2076,6 +2516,9 @@ fn display_name(kind: &str) -> &str {
         "codex" => "Codex",
         "opencode" => "OpenCode",
         "pi" => "Pi",
+        "gemini" => "Gemini",
+        "grok" => "Grok",
+        "cursor" => "Cursor",
         _ => "DeepSeek Harness",
     }
 }
@@ -2095,6 +2538,14 @@ fn terminal_label(kind: &str, display: &str, cwd: Option<&Path>) -> String {
 
 #[cfg(not(target_os = "macos"))]
 fn has_agent_parent(process: &Process, kind: &str, system: &System) -> bool {
+    let cursor_cli = kind == "cursor" && {
+        let command = command_line(process);
+        let path = process
+            .exe()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| executable(process));
+        is_cursor_cli(process_path(&path, &command))
+    };
     let mut parent = process.parent();
     let mut seen = HashSet::new();
     while let Some(pid) = parent {
@@ -2105,6 +2556,10 @@ fn has_agent_parent(process: &Process, kind: &str, system: &System) -> bool {
             break;
         };
         if agent_kind(candidate) == Some(kind) {
+            if cursor_cli && is_cursor_desktop_process(candidate) {
+                parent = candidate.parent();
+                continue;
+            }
             return true;
         }
         parent = candidate.parent();
@@ -2564,10 +3019,107 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_new_cli_agents_are_recognized_however_they_were_installed() {
+        let kind =
+            |executable: &str, command: &str| agent_kind_from_executable(executable, command);
+        // Gemini CLI installs as a global npm package, so the process is the
+        // Node runtime with the package entry file on its command line.
+        assert_eq!(
+            kind(
+                "/Users/me/.nvm/versions/node/v26/bin/node",
+                "node /Users/me/.nvm/versions/node/v26/lib/node_modules/@google/gemini-cli/bundle/gemini.js"
+            ),
+            Some("gemini")
+        );
+        assert_eq!(kind("/opt/homebrew/bin/gemini", ""), Some("gemini"));
+        // A shebang install is the Node runtime plus the `bin/gemini` shim.
+        assert_eq!(
+            kind("node", "node /Users/me/.nvm/versions/node/v26/bin/gemini"),
+            Some("gemini")
+        );
+        // A shell whose arguments merely mention the agent is not a session.
+        assert_eq!(kind("/bin/zsh", "grep gemini logs"), None);
+        assert_eq!(
+            kind(
+                "/Users/me/.nvm/versions/node/v26/bin/node",
+                "node /Users/me/tools/gemini.js"
+            ),
+            None
+        );
+
+        // Grok installs a `grok` binary and an `agent` symlink under ~/.grok.
+        assert_eq!(kind("/Users/me/.grok/bin/grok", ""), Some("grok"));
+        assert_eq!(
+            kind("/Users/me/.grok/downloads/grok-macos-aarch64", ""),
+            Some("grok")
+        );
+        assert_eq!(kind("/Users/me/.grok/bin/agent", ""), Some("grok"));
+        assert_eq!(kind("/usr/local/bin/agent", ""), None);
+
+        // Cursor CLI is `cursor-agent`; a generic `agent` is not Cursor.
+        assert_eq!(
+            kind("/Users/me/.local/bin/cursor-agent", ""),
+            Some("cursor")
+        );
+        assert_eq!(
+            kind(
+                "/Users/me/.local/share/cursor-agent/versions/2026/bin/agent",
+                ""
+            ),
+            Some("cursor")
+        );
+        assert_eq!(kind("/usr/local/bin/agent", ""), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_cursor_cli_under_the_ide_terminal_is_not_hidden() {
+        let records = [
+            record(1, 0, "/sbin/launchd", ""),
+            record(100, 1, "/Applications/Cursor.app/Contents/MacOS/Cursor", ""),
+            record(101, 100, "/bin/zsh", "-l"),
+            record(102, 101, "/Users/me/.local/bin/cursor-agent", ""),
+            record(103, 102, "/Users/me/.local/bin/cursor-agent", "resume"),
+        ];
+        // The IDE is an ancestor, but it is a host, not the CLI's parent agent.
+        assert!(!has_process_agent_parent(&records[3], "cursor", &records));
+        // A real CLI child of a CLI is still a nested process, not a row.
+        assert!(has_process_agent_parent(&records[4], "cursor", &records));
+        // The IDE itself has no agent parent.
+        assert!(!has_process_agent_parent(&records[1], "cursor", &records));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_cursor_ide_is_a_host_not_a_cli() {
+        let main = "/Applications/Cursor.app/Contents/MacOS/Cursor";
+        assert_eq!(agent_kind_from_executable(main, ""), Some("cursor"));
+        assert!(is_cursor_desktop_main(main, main));
+        // A bare `cursor` on PATH is not the IDE, and neither is the CLI.
+        assert!(!is_cursor_desktop_main("/usr/local/bin/cursor", ""));
+        assert!(!is_cursor_desktop_main(
+            "/Users/me/.local/bin/cursor-agent",
+            ""
+        ));
+        // The IDE lives in its own bundle, but it is the host we report, not a
+        // helper to hide.
+        assert!(!is_host_integration(&record(1, 0, main, "")));
+        // A renderer sharing the executable name is still not the host.
+        assert!(!is_cursor_desktop_main(
+            "/Applications/Cursor.app/Contents/MacOS/Cursor",
+            "/Applications/Cursor.app/Contents/MacOS/Cursor --type=renderer"
+        ));
+    }
+
     #[test]
     fn known_display_names() {
         assert_eq!(display_name("codex"), "Codex");
         assert_eq!(display_name("deepseek"), "DeepSeek Harness");
+        assert_eq!(display_name("gemini"), "Gemini");
+        assert_eq!(display_name("grok"), "Grok");
+        assert_eq!(display_name("cursor"), "Cursor");
     }
 
     #[test]
@@ -3015,6 +3567,16 @@ mod tests {
         )
         .expect("an alert row");
         assert_eq!(missing.label, crate::i18n::profile_missing());
+    }
+
+    #[test]
+    fn the_cursor_overflow_row_groups_with_cursor_rows() {
+        assert!(cursor_overflow_row(1, 0).is_none());
+        let row = cursor_overflow_row(1, 2).expect("an overflow row");
+        assert_eq!(row.kind, "Cursor");
+        assert!(row.informational);
+        assert!(row.label.contains('2'));
+        assert_eq!(row.key, "cursor-desktop:1:more");
     }
 
     #[test]

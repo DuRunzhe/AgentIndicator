@@ -18,6 +18,7 @@
 //! files, and discarding it costs one re-read, never a wrong number.
 
 use crate::model::RESOURCE_AGENTS;
+use crate::timestamps::{epoch_millis, parse_rfc3339_millis};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use std::{
@@ -28,9 +29,9 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     sync::{mpsc::RecvTimeoutError, Arc, Mutex},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime},
 };
-use time::{Date, Month, OffsetDateTime, Time, UtcOffset};
+use time::{Date, OffsetDateTime, Time, UtcOffset};
 
 /// How often the table is recomputed while the tray is running. The scan reads
 /// files only, so it is independent of the two-second status cadence: a daily or
@@ -159,6 +160,9 @@ pub struct Roots {
     pub opencode: PathBuf,
     pub pi: PathBuf,
     pub deepseek: PathBuf,
+    pub gemini: PathBuf,
+    pub grok: PathBuf,
+    pub cursor_desktop: PathBuf,
 }
 
 impl Roots {
@@ -169,19 +173,63 @@ impl Roots {
             opencode: home.join(".local/share/opencode/opencode.db"),
             pi: home.join(".pi/agent/sessions"),
             deepseek: home.join(".dsh/storages/session_projcache/sessions"),
+            gemini: home.join(".gemini/tmp"),
+            grok: home.join(".grok/sessions"),
+            cursor_desktop: cursor_desktop_db(home),
         }
     }
 
     pub fn system() -> Option<Self> {
         let home = dirs::home_dir()?;
         let mut roots = Self::from_home(&home);
+        // Cursor's user directory is the platform config directory, which can
+        // differ from `~/.config` when `XDG_CONFIG_HOME` is set on Linux.
+        if let Some(config) = dirs::config_dir() {
+            roots.cursor_desktop = config
+                .join("Cursor")
+                .join("User")
+                .join("globalStorage")
+                .join("state.vscdb");
+        }
         // The desktop application can be pointed at another profile, and this
         // resolver already honours `DSH_HOME`.
         if let Some(projection) = crate::deepseek_desktop::session_cache_root() {
             roots.deepseek = projection;
         }
+        // Gemini CLI and Grok both honour a home override; read the same
+        // directories their sessions were written under.
+        if let Some(env) = std::env::var_os("GEMINI_CLI_HOME") {
+            roots.gemini = PathBuf::from(env).join(".gemini/tmp");
+        }
+        if let Some(env) = std::env::var_os("GROK_HOME") {
+            roots.grok = PathBuf::from(env).join("sessions");
+        }
+        if let Some(env) = std::env::var_os("CURSOR_DESKTOP_USER_DIR") {
+            roots.cursor_desktop = PathBuf::from(env).join("globalStorage/state.vscdb");
+        }
         Some(roots)
     }
+}
+
+#[cfg(target_os = "macos")]
+fn cursor_user_dir(home: &Path) -> PathBuf {
+    home.join("Library/Application Support/Cursor/User")
+}
+
+#[cfg(target_os = "windows")]
+fn cursor_user_dir(home: &Path) -> PathBuf {
+    home.join("AppData/Roaming/Cursor/User")
+}
+
+#[cfg(target_os = "linux")]
+fn cursor_user_dir(home: &Path) -> PathBuf {
+    home.join(".config/Cursor/User")
+}
+
+fn cursor_desktop_db(home: &Path) -> PathBuf {
+    cursor_user_dir(home)
+        .join("globalStorage")
+        .join("state.vscdb")
 }
 
 /// One-shot scan, as `--diagnose-usage` needs it.
@@ -296,6 +344,22 @@ impl Scanner {
                 last_day,
                 &mut offsets,
             ),
+            self.gemini_totals(&roots.gemini, start, start_day, last_day, &mut offsets),
+            self.jsonl_totals(
+                Kind::Grok,
+                &roots.grok,
+                start,
+                start_day,
+                last_day,
+                &mut offsets,
+            ),
+            self.cursor_desktop_totals(
+                &roots.cursor_desktop,
+                start,
+                start_day,
+                last_day,
+                &mut offsets,
+            ),
         ];
         self.prune();
         let mut snapshot = UsageSnapshot::empty(period);
@@ -325,6 +389,50 @@ impl Scanner {
             }
             let (records, counts) = self
                 .bucket(kind, &file, offsets)
+                .between(start_day, last_day);
+            totals.records += records;
+            totals.counts.add(&counts);
+        }
+        totals
+    }
+
+    /// Gemini's session tree is `<tmp>/<project>/chats/session-*.json[l]`.
+    /// Legacy sessions are one whole `.json` object rather than JSONL, so this
+    /// walks the tree instead of reusing [`jsonl_files`].
+    /// The Cursor IDE keeps every Composer in one global database, so this is
+    /// a single-file scan rather than a tree walk.
+    fn cursor_desktop_totals(
+        &mut self,
+        path: &Path,
+        start: i64,
+        start_day: i32,
+        last_day: i32,
+        offsets: &mut Offsets,
+    ) -> Totals {
+        if !path.is_file() || !touched_since(path, start) {
+            return Totals::default();
+        }
+        let (records, counts) = self
+            .bucket(Kind::CursorDesktop, path, offsets)
+            .between(start_day, last_day);
+        Totals { records, counts }
+    }
+
+    fn gemini_totals(
+        &mut self,
+        root: &Path,
+        start: i64,
+        start_day: i32,
+        last_day: i32,
+        offsets: &mut Offsets,
+    ) -> Totals {
+        let mut totals = Totals::default();
+        for file in gemini_files(root) {
+            if !touched_since(&file, start) {
+                continue;
+            }
+            let (records, counts) = self
+                .bucket(Kind::Gemini, &file, offsets)
                 .between(start_day, last_day);
             totals.records += records;
             totals.counts.add(&counts);
@@ -392,6 +500,9 @@ enum Kind {
     Claude,
     Codex,
     Pi,
+    Gemini,
+    Grok,
+    CursorDesktop,
 }
 
 /// Records of one file, grouped by local day.
@@ -474,6 +585,9 @@ fn parse_file(kind: Kind, path: &Path, offsets: &mut Offsets) -> Bucket {
         Kind::Claude => claude_file(path, offsets),
         Kind::Codex => codex_file(path, offsets),
         Kind::Pi => pi_file(path, offsets),
+        Kind::Gemini => gemini_file(path, offsets),
+        Kind::Grok => grok_file(path, offsets),
+        Kind::CursorDesktop => cursor_desktop_file(path, offsets),
     }
 }
 
@@ -615,6 +729,126 @@ fn pi_file(path: &Path, offsets: &mut Offsets) -> Bucket {
                 input_cached: cached,
                 output: u64_of(usage, "output"),
                 cost: usage["cost"]["total"].as_f64(),
+            },
+            offsets,
+        );
+    }
+    bucket
+}
+
+/// Gemini: one token summary per model response. The append-only format can
+/// write the same message again as its metadata grows, but the session reader
+/// already keeps the last record per id, so each response is counted once.
+///
+/// `input` is the prompt count and the tool-use prompt count; `cached` is the
+/// cached share of that input. Thinking is output for the same reason it is for
+/// Pi and OpenCode: the API reports it beside the candidate tokens.
+fn gemini_file(path: &Path, offsets: &mut Offsets) -> Bucket {
+    let mut bucket = Bucket::default();
+    for record in crate::gemini::usage_records(path) {
+        bucket.push(
+            record.at,
+            TokenCounts {
+                input: record.input,
+                input_cached: record.input_cached,
+                output: record.output,
+                cost: None,
+            },
+            offsets,
+        );
+    }
+    bucket
+}
+
+/// Grok: `turn_completed` updates carry the provider-recorded usage of the
+/// whole turn. A turn is re-emitted while it runs, so the last record for a
+/// prompt id is the one that counts; `turn_usage_records` does that
+/// de-duplication before the day buckets are built.
+fn grok_file(path: &Path, offsets: &mut Offsets) -> Bucket {
+    // Only the ACP update stream carries `turn_completed`; skipping the sibling
+    // `chat_history.jsonl`/`rewind_points.jsonl` avoids parsing files that can
+    // never contribute.
+    if path.file_name().and_then(|name| name.to_str()) != Some("updates.jsonl") {
+        return Bucket::default();
+    }
+    let mut bucket = Bucket::default();
+    for record in crate::grok::turn_usage_records(path) {
+        bucket.push(
+            record.at,
+            TokenCounts {
+                input: record.input,
+                input_cached: record.input_cached,
+                output: record.output,
+                cost: record.cost,
+            },
+            offsets,
+        );
+    }
+    bucket
+}
+
+/// The session files of every Gemini project, including the subagent sessions
+/// nested one directory down (`chats/<parent>/<child>.jsonl`). Their tokens are
+/// billed separately, so the usage table counts them too; only the main files
+/// are candidates for a row.
+fn gemini_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(projects) = fs::read_dir(root) else {
+        return files;
+    };
+    for project in projects.flatten() {
+        collect_gemini_sessions(&project.path().join("chats"), 2, true, &mut files);
+    }
+    files
+}
+
+fn collect_gemini_sessions(
+    directory: &Path,
+    depth: usize,
+    top_level: bool,
+    files: &mut Vec<PathBuf>,
+) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_gemini_sessions(&path, depth - 1, false, files);
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        // Main sessions are named `session-*`; a subagent child is named after
+        // its session id inside the parent's directory.
+        if top_level && !name.starts_with("session-") {
+            continue;
+        }
+        if matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("json" | "jsonl")
+        ) {
+            files.push(path);
+        }
+    }
+}
+
+/// Cursor IDE: one token count per assistant bubble, with the bubble's own
+/// timestamp. The CLI's separate `~/.cursor/chats` store records no usage.
+fn cursor_desktop_file(path: &Path, offsets: &mut Offsets) -> Bucket {
+    let mut bucket = Bucket::default();
+    for record in crate::cursor_desktop::usage_records(path) {
+        bucket.push(
+            record.at,
+            TokenCounts {
+                input: record.input,
+                input_cached: record.input_cached,
+                output: record.output,
+                cost: None,
             },
             offsets,
         );
@@ -806,12 +1040,6 @@ impl Worker {
     }
 }
 
-fn epoch_millis(time: SystemTime) -> i64 {
-    time.duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 fn u64_of(value: &serde_json::Value, key: &str) -> u64 {
     value[key].as_u64().unwrap_or(0)
 }
@@ -866,75 +1094,6 @@ fn collect_jsonl(directory: &Path, depth: usize, files: &mut Vec<PathBuf>) {
     }
 }
 
-/// Parse the RFC 3339 timestamps the Codex and Claude logs write
-/// (`2026-08-17T14:20:51.810Z`). `time`'s parser needs two extra features for
-/// this, so the fixed shape these logs use is decoded here instead.
-fn parse_rfc3339_millis(value: &str) -> Option<i64> {
-    if value.len() < 19 {
-        return None;
-    }
-    let year: i32 = value.get(0..4)?.parse().ok()?;
-    let month: u8 = value.get(5..7)?.parse().ok()?;
-    let day: u8 = value.get(8..10)?.parse().ok()?;
-    let hour: u8 = value.get(11..13)?.parse().ok()?;
-    let minute: u8 = value.get(14..16)?.parse().ok()?;
-    let second: u8 = value.get(17..19)?.parse().ok()?;
-    let separators = [4, 7, 10, 13, 16].map(|index| value.as_bytes().get(index).copied());
-    if separators[0] != Some(b'-')
-        || separators[1] != Some(b'-')
-        || !matches!(separators[2], Some(b'T' | b't' | b' '))
-        || separators[3] != Some(b':')
-        || separators[4] != Some(b':')
-    {
-        return None;
-    }
-    let rest = &value[19..];
-    let (millis, rest) = match rest.strip_prefix('.') {
-        Some(fraction) => {
-            let digits = fraction
-                .char_indices()
-                .take_while(|(_, character)| character.is_ascii_digit())
-                .last()
-                .map(|(index, _)| index + 1)
-                .unwrap_or(0);
-            let millis = fraction_millis(&fraction[..digits])?;
-            (millis, &fraction[digits..])
-        }
-        None => (0, rest),
-    };
-    let offset = match rest {
-        "Z" | "z" | "" => 0,
-        zone => {
-            let sign = match zone.as_bytes().first()? {
-                b'+' => 1,
-                b'-' => -1,
-                _ => return None,
-            };
-            let hours: i64 = zone.get(1..3)?.parse().ok()?;
-            let minutes: i64 = zone.get(4..6)?.parse().ok()?;
-            sign * (hours * 3600 + minutes * 60)
-        }
-    };
-    let date = Date::from_calendar_date(year, Month::try_from(month).ok()?, day).ok()?;
-    let time = Time::from_hms(hour, minute, second).ok()?;
-    let seconds = date.with_time(time).assume_utc().unix_timestamp() - offset;
-    Some(seconds * 1_000 + millis)
-}
-
-/// Milliseconds from a fractional-second digit run: `.8` is 800 ms, `.81` is
-/// 810 ms, `.810` is 810 ms and anything past three digits is truncated.
-fn fraction_millis(digits: &str) -> Option<i64> {
-    if digits.is_empty() {
-        return Some(0);
-    }
-    let mut millis = 0;
-    for (index, character) in digits.chars().take(3).enumerate() {
-        let digit = character.to_digit(10)? as i64;
-        millis += digit * 10i64.pow(2 - index as u32);
-    }
-    Some(millis)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,6 +1126,9 @@ mod tests {
             opencode: dir.join("opencode.db"),
             pi: dir.join("pi"),
             deepseek: dir.join("deepseek"),
+            gemini: dir.join("gemini"),
+            grok: dir.join("grok"),
+            cursor_desktop: dir.join("cursor-desktop.vscdb"),
         }
     }
 
@@ -1215,6 +1377,134 @@ mod tests {
         assert_eq!(totals.counts.input_cached, 90);
         assert_eq!(totals.counts.output, 5);
         assert_eq!(totals.counts.cost, Some(0.25));
+    }
+
+    #[test]
+    fn gemini_counts_each_response_and_reads_the_cached_share() {
+        let dir = temp_dir("gemini");
+        let at = 1_779_542_660_988i64;
+        let now = SystemTime::UNIX_EPOCH + Duration::from_millis(at as u64);
+        let message = |id: &str, input: u64, cached: u64, output: u64, thoughts: u64| {
+            json!({
+                "id": id,
+                "timestamp": "2026-05-23T13:24:20.988Z",
+                "type": "gemini",
+                "content": "ok",
+                "tokens": {
+                    "input": input,
+                    "cached": cached,
+                    "output": output,
+                    "thoughts": thoughts,
+                    "tool": 3,
+                    "total": input + output + thoughts + 3
+                }
+            })
+            .to_string()
+        };
+        // A legacy whole-object session.
+        write(
+            &dir.join("gemini/project/chats/session-2026-05-23T13-23-10f5b247.json"),
+            &json!({
+                "sessionId": "s1",
+                "messages": [
+                    { "id": "u1", "type": "user", "timestamp": "2026-05-23T13:23:51.979Z", "content": "hi" },
+                    serde_json::from_str::<serde_json::Value>(&message("g1", 100, 80, 10, 2)).unwrap()
+                ]
+            })
+            .to_string(),
+        );
+        let totals = Scanner::new().scan(&roots(&dir), Period::Day, now);
+        let gemini = totals
+            .agents
+            .iter()
+            .find(|agent| agent.kind == "Gemini")
+            .expect("gemini column");
+        let counts = gemini.counts.expect("usage");
+        assert_eq!(counts.input, 103, "the tool-use prompt is input too");
+        assert_eq!(counts.input_cached, 80);
+        assert_eq!(counts.output, 12, "thinking is output too");
+
+        // The whole-object record must land in the right local day.
+        assert!(at >= window_start(Period::Day, now));
+    }
+
+    #[test]
+    fn grok_reads_completed_turn_usage_once_per_prompt() {
+        let dir = temp_dir("grok-usage");
+        let line = |prompt: &str, input: u64, output: u64, cached: u64| {
+            json!({
+                "timestamp": 1_781_868_672,
+                "params": {
+                    "update": {
+                        "sessionUpdate": "turn_completed",
+                        "prompt_id": prompt,
+                        "usage": {
+                            "inputTokens": input,
+                            "outputTokens": output,
+                            "cachedReadTokens": cached,
+                            "cacheCreationTokens": 2,
+                            "costUsdTicks": 1_500_000_000
+                        }
+                    }
+                }
+            })
+            .to_string()
+        };
+        write(
+            &dir.join("grok/%2FUsers%2Fme%2Fproject/%2F019edf9c-0/updates.jsonl"),
+            &format!(
+                "{}\n{}\n{}\n",
+                line("p1", 100, 10, 40),
+                line("p1", 120, 12, 50),
+                line("p2", 7, 3, 0)
+            ),
+        );
+        let totals = totals(
+            Kind::Grok,
+            &dir.join("grok"),
+            parse_rfc3339_millis("2027-01-01T00:00:00Z").unwrap(),
+        );
+        assert_eq!(totals.records, 2, "the re-emitted turn is counted once");
+        assert_eq!(totals.counts.input, 127);
+        assert_eq!(totals.counts.input_cached, 54);
+        assert_eq!(totals.counts.output, 15);
+        assert_eq!(totals.counts.cost, Some(0.3));
+    }
+
+    #[test]
+    fn cursor_desktop_reads_the_bubble_token_counts() {
+        let dir = temp_dir("cursor-desktop");
+        let path = dir.join("state.vscdb");
+        let connection = Connection::open(&path).expect("database");
+        connection
+            .execute_batch("CREATE TABLE cursorDiskKV (key text PRIMARY KEY, value text NOT NULL);")
+            .expect("schema");
+        let insert = |id: &str, input: u64, output: u64| {
+            let value = json!({
+                "bubbleId": id,
+                "type": 2,
+                "createdAt": "2026-11-22T01:00:01.000Z",
+                "tokenCount": { "inputTokens": input, "outputTokens": output }
+            })
+            .to_string();
+            connection
+                .execute(
+                    "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+                    rusqlite::params![format!("bubbleId:c1:{id}"), value],
+                )
+                .expect("insert");
+        };
+        insert("a1", 100, 10);
+        insert("a2", 50, 5);
+        insert("a3", 0, 0);
+        let mut scanner = Scanner::new();
+        let mut offsets = Offsets::fixed(0);
+        let totals = scanner.cursor_desktop_totals(&path, 0, 0, i32::MAX, &mut offsets);
+        assert_eq!(totals.records, 2, "zero-token bubbles are not records");
+        assert_eq!(totals.counts.input, 150);
+        assert_eq!(totals.counts.input_cached, 0);
+        assert_eq!(totals.counts.output, 15);
+        assert_eq!(totals.counts.cost, None);
     }
 
     #[test]

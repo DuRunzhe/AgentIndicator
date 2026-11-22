@@ -1,8 +1,11 @@
 mod about;
+mod agent_sessions;
 mod browser_tabs;
 mod claude_statusline;
 mod codex_state;
 mod config;
+mod cursor;
+mod cursor_desktop;
 mod deepseek;
 #[cfg(target_os = "macos")]
 mod deepseek_ax;
@@ -11,6 +14,8 @@ mod deepseek_jump;
 mod detector;
 mod dialog;
 mod focus;
+mod gemini;
+mod grok;
 mod i18n;
 mod instance_lock;
 #[cfg(target_os = "macos")]
@@ -25,6 +30,7 @@ mod pi;
 mod session;
 mod startup;
 mod terminal;
+mod timestamps;
 mod update;
 mod usage;
 mod web;

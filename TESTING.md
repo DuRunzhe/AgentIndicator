@@ -36,8 +36,8 @@ tar -xzf agent-status-indicator-0.2.46-alpha.1-aarch64-apple-darwin.tar.gz
 
 ## 建议测试场景
 
-1. 无 Agent 运行：顶部显示“无活动”，菜单保留 Claude、Codex、OpenCode、DeepSeek Harness 四条灰色“已停止”项，且不可点击。
-2. 启动 Claude Code、Codex、OpenCode 或 DeepSeek Harness：菜单出现按项目区分的实例。
+1. 无 Agent 运行：顶部显示“无活动”，菜单保留 Claude、Codex、OpenCode、DeepSeek Harness、Pi、Gemini、Grok、Cursor 八条灰色“已停止”项，且不可点击。
+2. 启动 Claude Code、Codex、OpenCode、Gemini CLI、Grok CLI、Cursor（编辑器或 `cursor-agent` CLI）或 DeepSeek Harness：菜单出现按项目区分的实例。
 3. 让 Codex 执行普通工具：状态应为“进行中”。
 4. 触发 Codex 提权确认：应在约 1 秒内显示“等待确认”。
 5. 让 Codex 后台 terminal 继续运行：不得一直停留在“等待确认”。
@@ -57,6 +57,14 @@ tar -xzf agent-status-indicator-0.2.46-alpha.1-aarch64-apple-darwin.tar.gz
 15c. 把某会话的 `permissions.approval` 设为 `never`（自动确认）：关闭“自动确认模式仍通知”后，该会话进入等待态时不应再发通知。
 15d. 开启“设置 → 通知 → 通知：任务完成”，让一个会话跑完一轮（“进行中” → “就绪”）：应在变为“就绪”的时刻收到一次完成通知，点击通知跳回该会话；继续停在“就绪”不应反复提醒，关闭该开关后下一轮结束时不再通知。
 16. 关闭桌面端：所有桌面端会话行应消失，只剩“已停止”的灰色占位项。
+17. 启动 Gemini CLI 并发送一轮对话：菜单出现 `Gemini (<项目>) · <标题>`，模型与上下文在一次采集周期内出现；工具执行时显示“进行中”，需要确认的命令应显示“等待确认”，一轮结束显示“就绪”，最后一句是问句时显示“等待回复”，API 报错时显示“异常”。同一项目开两个 `gemini` 进程时，应各占一行且状态互不串台。在工具执行中按 `Ctrl+C` 中止且之后约 5 分钟没有新写入：行应回退到进程活跃度给出的状态（通常“就绪”），不得永久停在“进行中”。
+18. 启动 Grok CLI 并发送一轮对话：菜单出现 `Grok (<项目>) · <标题>`，模型与上下文来自 `~/.grok/sessions/<编码项目>/<会话>/summary.json` 与 `signals.json`；工具执行/流式输出显示“进行中”，出现待处理交互显示“等待”，`turn_completed` 后显示“就绪”或“等待回复”，`error_kind` 显示“异常”。在一轮尚未 `turn_completed` 时中止，且约 1 分钟没有新写入：行应回退到进程活跃度给出的状态，不得永久停在“进行中”。
+19. 启动 Cursor CLI（`cursor-agent`，或安装器链接的 `agent`）并发送一轮对话：菜单出现 `Cursor (<项目>) · <标题>`，标题与模型来自 `~/.cursor/chats/<工作区 MD5>/<会话>/store.db` 与 `meta.json`；有未完成的工具调用时显示“进行中”，工具结果写回并给出最终回答后显示“就绪”，最后一句是问句时显示“等待回复”。Cursor CLI 的 chat store 不记录 token，因此它不向用量表的 Cursor 列贡献，但 CPU/内存仍应汇总。
+20. 上述三种 CLI 在项目目录里各开两个会话（或一个进程用 `/new`/新会话）：每个进程应绑定自己的会话文件，标题、模型和状态不得互相镜像。
+21. 打开 Cursor 编辑器，在 Agent/Composer 里发起一轮对话：菜单出现 `Cursor (<项目>) · <标题>`，标题、模型和上下文来自全局 `globalStorage/state.vscdb` 的 `composerData`；生成中/工具执行显示“进行中”，出现阻塞待确认操作显示“等待确认”，完成后显示“就绪”，未读且最后一句是问句时显示“等待回复”，`error`/`failed` 记录显示“异常”，用户中止（`aborted`）回到“就绪”。同一工作区开多个 Composer 应各占一行。
+22. 关闭 Cursor 编辑器：编辑器侧的行应消失；若 CLI 也未运行，只剩一条灰色“已停止”的 Cursor 占位项。
+23. 打开“设置 → ChatGPT / Cursor 会话显示范围”，切到 15 分钟：超过 15 分钟且已结束的 Composer 行应消失，进行中/等待/异常的 Composer 必须保留；切回“全部”后历史 Composer 重新出现。超过 8 行时末尾应出现“N 个会话未显示”。
+24. 在 Cursor 编辑器里让一个会话产生 token（新版 Cursor 的 `bubbleId` 会写 `tokenCount`），`--diagnose-usage --render` 的 Cursor 列应与这些 bubble 的 input/output 之和一致；旧版 Cursor 不写 token 时该列显示 `--`。
 
 ## Token 用量表验收
 
@@ -68,7 +76,7 @@ agent-status-indicator --diagnose-usage --render --usage-period week
 agent-status-indicator --diagnose-usage --render --usage-period month
 ```
 
-1. 打印的三行表格应与菜单里的表格逐字一致：表头上方是 `周期: ● 当日 ○ 当周 ○ 当月`，随后是 `输入/命中`、`输出`、`费用` 表头、五行 Agent 与一行总计。
+1. 打印的三行表格应与菜单里的表格逐字一致：表头上方是 `周期: ● 当日 ○ 当周 ○ 当月`，随后是 `输入/命中`、`输出`、`费用` 表头、八行 Agent（Claude、Codex、OpenCode、DeepSeek、Pi、Gemini、Grok、Cursor）与一行总计。
 2. 打开菜单，确认表格位于会话列表下方、设置入口上方，列之间对齐；点击周期行应在“日 → 周 → 月 → 日”之间循环，箭头所指项随之改变，表格数字按新维度重算（≤10 秒内，通常 1 秒内）。
 3. 与各 Agent 自带统计对数：
    - Claude Code：在会话里运行 `/status`（或 `/cost`）对比本次会话的 input/output token；本表的 `输入` 为 `input_tokens + cache_creation + cache_read`。
@@ -76,6 +84,10 @@ agent-status-indicator --diagnose-usage --render --usage-period month
    - Pi：对比 `/stats` 或 `~/.pi/agent/sessions` 里 assistant 消息的 `usage` 之和；`费用` 应为各条 `usage.cost.total` 之和。
    - OpenCode：`sqlite3 ~/.local/share/opencode/opencode.db "select sum(cost) from session"` 与本月/本周数字量级一致。
    - DeepSeek Harness：投影缓存 `rows.tokenUsage.val.totals` 与当日行一致；该源只有会话累计值，因此计入“会话最后活跃”的那个维度。
+   - Gemini CLI：`~/.gemini/tmp/<项目>/chats/session-*.json[l]` 各 `gemini` 消息的 `tokens` 之和；本表 `输入` 为 `input + tool`，`命中` 为 `cached` 占比，`输出` 为 `output + thoughts`。
+   - Grok CLI：`~/.grok/sessions/<编码项目>/<会话>/updates.jsonl` 中每个 `turn_completed.usage`（同一 `prompt_id` 只取最后一条）的 `inputTokens`/`outputTokens`；`费用` 为 `costUsdTicks / 1e10` 之和。
+   - Cursor 编辑器：`state.vscdb` 的 `bubbleId:*` 每条 `tokenCount` 之和；本表 `输入` 为 `inputTokens`，`输出` 为 `outputTokens`，没有缓存/费用字段。
+   - Cursor CLI：`store.db` 不记录 token，因此 CLI 不贡献该列；CPU/内存仍在汇总中。
 4. 用空闲机器观察 1 分钟：`ps -o pid,%cpu -p "$(pgrep -x agent-status-indicator)"`，空闲 CPU 应仍不高于 0.5%（稳态一轮重算约 2 ms，仅 stat 未变化的文件）。
 5. 在“设置 → 显示配置”关闭「Token 用量」：整块表格与周期行应立即消失，重启后保持关闭。
 6. 运行一个 Agent 若干轮后等待 10 秒：对应行数字应增长；把系统时间改到次日再观察，日视图应从零重新累计，周/月视图仍包含前一天的数据。

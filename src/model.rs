@@ -27,7 +27,7 @@ impl AgentState {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContextUsage {
     pub used_tokens: u64,
     pub window_tokens: u64,
@@ -93,7 +93,9 @@ pub struct AgentInstance {
 /// The agent families the resource summary always reports, in display order.
 /// An idle agent still gets a column, so its absence shows as `--/--` instead
 /// of disappearing.
-pub const RESOURCE_AGENTS: [&str; 5] = ["Claude", "Codex", "OpenCode", "DeepSeek", "Pi"];
+pub const RESOURCE_AGENTS: [&str; 8] = [
+    "Claude", "Codex", "OpenCode", "DeepSeek", "Pi", "Gemini", "Grok", "Cursor",
+];
 
 /// The summary column a row's `kind` belongs to. A hosted ChatGPT session is
 /// still Codex's resource usage, and both DeepSeek forms share one column.
@@ -104,6 +106,9 @@ pub fn resource_group(kind: &str) -> Option<&'static str> {
         "OpenCode" => Some("OpenCode"),
         _ if kind.starts_with("DeepSeek") => Some("DeepSeek"),
         "Pi" => Some("Pi"),
+        "Gemini" => Some("Gemini"),
+        "Grok" => Some("Grok"),
+        "Cursor" => Some("Cursor"),
         _ => None,
     }
 }
@@ -221,6 +226,9 @@ mod tests {
         let rows = [
             instance("1", "Pi", 1, usage(2.0, 100)),
             instance("2", "Pi", 2, usage(3.0, 200)),
+            instance("4", "Gemini", 4, usage(1.5, 50)),
+            instance("5", "Grok", 5, usage(2.5, 60)),
+            instance("6", "Cursor", 6, usage(0.5, 70)),
             // A hosted ChatGPT conversation is Codex's usage.
             instance(
                 "3",
@@ -237,6 +245,9 @@ mod tests {
         assert_eq!(total(&totals, "Pi").cpu, 5.0);
         assert_eq!(total(&totals, "Pi").memory_bytes, 300);
         assert!(total(&totals, "Pi").used);
+        assert_eq!(total(&totals, "Gemini").cpu, 1.5);
+        assert_eq!(total(&totals, "Grok").memory_bytes, 60);
+        assert_eq!(total(&totals, "Cursor").cpu, 0.5);
         assert_eq!(total(&totals, "Codex").cpu, 1.0);
         assert!(total(&totals, "Codex").used);
         assert!(!total(&totals, "Claude").used);

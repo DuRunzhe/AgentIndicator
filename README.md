@@ -2,9 +2,9 @@
 
 **中文** | [English](README.en.md) | [变更日志](CHANGELOG.md) | [Changelog (EN)](CHANGELOG.en.md)
 
-原生 AI Coding Agent 托盘监控器（macOS 优先，支持 Windows/Linux）。监控 Claude Code、Codex CLI、OpenCode、DeepSeek Harness 与 Pi 等 Coding Agent 的运行状态：进程存活时按项目区分多个会话，在系统托盘汇总展示「等待确认、等待回复、进行中、就绪、异常、已停止」六态；可识别 error、failed、aborted 及断连信号，点击菜单项跳回对应终端或浏览器会话，并在需要人工介入时触发原生系统通知。
+原生 AI Coding Agent 托盘监控器（macOS 优先，支持 Windows/Linux）。监控 Claude Code、Codex CLI、OpenCode、Gemini CLI、Grok CLI、Cursor（编辑器与 `cursor-agent` CLI）、DeepSeek Harness 与 Pi 等 Coding Agent 的运行状态：进程存活时按项目区分多个会话，在系统托盘汇总展示「等待确认、等待回复、进行中、就绪、异常、已停止」六态；可识别 error、failed、aborted 及断连信号，点击菜单项跳回对应终端或浏览器会话，并在需要人工介入时触发原生系统通知。
 
-**DeepSeek Harness 桌面端**：桌面应用（Electron）用一个进程承载所有已打开的会话，因此托盘直接读取该进程所用 profile 的会话投影缓存，把每个活跃会话单独列成一行（标题、项目、模型、上下文占用）。投影缓存看不到的信号从会话事件日志补齐：**未决的确认提示**判为等待确认、**未回答的提问**（工具提问，或一轮结束时助手最后一句是问句）判为等待回复、**失败/断连**判为异常；`approval: never` 的会话识别为自动确认模式，不再重复提醒。等待确认、等待回复、异常的会话始终优先展示，超过 8 行时末尾以灰色「… N 个会话未显示」说明被省略的数量。点击任意一行会**直接切到那个会话**，并按本机实际能力逐级降级：① 原生会话路由 `dsh://session/<id>`（上游 shell 目前只认 `dsh://open`，因此这一级按版本号预判、默认未启用，行上的地址已经是这个形状，上游放行后改一个常量即生效）；② 借助 macOS **辅助功能**在应用侧栏里按下该会话所在的行，并用窗口标题确认切换成功；③ 只把窗口带到前台（`dsh://open`，可还原最小化窗口、重建被关闭的窗口）。第 2 级需要系统授权：这些设置与显示范围一起收在「设置 → DeepSeek Harness」分组里（会话显示范围为子菜单）。权限不给时，分组里那行变成「会话级跳转需要辅助功能授权，点击前往授权」（点它会先弹系统提示再定位到该面板）；授权后同一行变成「打开辅助功能设置」，随时可回到该面板。授权只在**用户主动要这个功能的那一刻**去要：启动托盘不弹任何提示，点击会话行也不会中途插一个确认框，只有打开「会话级跳转」开关（且当前仍未授权）或点击那行授权入口时才触发。且一次点击只出一个界面——macOS 的系统提示是唯一能把本应用写进辅助功能列表的手段，但每个签名只会弹一次，所以**首次**点击只弹系统提示（提示里那个「打开系统设置」按钮直达面板），**之后再点**则直接打开面板。未授权或找不到该会话时只退化为第 3 级。「会话级跳转」开关也在同一分组内，关掉即固定为第 3 级。显示范围**独立配置**：设置里有「ChatGPT 会话显示范围」与「DeepSeek Harness」分组内的「会话显示范围」两组，各含 15 分钟 / 1 小时 / 12 小时 / 24 小时（默认）/ 全部；进行中、等待确认、等待回复、异常的会话始终保留。两者在**功能与数据层**各自独立：分别持久化为 `conversation_window` 与 `deepseek_desktop_window`，分别送入 ChatGPT 托管会话与 DeepSeek 桌面端会话的过滤，互不影响。托盘每一行都采用统一格式 `Kind (项目) · 标题`（标题未知时只保留 `Kind (项目)`，标题超过 24 字符截断）；DeepSeek Harness 的终端与桌面端会话不再区分形态——同一会话永远是一行，点击时按当前驱动方决定跳到 `dsh web` 还是桌面端窗口。
+**DeepSeek Harness 桌面端**：桌面应用（Electron）用一个进程承载所有已打开的会话，因此托盘直接读取该进程所用 profile 的会话投影缓存，把每个活跃会话单独列成一行（标题、项目、模型、上下文占用）。投影缓存看不到的信号从会话事件日志补齐：**未决的确认提示**判为等待确认、**未回答的提问**（工具提问，或一轮结束时助手最后一句是问句）判为等待回复、**失败/断连**判为异常；`approval: never` 的会话识别为自动确认模式，不再重复提醒。等待确认、等待回复、异常的会话始终优先展示，超过 8 行时末尾以灰色「… N 个会话未显示」说明被省略的数量。点击任意一行会**直接切到那个会话**，并按本机实际能力逐级降级：① 原生会话路由 `dsh://session/<id>`（上游 shell 目前只认 `dsh://open`，因此这一级按版本号预判、默认未启用，行上的地址已经是这个形状，上游放行后改一个常量即生效）；② 借助 macOS **辅助功能**在应用侧栏里按下该会话所在的行，并用窗口标题确认切换成功；③ 只把窗口带到前台（`dsh://open`，可还原最小化窗口、重建被关闭的窗口）。第 2 级需要系统授权：这些设置与显示范围一起收在「设置 → DeepSeek Harness」分组里（会话显示范围为子菜单）。权限不给时，分组里那行变成「会话级跳转需要辅助功能授权，点击前往授权」（点它会先弹系统提示再定位到该面板）；授权后同一行变成「打开辅助功能设置」，随时可回到该面板。授权只在**用户主动要这个功能的那一刻**去要：启动托盘不弹任何提示，点击会话行也不会中途插一个确认框，只有打开「会话级跳转」开关（且当前仍未授权）或点击那行授权入口时才触发。且一次点击只出一个界面——macOS 的系统提示是唯一能把本应用写进辅助功能列表的手段，但每个签名只会弹一次，所以**首次**点击只弹系统提示（提示里那个「打开系统设置」按钮直达面板），**之后再点**则直接打开面板。未授权或找不到该会话时只退化为第 3 级。「会话级跳转」开关也在同一分组内，关掉即固定为第 3 级。显示范围**独立配置**：设置里有「ChatGPT / Cursor 会话显示范围」与「DeepSeek Harness」分组内的「会话显示范围」两组，各含 15 分钟 / 1 小时 / 12 小时 / 24 小时（默认）/ 全部；进行中、等待确认、等待回复、异常的会话始终保留。两者在**功能与数据层**各自独立：分别持久化为 `conversation_window` 与 `deepseek_desktop_window`，其中 `conversation_window` 同时送入 ChatGPT 托管会话与 Cursor 编辑器 Composer 会话，`deepseek_desktop_window` 送入 DeepSeek 桌面端会话，两组互不影响。托盘每一行都采用统一格式 `Kind (项目) · 标题`（标题未知时只保留 `Kind (项目)`，标题超过 24 字符截断）；DeepSeek Harness 的终端与桌面端会话不再区分形态——同一会话永远是一行，点击时按当前驱动方决定跳到 `dsh web` 还是桌面端窗口。
 
 源码与发布：<https://github.com/DuRunzhe/AgentIndicator>
 
@@ -262,10 +262,10 @@ agent-status-indicator --check-update
 - `--diagnose-usage`：打印当前维度的 Token 用量（加 `--usage-period week|month` 换维度，加 `--render` 输出与菜单完全一致的表格），不启动托盘。
 - `--debug-ui`：调试模式，把托盘 UI 状态写入 `~/.agent-status-indicator-ui.json`。
 - `--check-update`：向 GitHub 查询最新版本并打印结果，不启动托盘。
-- 单击托盘图标展开菜单：每行以统一格式 `Kind (项目) · 标题` 显示会话（Claude、Codex、ChatGPT、OpenCode、DeepSeek Harness、Pi 均如此，标题缺失时只保留 `Kind (项目)`），并按“等待确认 → 等待回复 → 进行中 → 就绪”排序，附带模型、上下文、时长与 CPU/内存占用（`· CPU 12.5% · 内存 300M`，每个数值都带标签，不会被读成下方的 Token 计数）；点击存活实例可跳回对应终端、浏览器会话或把 DeepSeek Harness 桌面端窗口带到前台。每行行首是状态灯：等待确认与等待回复为琥珀色圆环加中心点，进行中为蓝色圆环加中心点，就绪为绿色实心圆加对勾，已停止为灰色实心圆，异常为红色实心圆加感叹号；行文本与该灯同色，浅色菜单下加深、深色菜单下提亮，两种外观都保持在 4.5:1 以上。菜单栏图标复用同一套灯，忙碌时只有中心点按两秒一拍呼吸，尺寸与颜色不变；会话列表为空时显示的是一枚空心灰环。
+- 单击托盘图标展开菜单：每行以统一格式 `Kind (项目) · 标题` 显示会话（Claude、Codex、ChatGPT、OpenCode、DeepSeek Harness、Pi、Gemini、Grok、Cursor 均如此，标题缺失时只保留 `Kind (项目)`），并按“等待确认 → 等待回复 → 进行中 → 就绪”排序，附带模型、上下文、时长与 CPU/内存占用（`· CPU 12.5% · 内存 300M`，每个数值都带标签，不会被读成下方的 Token 计数）；点击存活实例可跳回对应终端、浏览器会话或把 DeepSeek Harness 桌面端窗口带到前台。每行行首是状态灯：等待确认与等待回复为琥珀色圆环加中心点，进行中为蓝色圆环加中心点，就绪为绿色实心圆加对勾，已停止为灰色实心圆，异常为红色实心圆加感叹号；行文本与该灯同色，浅色菜单下加深、深色菜单下提亮，两种外观都保持在 4.5:1 以上。菜单栏图标复用同一套灯，忙碌时只有中心点按两秒一拍呼吸，尺寸与颜色不变；会话列表为空时显示的是一枚空心灰环。
 - 系统通知默认关闭，可在“设置”中开启，并调整等待确认、等待回复、任务完成及自动确认模式下的通知；“任务完成”是「进行中」切换到「就绪」那一刻的一次性通知，不参与 0/60/180 秒的等待提醒。
-- 会话列表下方是**资源与用量表**：每行一个指标（`CPU`、`内存`、`输入`、`命中`、`输出`、`费用`），列从左到右依次是行名、**总计**、以及 Claude / Codex / OpenCode / DeepSeek / Pi 各一列。总计紧跟行名，先读到汇总；表头与 `--` 占位用更淡的灰色，总计列加粗并使用等宽数字，数字逐位对齐。资源行（CPU、内存）是该 Agent **整棵进程树**的实时值（macOS 从已有的 `ps` 采样读取 `pcpu`/`rss`，Windows/Linux 复用已刷新的 `sysinfo` 快照），用量行（输入、命中、输出、费用）来自所选周期的会话记录，表头上方一行 `当日 / 当周 / 当月 ▾` 切换周期。`命中` 是输入中缓存命中的比例，一个百分比而不是把两个数塞进一格。宿主的多个会话（ChatGPT 与 DeepSeek Harness 桌面端）按进程去重，不会重复累加，Codex 与 ChatGPT 合并为「Codex」一列；这类宿主行以及各 DeepSeek 会话行的 CPU 与内存只出现在汇总里。未运行的 Agent 仍占一列并显示 `--`，因此列数不会随会话变化而跳动。CPU、内存与 Token 用量各自有独立的显示开关，关掉某一行后其余行共用同一套列宽。首次启动（或配置里还没有这两个键）时 CPU 与内存默认关闭，表格只显示 Token 用量行；一个开关管同一个数字的两处出现——关掉「CPU 占用」后表格里的 CPU 行和会话行尾部的 CPU 数值一起消失，关掉「内存占用」同理。同一个数字在两处出现，但两处的文字不会混：会话行尾部是 `· CPU 12.5% · 内存 300M`，带标签，不会被读成下方的 Token 计数。
-- “设置”提供九项显示选项（时长、模型、上下文占比/已用/总量、CPU、内存、Token 用量、已停止 Agent）、语言、开机自启、DeepSeek 浏览器标签页复用，以及 DeepSeek Harness 分组（会话显示范围子菜单、**会话级跳转**开关；未授权且开关打开时再加一行可点击的授权入口，授权后自动消失）。CPU 与内存按会话的**整棵进程树**汇总（macOS 从已有的 `ps` 采样读取 `pcpu`/`rss`，Windows/Linux 复用已刷新的 `sysinfo` 快照），无额外进程拉起；ChatGPT 与 DeepSeek Harness 桌面端这类**一个进程承载多个会话**的宿主行，其数值为宿主级、无法拆分到单个会话；DeepSeek 的各个会话条目以及这类宿主行都不再显示 CPU 与内存，数值只在汇总中出现。会话显示范围按来源**分成两组独立配置**：「ChatGPT 会话显示范围」与「DeepSeek Harness → 会话显示范围」，各自支持 15 分钟、1 小时、12 小时、24 小时（默认）或全部；进行中、等待确认/回复或异常的会话始终保留。二者分别持久化、分别作用，改变其中一组不影响另一组。
+- 会话列表下方是**资源与用量表**：每行一个指标（`CPU`、`内存`、`输入`、`命中`、`输出`、`费用`），列从左到右依次是行名、**总计**、以及 Claude / Codex / OpenCode / DeepSeek / Pi / Gemini / Grok / Cursor 各一列。总计紧跟行名，先读到汇总；表头与 `--` 占位用更淡的灰色，总计列加粗并使用等宽数字，数字逐位对齐。资源行（CPU、内存）是该 Agent **整棵进程树**的实时值（macOS 从已有的 `ps` 采样读取 `pcpu`/`rss`，Windows/Linux 复用已刷新的 `sysinfo` 快照），用量行（输入、命中、输出、费用）来自所选周期的会话记录，表头上方一行 `当日 / 当周 / 当月 ▾` 切换周期。`命中` 是输入中缓存命中的比例，一个百分比而不是把两个数塞进一格。宿主的多个会话（ChatGPT、Cursor 编辑器与 DeepSeek Harness 桌面端）按进程去重，不会重复累加，Codex 与 ChatGPT 合并为「Codex」一列；这类宿主行以及各 DeepSeek 会话行的 CPU 与内存只出现在汇总里。未运行的 Agent 仍占一列并显示 `--`，因此列数不会随会话变化而跳动。CPU、内存与 Token 用量各自有独立的显示开关，关掉某一行后其余行共用同一套列宽。首次启动（或配置里还没有这两个键）时 CPU 与内存默认关闭，表格只显示 Token 用量行；一个开关管同一个数字的两处出现——关掉「CPU 占用」后表格里的 CPU 行和会话行尾部的 CPU 数值一起消失，关掉「内存占用」同理。同一个数字在两处出现，但两处的文字不会混：会话行尾部是 `· CPU 12.5% · 内存 300M`，带标签，不会被读成下方的 Token 计数。
+- “设置”提供九项显示选项（时长、模型、上下文占比/已用/总量、CPU、内存、Token 用量、已停止 Agent）、语言、开机自启、DeepSeek 浏览器标签页复用，以及 DeepSeek Harness 分组（会话显示范围子菜单、**会话级跳转**开关；未授权且开关打开时再加一行可点击的授权入口，授权后自动消失）。CPU 与内存按会话的**整棵进程树**汇总（macOS 从已有的 `ps` 采样读取 `pcpu`/`rss`，Windows/Linux 复用已刷新的 `sysinfo` 快照），无额外进程拉起；ChatGPT、Cursor 编辑器与 DeepSeek Harness 桌面端这类**一个进程承载多个会话**的宿主行，其数值为宿主级、无法拆分到单个会话；DeepSeek 的各个会话条目以及这类宿主行都不再显示 CPU 与内存，数值只在汇总中出现。会话显示范围按来源**分成两组独立配置**：「ChatGPT / Cursor 会话显示范围」与「DeepSeek Harness → 会话显示范围」，各自支持 15 分钟、1 小时、12 小时、24 小时（默认）或全部；进行中、等待确认/回复或异常的会话始终保留。二者分别持久化、分别作用，改变其中一组不影响另一组。
 - 点击“设置”中的 Claude 上下文采集菜单项可安装或卸载采集器。安装会配置 Claude 的 `statusLine`，保留并转发原有命令；卸载会还原原配置。
 - “关于”面板带系统标题栏，自上而下依次是图标、名称、版本、一句话产品介绍、更新按钮、“更新到 Alpha 版”链接、「项目主页 / 问题反馈 / 版本发布」三个链接、版权，最底部是居中的“关闭”按钮。面板每次打开都会检查 GitHub 最新版本，有新版本时按钮变为“更新到 x.y.z”，点击后显示进度并在下载完成后自动安装、重启。Alpha 链接把检查切到 alpha 通道（含预发布版本），没有快捷键，不会抢正式版更新按钮的位置。四行链接同样使用系统链接色、不带下划线，间距与按钮统一落在 4px 网格上。
 - 已按上文加入系统应用后，也可以直接从图形启动器启动。
@@ -329,15 +329,22 @@ rm -f ~/Library/LaunchAgents/com.agentstatusindicator.app.plist
 ```text
 系统进程表 ───────┐
 Claude session ───┤
-Codex rollout ────┼─> 2 秒增量采集器 ─> 状态优先级引擎 ─> 原生托盘菜单
-OpenCode SQLite ──┤                              ├─> 原生系统通知
-DeepSeek 进程 ────┤                              └─> 终端/浏览器/桌面端聚焦
+Codex rollout ────┤
+Gemini session ───┤
+Grok session ─────┼─> 2 秒增量采集器 ─> 状态优先级引擎 ─> 原生托盘菜单
+Cursor state DB ──┤                              ├─> 原生系统通知
+OpenCode SQLite ──┤                              └─> 终端/浏览器/桌面端聚焦
+DeepSeek 进程 ────┤
 DeepSeek 桌面缓存 ┘
 ```
 
 状态优先级：等待确认 → 等待回复 → 进行中 → 就绪 → 已停止。工具调用必须按 ID 配对，只有未完成的 `request_user_input` / `AskUserQuestion` 判为等待回复，显式提权或完整终端确认提示判为等待确认。
 
 DeepSeek Harness 终端会话与桌面端走两条路径：终端 `dsh` 进程按项目读取 `~/.dsh/sessions` 日志；桌面应用（Electron，`DeepSeek Harness.app`）由一个进程承载全部会话，托盘改为读取该进程 `DSH_HOME` 下 `storages/session_projcache/sessions` 的每会话投影缓存——未完成的 `openStep`/`pendingCalls` 判为进行中，投影里的 `userQuestions.active`、日志里未回答的 `ask_user_question`，或一轮最后一条助手消息以问号结尾，判为等待回复；其余为就绪。每条会话一行，`open_url` 为空时点击回到桌面端窗口。
+
+Gemini CLI、Grok CLI 与 Cursor CLI 共用同一套**按项目绑定会话**的规则：同一项目里多个进程各自绑定自己的会话文件，避免互相镜像；工具调用按 ID 配对，未完成判为进行中。Gemini 的会话记录会写出 `awaiting_approval`，因此等待确认可直接读取；Grok 的 `updates.jsonl` 用 `pending_interaction` 表示等待、`turn_completed` 表示一轮结束（失败时带 `error_kind`）；Cursor CLI（`cursor-agent`，安装器也会链接 `agent`）的 `store.db` 没有错误与审批字段，因此这两态不从 CLI 会话记录判定，只由工具配对与进程活跃度给出状态。Gemini 与 Grok 的“进行中”还带**无写入回退**：Gemini 5 分钟、Grok 1 分钟没有任何新记录时，状态交回进程活跃度判断，避免被中断的轮次因最后一条工具状态没写回而永久停在“进行中”。
+
+Cursor 编辑器侧走另一条路径：读取 `globalStorage/state.vscdb` 里的 `composerData:<id>` 与 `bubbleId:<id>:*`。`composerData` 的 `status`、`generatingBubbleIds`、`modelConfig`、`contextTokensUsed`/`contextTokenLimit` 和 `bubbleId` 的文本、工具状态、`tokenCount` 一起给出状态、标题、模型、上下文与用量；`workspaceStorage/*/workspace.json` 把 Composer 归到项目，工作区头部的 `hasBlockingPendingActions` 判为等待确认。编辑器用一个 Electron 进程承载全部 Composer，因此每条会话行共享宿主的 CPU/内存；已结束的 Composer 与 ChatGPT 托管会话共用「ChatGPT / Cursor 会话显示范围」。
 
 **判定规则何以保持通用**（避免硬编码式探测）：
 
@@ -350,7 +357,7 @@ DeepSeek Harness 终端会话与桌面端走两条路径：终端 `dsh` 进程�
 
 ### Token 用量表
 
-托盘在会话列表下方展示一张资源与用量表：表头上方一行 `当日 / 当周 / 当月 ▾` 切换周期，行是 `CPU`、`内存`、`输入`、`命中`、`输出`、`费用`，列是行名、**总计**和 Claude / Codex / OpenCode / DeepSeek / Pi。用量数字都由每 10 秒一轮的重算从各 Agent 自己的会话记录推导，**不额外写入任何账本**；进程内只缓存"已解析文件的按本地日分桶结果"，以 mtime + 文件长度失效，稳态一轮约 2 ms。
+托盘在会话列表下方展示一张资源与用量表：表头上方一行 `当日 / 当周 / 当月 ▾` 切换周期，行是 `CPU`、`内存`、`输入`、`命中`、`输出`、`费用`，列是行名、**总计**和 Claude / Codex / OpenCode / DeepSeek / Pi / Gemini / Grok / Cursor。用量数字都由每 10 秒一轮的重算从各 Agent 自己的会话记录推导，**不额外写入任何账本**；进程内只缓存"已解析文件的按本地日分桶结果"，以 mtime + 文件长度失效，稳态一轮约 2 ms。
 
 | Agent | 数据来源 | 周期归属 |
 |---|---|---|
@@ -359,8 +366,12 @@ DeepSeek Harness 终端会话与桌面端走两条路径：终端 `dsh` 进程�
 | Pi | session JSONL 每条 assistant 的 `usage` / `cost`（按 `responseId` 去重） | 记录时间戳 |
 | OpenCode | `opencode.db` 的 `message` 表一条聚合 SQL（含真实 `cost`） | `time_created` |
 | DeepSeek Harness | 投影缓存 `rows.tokenUsage.totals` | 会话最后活跃时间（源只有会话累计值） |
+| Gemini CLI | session JSON 的每条 `gemini` 消息：`input` + `tool` 计输入，`cached` 为其中的缓存读，`output` + `thoughts` 计输出 | 记录时间戳 |
+| Grok CLI | `updates.jsonl` 的 `turn_completed.usage`（按 `prompt_id` 去重，`costUsdTicks` 换算金额） | 事件时间戳 |
+| Cursor 编辑器 | `state.vscdb` 的 `bubbleId:*` 每条消息 `tokenCount`（input/output；无缓存与费用字段） | 消息 `createdAt` |
+| Cursor CLI | `store.db` 不记录 token 用量，因此 CLI 不向该列贡献；CPU/内存仍正常汇总 | — |
 
-口径统一为：`输入` 含缓存读/写，`命中` 是其中的缓存读所占的百分比（输入为 0 时留空）；`输出` 含推理 token，输出 token 不存在缓存命中，缓存只作用于输入侧。没有数据的单元格一律显示 `--`。金额只有 OpenCode 与 Pi 会给出真实数字，Claude / Codex / DeepSeek 的记录里没有计费字段，显示 `--`。`--diagnose-usage [--usage-period week|month] [--render]` 可打印与本表完全一致的内容，便于与各 Agent 自带的 `/stats` 对数。
+口径统一为：`输入` 含缓存读/写，`命中` 是其中的缓存读所占的百分比（输入为 0 时留空）；`输出` 含推理 token，输出 token 不存在缓存命中，缓存只作用于输入侧。没有数据的单元格一律显示 `--`。金额只有 OpenCode、Pi 与 Grok 会给出真实数字，Claude / Codex / DeepSeek / Gemini / Cursor 的记录里没有计费字段，显示 `--`（Cursor 编辑器只记录 input/output）。`--diagnose-usage [--usage-period week|month] [--render]` 可打印与本表完全一致的内容，便于与各 Agent 自带的 `/stats` 对数。
 
 ### 依赖
 
@@ -397,8 +408,12 @@ CI 应在 macOS arm64/x64、Windows x64、Linux x64/ARM64 上记录 RSS、CPU、
 ## 当前实现进度
 
 - [x] 单进程原生系统托盘
-- [x] Claude/Codex/OpenCode/DeepSeek 多实例进程发现
+- [x] Claude/Codex/OpenCode/Gemini/Grok/Cursor/DeepSeek 多实例进程发现
 - [x] 进程树任务活跃判定、2 秒异步刷新、六态数据模型（含异常）
+- [x] Gemini CLI：按 `projects.json` 定位 `~/.gemini/tmp/<项目>/chats`，兼容整篇 JSON 与追加式 JSONL，读取工具审批、模型、上下文与用量
+- [x] Grok CLI：按 `$GROK_HOME/sessions/<编码项目>/<会话>` 绑定会话，从 `updates.jsonl` 的 `turn_completed`/`pending_interaction` 判定状态，读取标题、模型、上下文与用量
+- [x] Cursor CLI（`cursor-agent`）：读取 `~/.cursor/chats/<工作区>/<会话>/store.db`，按工具调用配对结果判定状态，读取标题与模型（该格式不记录 token 用量）
+- [x] Cursor 编辑器：读取全局 Composer 数据库 `state.vscdb` 的 `composerData`/`bubbleId`，按 `status`/`generatingBubbleIds`/工具状态判定状态，读取标题、项目、模型、上下文与 bubble 用量，并复用「ChatGPT / Cursor 会话显示范围」
 - [x] DeepSeek projection/session 状态、等待信号、模型与上下文解析
 - [x] DeepSeek Harness 桌面端：宿主进程识别、按会话投影缓存读取多会话状态、会话事件日志补齐等待确认与异常、自动确认模式识别、按会话显示范围过滤、溢出计数行
 - [x] DeepSeek Harness 桌面端会话级跳转，按能力逐级降级：原生 `dsh://session/<id>`（按版本号预判，行上的地址已是该形状）→ macOS 辅助功能按下侧栏会话行并用窗口标题校验 → 仅 `dsh://open` 聚焦窗口；设置内含开关与辅助功能授权入口
