@@ -1,7 +1,7 @@
 {
   "name": "agent-status-indicator",
-  "version": "0.2.46-alpha.1",
-  "description": "Native tray monitor for Claude Code, Codex and OpenCode",
+  "version": "0.2.48-alpha.1",
+  "description": "Native cross-platform tray monitor for AI coding agents",
   "license": "Apache-2.0",
   "bin": { "agent-status-indicator": "npm/bin.js" },
   "files": ["npm/bin.js", "bin/**", "app/**", "README.md", "README.en.md", "TESTING.md", "CHANGELOG.md", "CHANGELOG.en.md"],

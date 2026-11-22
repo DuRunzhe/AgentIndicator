@@ -8,6 +8,20 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.48-alpha.1] - 2026-11-22
+
+### Added
+
+- Monitor Gemini CLI, Grok CLI and Cursor sessions
+
+### Fixed
+
+- Stop missing a DeepSeek Harness question that waits for a reply
+
+### Documentation
+
+- Say how to actually run the tray on macOS
+
 ## [0.2.46-alpha.1] - 2026-11-18
 
 ### Added

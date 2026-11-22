@@ -6,6 +6,20 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.48-alpha.1] - 2026-11-22
+
+### 新增
+
+- Monitor Gemini CLI, Grok CLI and Cursor sessions
+
+### 修复
+
+- Stop missing a DeepSeek Harness question that waits for a reply
+
+### 文档
+
+- Say how to actually run the tray on macOS
+
 ## [0.2.46-alpha.1] - 2026-11-18
 
 ### 新增
