@@ -2505,6 +2505,9 @@ fn menu_symbol_icon(rgb: [u8; 3]) -> Option<MenuIcon> {
 /// The palette the lamps are drawn from. The values match the tray icon's, so
 /// one state reads the same in the menu bar and in the menu.
 const LAMP_AMBER: [u8; 3] = [255, 176, 0];
+/// Waiting for a reply is the one state that asks the user to act now: keep it
+/// noticeably more orange than the amber confirmation, and far from ready green.
+const LAMP_ORANGE: [u8; 3] = [255, 122, 0];
 const LAMP_BLUE: [u8; 3] = [0, 122, 255];
 const LAMP_GREEN: [u8; 3] = [52, 199, 89];
 const LAMP_GREY: [u8; 3] = [142, 142, 147];
@@ -2621,7 +2624,8 @@ fn state_menu_icon(state: AgentState) -> Option<MenuIcon> {
 /// row text all come from here, so they never disagree.
 pub(crate) fn state_lamp_color(state: AgentState) -> [u8; 3] {
     match state {
-        AgentState::Waiting | AgentState::WaitingReply => LAMP_AMBER,
+        AgentState::Waiting => LAMP_AMBER,
+        AgentState::WaitingReply => LAMP_ORANGE,
         AgentState::Working => LAMP_BLUE,
         AgentState::Ready => LAMP_GREEN,
         AgentState::Stopped => LAMP_GREY,
@@ -2634,9 +2638,22 @@ pub(crate) fn state_lamp_color(state: AgentState) -> [u8; 3] {
 /// full colour either way.
 #[cfg(target_os = "macos")]
 pub(crate) fn state_text_color(state: AgentState) -> [u8; 3] {
+    text_shade(state, macos_menu_symbols::is_dark_appearance())
+}
+
+/// The text shade for one state in one menu appearance. Kept separate from
+/// [`state_text_color`] so the contrast and hue tests do not depend on the
+/// system appearance.
+#[cfg(target_os = "macos")]
+fn text_shade(state: AgentState, dark: bool) -> [u8; 3] {
     let rgb = state_lamp_color(state);
-    if macos_menu_symbols::is_dark_appearance() {
+    if dark {
         lightened(rgb)
+    } else if state == AgentState::WaitingReply {
+        // The reply warning takes a slightly lighter orange than the generic
+        // shade: it is the row the user needs to notice, and this still clears
+        // 4.5:1 against the white menu.
+        scaled(rgb, 0.7)
     } else {
         darkened(rgb)
     }
@@ -2646,7 +2663,12 @@ pub(crate) fn state_text_color(state: AgentState) -> [u8; 3] {
 /// lamp colour to at least 4.5:1 against a white menu.
 #[cfg(target_os = "macos")]
 fn darkened(rgb: [u8; 3]) -> [u8; 3] {
-    rgb.map(|channel| (channel as f32 * 0.6).round() as u8)
+    scaled(rgb, 0.6)
+}
+
+#[cfg(target_os = "macos")]
+fn scaled(rgb: [u8; 3], factor: f32) -> [u8; 3] {
+    rgb.map(|channel| (channel as f32 * factor).round() as u8)
 }
 
 /// Lift a colour towards white by the same idea, for a menu drawn dark where the
@@ -2953,14 +2975,15 @@ mod menu_icon_tests {
 
     #[test]
     fn every_state_draws_a_distinct_lamp() {
-        // Both waiting states share one lamp, exactly as the tray icon does, and
-        // the rest each get their own.
-        assert_eq!(
+        // The confirmation wait is amber and the reply wait is orange: they
+        // share the ring geometry but must not share a bitmap.
+        assert_ne!(
             bitmap(AgentState::Waiting),
             bitmap(AgentState::WaitingReply)
         );
         let states = [
             AgentState::Waiting,
+            AgentState::WaitingReply,
             AgentState::Working,
             AgentState::Ready,
             AgentState::Stopped,
@@ -2982,14 +3005,14 @@ mod menu_icon_tests {
     #[test]
     fn the_lamp_mirrors_the_tray_geometry() {
         // Both waiting states carry the ring and its centre dot, and the busy
-        // state is the same shape in blue.
+        // state is the same shape in blue. The reply wait is the sharper orange.
         assert_eq!(
             center(AgentState::Waiting),
             [LAMP_AMBER[0], LAMP_AMBER[1], LAMP_AMBER[2], 255]
         );
         assert_eq!(
             center(AgentState::WaitingReply),
-            [LAMP_AMBER[0], LAMP_AMBER[1], LAMP_AMBER[2], 255]
+            [LAMP_ORANGE[0], LAMP_ORANGE[1], LAMP_ORANGE[2], 255]
         );
         assert_eq!(
             center(AgentState::Working),
@@ -3069,7 +3092,7 @@ mod menu_icon_tests {
             AgentState::Error,
         ] {
             let lamp = state_lamp_color(state);
-            let text = lightened(lamp);
+            let text = text_shade(state, true);
             assert_ne!(text, lamp, "{state:?} text must lift off the lamp");
             let contrast = (luminance(text) + 0.05) / (menu_luminance + 0.05);
             assert!(
@@ -3104,13 +3127,35 @@ mod menu_icon_tests {
             AgentState::Error,
         ] {
             let lamp = state_lamp_color(state);
-            let text = darkened(lamp);
+            let text = text_shade(state, false);
             assert_ne!(text, lamp, "{state:?} text must be darker than the lamp");
             let contrast = (1.05) / (luminance(text) + 0.05);
             assert!(
                 contrast >= 4.5,
                 "{state:?} text reaches only {contrast:.2}:1"
             );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn waiting_reply_stands_apart_from_ready_and_confirmation() {
+        assert_ne!(
+            state_lamp_color(AgentState::WaitingReply),
+            state_lamp_color(AgentState::Waiting)
+        );
+        assert_ne!(
+            state_lamp_color(AgentState::WaitingReply),
+            state_lamp_color(AgentState::Ready)
+        );
+        for dark in [false, true] {
+            let reply = text_shade(AgentState::WaitingReply, dark);
+            let ready = text_shade(AgentState::Ready, dark);
+            assert_ne!(reply, ready);
+            // Orange has more red and less green than the ready text in both
+            // appearances, so the two do not read as shades of the same colour.
+            assert!(reply[0] > ready[0], "reply lacks red separation: {reply:?}");
+            assert!(reply[1] < ready[1], "reply is too green: {reply:?}");
         }
     }
 
