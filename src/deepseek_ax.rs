@@ -374,6 +374,43 @@ pub fn match_row(rows: &[Row], target: &SessionTarget) -> Option<usize> {
     best.map(|(_, index)| index)
 }
 
+/// The only row in `target`'s workspace whose text is a working/waiting status.
+///
+/// The sidebar replaces the title of an active or running conversation with a
+/// status word ("进行中", "等待回答"), so a working session has no title text to
+/// match. When the group holds exactly one such row, pressing it is unambiguous;
+/// two or more status rows in one workspace are left to the window fallback
+/// rather than guessing which running conversation the user meant.
+fn only_status_row(rows: &[Row], target: &SessionTarget) -> Option<usize> {
+    let workspace = target.workspace.as_deref()?;
+    let mut candidates = rows.iter().enumerate().filter(|(_, row)| {
+        row.workspace
+            .as_deref()
+            .is_some_and(|actual| actual.eq_ignore_ascii_case(workspace))
+            && is_status_label(&row.label)
+    });
+    let (index, _) = candidates.next()?;
+    candidates.next().is_none().then_some(index)
+}
+
+/// Whether a sidebar row shows a conversation status instead of its title.
+fn is_status_label(label: &str) -> bool {
+    matches!(
+        label.trim().to_lowercase().as_str(),
+        "进行中"
+            | "运行中"
+            | "生成中"
+            | "等待回答"
+            | "等待回复"
+            | "等待确认"
+            | "等待操作"
+            | "working"
+            | "running"
+            | "waiting for reply"
+            | "waiting for confirmation"
+    )
+}
+
 /// A comparable form of a title: lowercase, and without the whitespace or
 /// punctuation a renderer is free to add (Chinese titles frequently carry no
 /// spaces while the cache does).
@@ -432,6 +469,19 @@ pub fn press_session(target: &SessionTarget) -> bool {
     {
         application.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
     }
+    // The app may already be showing the requested conversation: its sidebar
+    // then replaces the row title with a status word ("进行中", "等待回答"), so
+    // the row scan cannot match a title that is no longer rendered. The window
+    // title is the authoritative answer in that case, and a click that is
+    // already there is a successful jump rather than a failed press.
+    if window_matches(pid, target) {
+        let window = window_title(pid).unwrap_or_default();
+        crate::deepseek_jump::log(&format!(
+            "press stage=current matched=true pid={pid} window={window:?} title={:?}",
+            target.title
+        ));
+        return true;
+    }
     let Some(root) = Element::application(pid) else {
         crate::deepseek_jump::log("press stage=element found=false");
         return false;
@@ -445,7 +495,7 @@ pub fn press_session(target: &SessionTarget) -> bool {
         let mut rows: Vec<(Row, Element)> = Vec::new();
         collect_rows(&root, None, 0, &mut rows, &mut 0);
         let labels: Vec<Row> = rows.iter().map(|(row, _)| row.clone()).collect();
-        let matched = match_row(&labels, target);
+        let matched = match_row(&labels, target).or_else(|| only_status_row(&labels, target));
         let detail = format!(
             "windows={} rows={} matched={} workspace={:?}",
             window_count(&root),
@@ -502,23 +552,44 @@ fn window_count(root: &Element) -> usize {
         .unwrap_or(0)
 }
 
+/// The title of the desktop application's main window.
+fn window_title(pid: i32) -> Option<String> {
+    Element::application(pid)?
+        .element("AXMainWindow")?
+        .string("AXTitle")
+}
+
+/// Whether the current window title names `target`.
+///
+/// The projection cache can truncate the title and the window can decorate it
+/// with a suffix, so the cache's title is accepted as a prefix of the real one.
+fn window_matches(pid: i32, target: &SessionTarget) -> bool {
+    let Some(title) = target.title.as_deref() else {
+        return false;
+    };
+    window_title(pid).is_some_and(|current| title_matches(&current, title))
+}
+
+/// Whether `current` is the window title for `target`. Kept pure for the test:
+/// the AX call needs the desktop app, the comparison does not.
+fn title_matches(current: &str, target: &str) -> bool {
+    let target = target.trim();
+    // Four characters is the same floor `match_row` uses; a shorter prefix is
+    // not enough to claim the window is showing this conversation.
+    target.chars().count() >= 4 && current.starts_with(target)
+}
+
 /// Whether the window now shows `target`.
 fn confirmed(pid: i32, target: &SessionTarget) -> bool {
-    let Some(title) = target.title.as_deref() else {
+    if target.title.as_deref().is_none() {
         // Without a title there is nothing to confirm against, so the press is
         // reported as undelivered and the ladder falls back to the window.
         return false;
-    };
+    }
     let deadline = Instant::now() + PRESS_WAIT;
     loop {
-        if let Some(root) = Element::application(pid) {
-            if root
-                .element("AXMainWindow")
-                .and_then(|window| window.string("AXTitle"))
-                .is_some_and(|current| current.starts_with(title))
-            {
-                return true;
-            }
+        if window_matches(pid, target) {
+            return true;
         }
         if Instant::now() >= deadline {
             return false;
@@ -706,6 +777,49 @@ mod tests {
             match_row(&rows, &target("同步最新代码", Some("elsewhere"))),
             Some(0)
         );
+    }
+
+    #[test]
+    fn a_truncated_target_title_matches_the_window_title() {
+        // The tray's projection cache truncates long titles; the window carries
+        // the full one. A target that is already open must count as delivered.
+        assert!(title_matches(
+            "Implement authorization guide per onboarding doc — DeepSeek Harness",
+            "Implement authorization ",
+        ));
+        assert!(!title_matches(
+            "查看版本与tag信息 — DeepSeek Harness",
+            "Implement authorization",
+        ));
+        assert!(!title_matches("Fix the parser — DeepSeek Harness", "Fix"));
+    }
+
+    #[test]
+    fn a_single_status_row_identifies_a_running_conversation() {
+        let rows = vec![
+            row("AgentIndicator", Some("AgentIndicator")),
+            row("进行中", Some("AgentIndicator")),
+            row("同步最新代码", Some("AgentIndicator")),
+            row("进行中", Some("touch-mouse")),
+        ];
+        assert_eq!(
+            only_status_row(
+                &rows,
+                &target("支持 Gemini、Grok、Cursor CLI", Some("AgentIndicator"))
+            ),
+            Some(1)
+        );
+        // Two running conversations in one group are ambiguous.
+        let rows = vec![
+            row("进行中", Some("AgentIndicator")),
+            row("进行中", Some("AgentIndicator")),
+        ];
+        assert_eq!(
+            only_status_row(&rows, &target("any", Some("AgentIndicator"))),
+            None
+        );
+        // Without a workspace there is nothing to scope the status to.
+        assert_eq!(only_status_row(&rows, &target("any", None)), None);
     }
 
     #[test]
