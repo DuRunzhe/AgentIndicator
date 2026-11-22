@@ -7,10 +7,10 @@ class AgentStatusIndicator < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.52-alpha.1/agent-status-indicator-aarch64-apple-darwin.tar.gz"
-      sha256 "REPLACE_ON_RELEASE"
+      sha256 "9a4f557b017338d885fe1c3f667b194d84e840dd7060ceab113820f9db47f2e8"
     else
       url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.52-alpha.1/agent-status-indicator-x86_64-apple-darwin.tar.gz"
-      sha256 "REPLACE_ON_RELEASE"
+      sha256 "1a86fdb1e7df8a3929809f037c736da9cbfc8e599279ec40568f8023347e2025"
     end
   end
 
@@ -26,10 +26,10 @@ class AgentStatusIndicator < Formula
 
     if Hardware::CPU.arm?
       url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.52-alpha.1/agent-status-indicator-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "REPLACE_ON_RELEASE"
+      sha256 "f2c4feca4e7607f58b9da9c3ab75b1f43a51f10cbf31d84e1646d584e07ad970"
     else
       url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.52-alpha.1/agent-status-indicator-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "REPLACE_ON_RELEASE"
+      sha256 "d0498b6891897b89bc89a423f0e7f5b77237eed099ce2a51c0d281eb3bfda9db"
     end
   end
 
