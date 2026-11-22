@@ -1,16 +1,16 @@
 class AgentStatusIndicator < Formula
   desc "Native tray monitor for AI coding agents"
   homepage "https://github.com/DuRunzhe/AgentIndicator"
-  version "0.2.50-alpha.2"
+  version "0.2.46-alpha.2"
   license "Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.50-alpha.2/agent-status-indicator-aarch64-apple-darwin.tar.gz"
-      sha256 "aae1b93678f7bdf1c6907aa4c6d954b6ff51aa235b7f400b9ed2320375f61a2c"
+      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.46-alpha.2/agent-status-indicator-aarch64-apple-darwin.tar.gz"
+      sha256 "REPLACE_ON_RELEASE"
     else
-      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.50-alpha.2/agent-status-indicator-x86_64-apple-darwin.tar.gz"
-      sha256 "bde9a0e976cbb797767656edf0af140194ab4aa48ca8470c55c29cb63e7a06ad"
+      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.46-alpha.2/agent-status-indicator-x86_64-apple-darwin.tar.gz"
+      sha256 "REPLACE_ON_RELEASE"
     end
   end
 
@@ -25,11 +25,11 @@ class AgentStatusIndicator < Formula
     depends_on "zstd"
 
     if Hardware::CPU.arm?
-      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.50-alpha.2/agent-status-indicator-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "6dd09491cd74f8cbe1b74a2789b177b05ce9839524737d722dd4ed3896c67a69"
+      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.46-alpha.2/agent-status-indicator-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "REPLACE_ON_RELEASE"
     else
-      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.50-alpha.2/agent-status-indicator-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "afcd5482d3e11c40018c5309ff6c80b354c20d5e8c031ff89621a69d46d4b2dd"
+      url "https://github.com/DuRunzhe/AgentIndicator/releases/download/v0.2.46-alpha.2/agent-status-indicator-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "REPLACE_ON_RELEASE"
     end
   end
 

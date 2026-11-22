@@ -6,19 +6,7 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
-## [0.2.50-alpha.2] - 2026-11-22
-
-### 修复
-
-- Jump to running DeepSeek Harness conversations
-
-## [0.2.50-alpha.1] - 2026-11-22
-
-### 修复
-
-- Make the waiting-reply state stand out from ready
-
-## [0.2.48-alpha.1] - 2026-11-22
+## [0.2.46-alpha.2] - 2026-11-22
 
 ### 新增
 
@@ -27,6 +15,8 @@
 ### 修复
 
 - Stop missing a DeepSeek Harness question that waits for a reply
+- Make the waiting-reply state stand out from ready
+- Jump to running DeepSeek Harness conversations
 
 ### 文档
 

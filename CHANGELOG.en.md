@@ -8,19 +8,7 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
-## [0.2.50-alpha.2] - 2026-11-22
-
-### Fixed
-
-- Jump to running DeepSeek Harness conversations
-
-## [0.2.50-alpha.1] - 2026-11-22
-
-### Fixed
-
-- Make the waiting-reply state stand out from ready
-
-## [0.2.48-alpha.1] - 2026-11-22
+## [0.2.46-alpha.2] - 2026-11-22
 
 ### Added
 
@@ -29,6 +17,8 @@ The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 ### Fixed
 
 - Stop missing a DeepSeek Harness question that waits for a reply
+- Make the waiting-reply state stand out from ready
+- Jump to running DeepSeek Harness conversations
 
 ### Documentation
 
