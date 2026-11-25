@@ -13,6 +13,10 @@
 //! * Chromium builds its accessibility tree only once a client asks for it, so
 //!   the tree is bootstrapped with `AXManualAccessibility` and then polled; a
 //!   slow build is a wait, not a failure.
+//! * A conversation row prints the conversation's state (`进行中`, `等待审批`,
+//!   `已完成`) ahead of its title, as visually hidden text the tree exposes as
+//!   its own static text: the title is picked out of the row's texts rather than
+//!   assumed to be the first one.
 //! * The press is confirmed by reading the window title afterwards: an
 //!   unverified press is reported as undelivered, which is what lets a future
 //!   app version that moves its sidebar degrade to the window instead of doing
@@ -121,6 +125,13 @@ impl Element {
         unsafe {
             AXUIElementSetAttributeValue(self.0, attribute.pointer, kCFBooleanTrue) == AX_SUCCESS
         }
+    }
+
+    /// A string-array attribute, such as `AXDOMClassList`.
+    fn strings(&self, name: &str) -> Vec<String> {
+        self.attribute(name)
+            .map(|value| value.strings())
+            .unwrap_or_default()
     }
 
     fn actions(&self) -> Vec<String> {
@@ -314,9 +325,16 @@ pub fn desktop_pid() -> Option<i32> {
 /// One conversation row as the sidebar renders it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
-    /// The row's own text, which is the conversation title followed by its
-    /// relative age (`同步最新代码 2天`).
-    pub label: String,
+    /// The title the row renders for its conversation.
+    ///
+    /// The sidebar prints a conversation's state in front of its title, inside
+    /// the same row, as visually hidden text: `进行中`, `等待审批`,
+    /// `1 个子智能体运行中`. The accessibility tree exposes both as static
+    /// texts of the row, so the title has to be picked out of the row's texts
+    /// instead of being assumed to be the first one.
+    pub title: Option<String>,
+    /// The state words the row prints in front of its title, in that order.
+    pub status: Vec<String>,
     /// The workspace group the row sits in, which is the project directory's
     /// name.
     pub workspace: Option<String>,
@@ -327,8 +345,8 @@ pub struct Row {
 /// Titles are not unique — several workspaces can hold a conversation with the
 /// same name — so a row that carries its workspace is matched inside that group
 /// first, an exact title beats a prefix, and list order breaks the remaining
-/// ties. A row is never matched by a title that only appears elsewhere in the
-/// row, so an age cannot make a wrong conversation look right.
+/// ties. Only the row's title is compared, never a state word or an age that the
+/// row also prints, so an age cannot make a wrong conversation look right.
 pub fn match_row(rows: &[Row], target: &SessionTarget) -> Option<usize> {
     let wanted = target.title.as_deref()?.trim().to_lowercase();
     if wanted.is_empty() {
@@ -337,13 +355,15 @@ pub fn match_row(rows: &[Row], target: &SessionTarget) -> Option<usize> {
     let compact_wanted = compact(&wanted);
     let mut best: Option<(u8, usize)> = None;
     for (index, row) in rows.iter().enumerate() {
-        let label = row.label.trim().to_lowercase();
+        let Some(title) = row.title.as_deref() else {
+            continue;
+        };
+        let label = title.trim().to_lowercase();
         let compact = compact(&label);
-        // The row's own text is the conversation title; a row that only exposes a
-        // combined description adds the relative age, which is why a prefix of
-        // the title followed by a space is accepted too. Spacing differences
-        // between the projection cache and the rendered text are absorbed by the
-        // compact comparison.
+        // A row that only exposes a combined description carries the relative age
+        // after the title, which is why a prefix of the title followed by a space
+        // is accepted too. Spacing differences between the projection cache and
+        // the rendered text are absorbed by the compact comparison.
         let strength = if label == wanted {
             4
         } else if compact == compact_wanted {
@@ -374,40 +394,65 @@ pub fn match_row(rows: &[Row], target: &SessionTarget) -> Option<usize> {
     best.map(|(_, index)| index)
 }
 
-/// The only row in `target`'s workspace whose text is a working/waiting status.
+/// The only row in `target`'s workspace that renders no title at all.
 ///
-/// The sidebar replaces the title of an active or running conversation with a
-/// status word ("进行中", "等待回答"), so a working session has no title text to
-/// match. When the group holds exactly one such row, pressing it is unambiguous;
-/// two or more status rows in one workspace are left to the window fallback
-/// rather than guessing which running conversation the user meant.
+/// A row whose title is not rendered — a conversation the sidebar has not named,
+/// or one whose title text this build keeps out of the accessibility tree — shows
+/// nothing but its state. When the group holds exactly one such row, pressing it
+/// is unambiguous; two or more are left to the window fallback rather than
+/// guessing which conversation the user meant.
 fn only_status_row(rows: &[Row], target: &SessionTarget) -> Option<usize> {
     let workspace = target.workspace.as_deref()?;
     let mut candidates = rows.iter().enumerate().filter(|(_, row)| {
         row.workspace
             .as_deref()
             .is_some_and(|actual| actual.eq_ignore_ascii_case(workspace))
-            && is_status_label(&row.label)
+            && row.title.is_none()
+            && !row.status.is_empty()
     });
     let (index, _) = candidates.next()?;
     candidates.next().is_none().then_some(index)
 }
 
-/// Whether a sidebar row shows a conversation status instead of its title.
+/// Whether a text is a conversation state rather than the conversation's name.
+///
+/// The vocabulary is the workspace sidebar's own: the state a conversation is in
+/// (`进行中`, `等待审批`, `计划待审`, `等待回答`), its compact trailing form
+/// (`待审批`, `待回答`), whether it finished (`已完成`), and whether it is idle
+/// (`空闲`). A row prints these ahead of the title, which is what keeps
+/// `row_parts` from reading one as a name.
 fn is_status_label(label: &str) -> bool {
+    let label = label.trim().to_lowercase();
+    let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
     matches!(
-        label.trim().to_lowercase().as_str(),
+        label.as_str(),
         "进行中"
             | "运行中"
             | "生成中"
+            | "空闲"
             | "等待回答"
+            | "待回答"
             | "等待回复"
             | "等待确认"
             | "等待操作"
-            | "working"
+            | "等待审批"
+            | "待审批"
+            | "计划待审"
+            | "已完成"
             | "running"
+            | "working"
+            | "idle"
+            | "waiting"
             | "waiting for reply"
+            | "waiting for answer"
             | "waiting for confirmation"
+            | "waiting for approval"
+            | "plan awaiting review"
+            | "plan review"
+            | "approval"
+            | "answer"
+            | "completed"
+            | "complete"
     )
 }
 
@@ -469,19 +514,13 @@ pub fn press_session(target: &SessionTarget) -> bool {
     {
         application.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
     }
-    // The app may already be showing the requested conversation: its sidebar
-    // then replaces the row title with a status word ("进行中", "等待回答"), so
-    // the row scan cannot match a title that is no longer rendered. The window
-    // title is the authoritative answer in that case, and a click that is
-    // already there is a successful jump rather than a failed press.
-    if window_matches(pid, target) {
-        let window = window_title(pid).unwrap_or_default();
-        crate::deepseek_jump::log(&format!(
-            "press stage=current matched=true pid={pid} window={window:?} title={:?}",
-            target.title
-        ));
-        return true;
-    }
+    // The app may already be showing the requested conversation, and after
+    // restoring a closed window it lands on the conversation it had open before,
+    // which can be the one the click names. The window title is the authoritative
+    // answer to "is it showing this conversation", so it is read on every poll
+    // rather than once: a restore or a large conversation load takes a moment,
+    // and giving up while the window is still catching up is exactly what makes a
+    // jump degrade to "the app opened".
     let Some(root) = Element::application(pid) else {
         crate::deepseek_jump::log("press stage=element found=false");
         return false;
@@ -492,6 +531,14 @@ pub fn press_session(target: &SessionTarget) -> bool {
 
     let deadline = Instant::now() + TREE_WAIT;
     loop {
+        if window_matches(pid, target) {
+            let window = window_title(pid).unwrap_or_default();
+            crate::deepseek_jump::log(&format!(
+                "press stage=current matched=true pid={pid} window={window:?} title={:?}",
+                target.title
+            ));
+            return true;
+        }
         let mut rows: Vec<(Row, Element)> = Vec::new();
         collect_rows(&root, None, 0, &mut rows, &mut 0);
         let labels: Vec<Row> = rows.iter().map(|(row, _)| row.clone()).collect();
@@ -509,7 +556,7 @@ pub fn press_session(target: &SessionTarget) -> bool {
             if !actions.iter().any(|action| action == "AXPress") {
                 crate::deepseek_jump::log(&format!(
                     "press stage=press actions={actions:?} row={:?} {detail}",
-                    row.label
+                    row_name(row)
                 ));
                 return false;
             }
@@ -518,17 +565,23 @@ pub fn press_session(target: &SessionTarget) -> bool {
             let confirmed = pressed && confirmed(pid, target);
             crate::deepseek_jump::log(&format!(
                 "press stage=confirm pressed={pressed} confirmed={confirmed} row={:?} {detail}",
-                row.label
+                row_name(row)
             ));
             return confirmed;
         }
         if Instant::now() >= deadline {
-            // The labels are the only way to tell "the conversation is gone" from
+            // The titles are the only way to tell "the conversation is gone" from
             // "the sidebar names it differently", and the two need opposite fixes.
             let seen: Vec<String> = labels
                 .iter()
                 .take(24)
-                .map(|row| format!("{}|{}", row.workspace.as_deref().unwrap_or("-"), row.label))
+                .map(|row| {
+                    format!(
+                        "{}|{}",
+                        row.workspace.as_deref().unwrap_or("-"),
+                        row_name(row)
+                    )
+                })
                 .collect();
             let window = Element::application(pid)
                 .and_then(|root| root.element("AXMainWindow"))
@@ -543,6 +596,14 @@ pub fn press_session(target: &SessionTarget) -> bool {
         }
         sleep(POLL);
     }
+}
+
+/// A row as it reads in the log: its title, or the state it shows without one.
+fn row_name(row: &Row) -> String {
+    row.title
+        .clone()
+        .or_else(|| (!row.status.is_empty()).then(|| row.status.join(",")))
+        .unwrap_or_default()
 }
 
 /// How many windows the application currently reports.
@@ -601,7 +662,7 @@ fn confirmed(pid: i32, target: &SessionTarget) -> bool {
 /// Collect the sidebar rows, in list order, remembering their workspace group.
 ///
 /// The tree is walked once: each row keeps its own element so the match a caller
-/// makes on the labels can be pressed without a second walk that could disagree
+/// makes on the titles can be pressed without a second walk that could disagree
 /// with the first if the window changed in between.
 fn collect_rows(
     element: &Element,
@@ -615,85 +676,156 @@ fn collect_rows(
     }
     *visited += 1;
     let role = element.string("AXRole").unwrap_or_default();
-    let children = element.children();
     if role == "AXRow" {
-        if let Some(label) = row_label(element) {
-            rows.push((
-                Row {
-                    label,
-                    workspace: workspace.map(str::to_owned),
-                },
-                Element(unsafe { CFRetain(element.0) }.cast_mut()),
-            ));
+        // Only the sidebar's own conversation rows can be pressed. Workspace
+        // headers and the rows the conversation transcript is built from are the
+        // same role, and a jump must not press one of those by title.
+        let classes = row_classes(element);
+        if !classes.is_empty() && !is_session_row(&classes) {
+            return;
         }
+        let (title, status) = row_of(element);
+        if title.is_none() && status.is_empty() {
+            return;
+        }
+        rows.push((
+            Row {
+                title,
+                status,
+                workspace: workspace.map(str::to_owned),
+            },
+            Element(unsafe { CFRetain(element.0) }.cast_mut()),
+        ));
         return;
     }
     // A workspace is an outline group whose first row carries the project name;
     // every later row in that group is one of its conversations.
-    let next_workspace = if role == "AXOutline" || role == "AXGroup" {
-        group_name(element).or_else(|| workspace.map(str::to_owned))
-    } else {
-        workspace.map(str::to_owned)
-    };
+    let mut children = element.children();
+    let mut next_workspace = workspace.map(str::to_owned);
+    if role == "AXOutline" || role == "AXGroup" {
+        if let Some(first) = children.first() {
+            let classes = row_classes(first);
+            let header = first.string("AXRole").as_deref() == Some("AXRow")
+                && (is_project_row(&classes) || classes.is_empty());
+            if header {
+                if let (Some(name), _) = row_of(first) {
+                    next_workspace = Some(name);
+                }
+                children.remove(0);
+            }
+        }
+    }
     for child in children {
         collect_rows(&child, next_workspace.as_deref(), depth + 1, rows, visited);
     }
 }
 
-/// A group's own name, read from its first row (the workspace header).
-fn group_name(element: &Element) -> Option<String> {
-    let children = element.children();
-    let first = children.first()?;
-    if first.string("AXRole").as_deref() != Some("AXRow") {
-        return None;
-    }
-    row_label(first)
+/// The DOM classes the shell publishes for an element.
+///
+/// The sidebar's rows are the same `AXRow` role whether they are a workspace
+/// header or a conversation; the class list is what tells them apart, which keeps
+/// a workspace name from being matched as a conversation title.
+fn row_classes(element: &Element) -> Vec<String> {
+    element.strings("AXDOMClassList")
 }
 
-/// A row's text: the conversation title the sidebar renders for it.
-///
-/// A row may carry more than one text — the title, then its relative age — and a
-/// row that exposes only a combined description adds the age after a space. The
-/// age is never the title, so it is skipped rather than matched against: a jump
-/// that compared `4分钟` with a conversation name would always fail.
-fn row_label(element: &Element) -> Option<String> {
-    let mut texts: Vec<String> = Vec::new();
-    for child in element.children() {
-        if child.string("AXRole").as_deref() != Some("AXStaticText") {
-            continue;
-        }
-        if let Some(value) = child.string("AXValue").or_else(|| child.string("AXTitle")) {
-            let value = value.trim().to_owned();
-            if !value.is_empty() {
-                texts.push(value);
-            }
-        }
-    }
-    texts
+/// Whether a row is its workspace's header rather than a conversation.
+fn is_project_row(classes: &[String]) -> bool {
+    classes
         .iter()
-        .find(|value| !is_relative_age(value))
-        .cloned()
-        .or_else(|| texts.first().cloned())
-        .or_else(|| {
+        .any(|class| class.to_lowercase().contains("projectrow"))
+}
+
+/// Whether a row is one of the sidebar's conversations.
+fn is_session_row(classes: &[String]) -> bool {
+    classes
+        .iter()
+        .any(|class| class.to_lowercase().contains("sessionrow"))
+}
+
+/// The texts a row renders, in the order the sidebar prints them.
+///
+/// A conversation row prints its state words, then its title, then its relative
+/// age, each as its own static text — so the title is never simply the first text
+/// the row exposes.
+fn row_texts(element: &Element) -> Vec<String> {
+    element
+        .children()
+        .into_iter()
+        .filter(|child| child.string("AXRole").as_deref() == Some("AXStaticText"))
+        .filter_map(|child| child.string("AXValue").or_else(|| child.string("AXTitle")))
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+/// A row's title and the states ahead of it.
+///
+/// A build that exposes a row's texts only as one combined description still
+/// names its conversation: the description becomes the title, and the age it
+/// carries is told apart by the comparison in [`match_row`].
+fn row_of(element: &Element) -> (Option<String>, Vec<String>) {
+    let texts = row_texts(element);
+    if texts.is_empty() {
+        return (
             element
                 .string("AXDescription")
-                .filter(|value| !value.trim().is_empty())
-        })
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty()),
+            Vec::new(),
+        );
+    }
+    row_parts(texts)
+}
+
+/// Split a row's texts into its conversation title and the states ahead of it.
+///
+/// The relative age is the last text and never names a conversation, so it is
+/// dropped first. What remains is the row's state words followed by the title —
+/// which makes the last text that is not a state the title, and every text before
+/// it a state. A row that renders no title at all (a conversation the sidebar has
+/// not named) keeps its states and reports no title, so it can still be pressed
+/// through [`only_status_row`].
+fn row_parts(mut texts: Vec<String>) -> (Option<String>, Vec<String>) {
+    if texts.len() > 1 && texts.last().is_some_and(|last| is_relative_age(last)) {
+        texts.pop();
+    }
+    match texts.iter().rposition(|text| !is_status_label(text)) {
+        Some(index) => {
+            let title = texts.remove(index);
+            (Some(title), texts)
+        }
+        None => (None, texts),
+    }
 }
 
 /// Whether a text is only the relative age the sidebar shows (`4分钟`, `2天`,
-/// `11d`, `3 days`), which never names a conversation.
+/// `11d`, `3 days`, `刚刚`), which never names a conversation.
 ///
 /// The rule is deliberately strict: a number, then one unit word, then the end of
 /// the text. A title may start with a number too (`3D 渲染`, `2.1.70用户标签…`),
 /// and skipping it would lose the row it names.
 fn is_relative_age(value: &str) -> bool {
-    const UNITS: [&str; 26] = [
+    const UNITS: [&str; 27] = [
         "秒", "分钟", "分", "小时", "时", "天", "日", "周", "个月", "月", "年", "s", "m", "h", "d",
-        "w", "y", "sec", "secs", "min", "mins", "hr", "hrs", "hour", "hours", "day",
+        "w", "y", "mo", "sec", "secs", "min", "mins", "hr", "hrs", "hour", "hours", "day",
     ];
-    const LONG_UNITS: [&str; 6] = ["days", "weeks", "week", "months", "month", "years"];
+    const LONG_UNITS: [&str; 7] = ["days", "week", "weeks", "month", "months", "year", "years"];
+    // The recent past is not a number: the sidebar says `刚刚` / `now` / `jetzt`.
+    const NOW: [&str; 8] = [
+        "刚刚",
+        "now",
+        "今",
+        "ahora",
+        "maintenant",
+        "jetzt",
+        "сейчас",
+        "agora",
+    ];
     let value = value.trim();
+    if NOW.iter().any(|now| value.eq_ignore_ascii_case(now)) {
+        return true;
+    }
     let digits = value
         .chars()
         .take_while(|ch| ch.is_ascii_digit() || *ch == '.' || *ch == ' ')
@@ -725,28 +857,96 @@ mod tests {
         }
     }
 
-    fn row(label: &str, workspace: Option<&str>) -> Row {
+    fn row(title: &str, workspace: Option<&str>) -> Row {
         Row {
-            label: label.into(),
+            title: Some(title.into()),
+            status: Vec::new(),
+            workspace: workspace.map(str::to_owned),
+        }
+    }
+
+    /// A row the sidebar prints a state or two in front of, the way it does for
+    /// every conversation that is running, waiting or finished.
+    fn running_row(title: &str, status: &[&str], workspace: Option<&str>) -> Row {
+        Row {
+            title: Some(title.into()),
+            status: status.iter().map(|value| (*value).to_owned()).collect(),
+            workspace: workspace.map(str::to_owned),
+        }
+    }
+
+    /// A row that renders no title at all, only its state.
+    fn status_row(status: &str, workspace: Option<&str>) -> Row {
+        Row {
+            title: None,
+            status: vec![status.into()],
             workspace: workspace.map(str::to_owned),
         }
     }
 
     #[test]
-    fn a_row_is_matched_by_its_own_title_and_age() {
+    fn a_running_row_is_matched_by_the_title_behind_its_state() {
+        // What the sidebar publishes for a conversation that is running or
+        // waiting: the state first, then the title. A jump that only reads the
+        // first text of the row reads `进行中` and never finds the conversation.
+        let rows = vec![
+            running_row(
+                "支持 Gemini、Grok、Cursor CLI",
+                &["进行中"],
+                Some("AgentIndicator"),
+            ),
+            running_row("同步最新代码", &["等待审批"], Some("AgentIndicator")),
+            row("手机模拟触控板控制电脑方案", Some("touch-mouse")),
+        ];
+        // The projection cache truncated the title; the row carries the rest.
+        assert_eq!(
+            match_row(
+                &rows,
+                &target("支持 Gemini、Grok、Cursor CL", Some("AgentIndicator"))
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            match_row(&rows, &target("同步最新代码", Some("AgentIndicator"))),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn two_running_rows_in_one_workspace_are_told_apart_by_their_titles() {
+        // Two conversations of the same workspace are running at once, so both
+        // rows show the same state. Their titles are what tells them apart.
+        let rows = vec![
+            running_row("查看版本与tag信息", &["进行中"], Some("yimaplan")),
+            running_row("App Store SDK版本警告处理", &["进行中"], Some("yimaplan")),
+        ];
+        assert_eq!(
+            match_row(&rows, &target("查看版本与tag信息", Some("yimaplan"))),
+            Some(0)
+        );
+        assert_eq!(
+            match_row(
+                &rows,
+                &target("App Store SDK版本警告处理", Some("yimaplan"))
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_row_is_matched_by_its_own_title() {
         let rows = vec![
             row("搭建局域网Git协议仓库", Some("nita")),
-            row("同步最新代码 2天", Some("adb-wifi-manager")),
-            row("同步最新代码 9天", Some("nita")),
+            row("同步最新代码", Some("adb-wifi-manager")),
+            row("同步最新代码", Some("nita")),
         ];
-        // The label carries the relative age, so a prefix match is the normal
-        // case, not an exact one.
         assert_eq!(
             match_row(&rows, &target("搭建局域网Git协议仓库", None)),
             Some(0)
         );
-        // A row that only exposes a combined description carries the relative
-        // age after the title.
+        assert_eq!(match_row(&rows, &target("同步最新代码", None)), Some(1));
+        // A row that exposes its text only as one combined description carries the
+        // relative age after the title, and that is still the same conversation.
         assert_eq!(
             match_row(
                 &[row("搭建局域网Git协议仓库 2天", Some("nita"))],
@@ -754,14 +954,13 @@ mod tests {
             ),
             Some(0)
         );
-        assert_eq!(match_row(&rows, &target("同步最新代码", None)), Some(1));
     }
 
     #[test]
     fn a_workspace_picks_between_same_titled_conversations() {
         let rows = vec![
-            row("同步最新代码 2天", Some("adb-wifi-manager")),
-            row("同步最新代码 9天", Some("nita")),
+            row("同步最新代码", Some("adb-wifi-manager")),
+            row("同步最新代码", Some("nita")),
         ];
         assert_eq!(
             match_row(&rows, &target("同步最新代码", Some("nita"))),
@@ -795,12 +994,11 @@ mod tests {
     }
 
     #[test]
-    fn a_single_status_row_identifies_a_running_conversation() {
+    fn a_row_without_a_title_is_still_reachable_by_its_state() {
         let rows = vec![
-            row("AgentIndicator", Some("AgentIndicator")),
-            row("进行中", Some("AgentIndicator")),
             row("同步最新代码", Some("AgentIndicator")),
-            row("进行中", Some("touch-mouse")),
+            status_row("进行中", Some("AgentIndicator")),
+            status_row("等待审批", Some("touch-mouse")),
         ];
         assert_eq!(
             only_status_row(
@@ -809,28 +1007,66 @@ mod tests {
             ),
             Some(1)
         );
-        // Two running conversations in one group are ambiguous.
+        // Two titleless rows in one workspace are ambiguous.
         let rows = vec![
-            row("进行中", Some("AgentIndicator")),
-            row("进行中", Some("AgentIndicator")),
+            status_row("进行中", Some("AgentIndicator")),
+            status_row("等待审批", Some("AgentIndicator")),
         ];
         assert_eq!(
             only_status_row(&rows, &target("any", Some("AgentIndicator"))),
             None
         );
-        // Without a workspace there is nothing to scope the status to.
+        // Without a workspace there is nothing to scope the state to.
         assert_eq!(only_status_row(&rows, &target("any", None)), None);
+    }
+
+    #[test]
+    fn a_rows_state_words_are_not_read_as_its_title() {
+        // Exactly what the sidebar publishes for a running conversation: the
+        // state, the title, then the relative age.
+        assert_eq!(
+            row_parts(vec![
+                "进行中".into(),
+                "DeepSeek 会话跳转问题".into(),
+                "3分钟".into()
+            ]),
+            (Some("DeepSeek 会话跳转问题".into()), vec!["进行中".into()])
+        );
+        // A pending approval on top of a running subagent: both are states.
+        assert_eq!(
+            row_parts(vec![
+                "等待审批".into(),
+                "1 个子智能体运行中".into(),
+                "手机模拟触控板控制电脑方案".into(),
+                "2天".into()
+            ]),
+            (
+                Some("手机模拟触控板控制电脑方案".into()),
+                vec!["等待审批".into(), "1 个子智能体运行中".into()]
+            )
+        );
+        // A row that renders no title at all keeps its state rather than
+        // inventing one out of the age.
+        assert_eq!(
+            row_parts(vec!["等待审批".into(), "9小时".into()]),
+            (None, vec!["等待审批".into()])
+        );
+        // A state that is not followed by a title is never a title either.
+        assert_eq!(
+            row_parts(vec!["已完成".into()]),
+            (None, vec!["已完成".into()])
+        );
     }
 
     #[test]
     fn an_age_or_a_longer_title_cannot_make_a_wrong_row_look_right() {
         let rows = vec![
-            row("同步最新代码 2天", Some("nita")),
-            row("查看当前工程 3天", Some("skills")),
+            row("同步最新代码", Some("nita")),
+            row("查看当前工程", Some("skills")),
         ];
         assert_eq!(match_row(&rows, &target("同步", None)), None);
         assert_eq!(match_row(&rows, &target("工程", None)), None);
-        // A trailing word of the title is not a prefix of the label.
+        // A trailing word of the title is not a prefix of the title.
         assert_eq!(match_row(&rows, &target("最新代码", None)), None);
         // Empty and missing titles cannot address anything.
         assert_eq!(match_row(&rows, &target("", None)), None);
@@ -850,16 +1086,23 @@ mod tests {
     #[test]
     #[ignore = "drives the running desktop application"]
     fn smoke_reproduce_from_url() {
-        // Exactly what a tray click carries, decoded the same way.
-        let url = "dsh://session/session-3c4b74ef-c82e-4812-9602-0caedc4a8b87?title=%E8%B0%83%E8%AF%95%20APP%20ANR%20%E5%8E%9F%E5%9B%A0&workspace=manis-mubao";
-        let target = crate::deepseek_jump::SessionTarget::parse(url).expect("target");
+        // Exactly what a tray click carries, decoded the same way. The title and
+        // workspace come from the environment so the smoke test can name any row
+        // of the running app.
+        let target = SessionTarget {
+            id: "session-smoke".into(),
+            title: std::env::var("AGENT_STATUS_INDICATOR_SMOKE_TITLE").ok(),
+            workspace: std::env::var("AGENT_STATUS_INDICATOR_SMOKE_WORKSPACE").ok(),
+        };
+        let url = target.url();
+        let target = crate::deepseek_jump::SessionTarget::parse(&url).expect("target");
         println!("parsed: {:?}", target);
         // Hide the window first, the way opening the tray menu does.
         let _ = std::process::Command::new("/usr/bin/open")
             .args(["-a", "Finder"])
             .status();
         sleep(Duration::from_millis(800));
-        let outcome = crate::deepseek_jump::open(url, crate::deepseek_jump::Options::default());
+        let outcome = crate::deepseek_jump::open(&url, crate::deepseek_jump::Options::default());
         println!("outcome: {outcome:?}");
     }
 
@@ -876,12 +1119,17 @@ mod tests {
         collect_rows(&root, None, 0, &mut rows, &mut 0);
         println!("rows: {}", rows.len());
         for (row, _) in &rows {
-            println!("ws={:?} label={:?}", row.workspace, row.label);
+            println!("ws={:?} row={:?}", row.workspace, row);
         }
+        // `AGENT_STATUS_INDICATOR_SMOKE_TITLE` lets the smoke test name a row of
+        // the running app without editing the test.
         let target = SessionTarget {
             id: "session-3c4b74ef-c82e-4812-9602-0caedc4a8b87".into(),
-            title: Some("调试 APP ANR 原因".into()),
-            workspace: Some("manis-mubao".into()),
+            title: Some(
+                std::env::var("AGENT_STATUS_INDICATOR_SMOKE_TITLE")
+                    .unwrap_or_else(|_| "调试 APP ANR 原因".into()),
+            ),
+            workspace: std::env::var("AGENT_STATUS_INDICATOR_SMOKE_WORKSPACE").ok(),
         };
         let labels: Vec<Row> = rows.iter().map(|(row, _)| row.clone()).collect();
         println!("matched: {:?}", match_row(&labels, &target));
@@ -904,7 +1152,10 @@ mod tests {
         // The sidebar prints the relative age next to the title, and a row that
         // exposes only a combined description joins them. A jump must never
         // compare an age with a conversation name.
-        for age in ["4分钟", "2天", "11天", "24天", "1h", "3 days", "2 周"] {
+        for age in [
+            "4分钟", "2天", "11天", "24天", "1h", "3 days", "2 周", "4min", "4mo", "刚刚", "now",
+            "jetzt",
+        ] {
             assert!(is_relative_age(age), "{age}");
         }
         for title in [
@@ -913,9 +1164,22 @@ mod tests {
             "同步最新代码",
             "3D 渲染",
             "调试 APP ANR 原因",
+            "1 个子智能体运行中",
         ] {
             assert!(!is_relative_age(title), "{title}");
         }
+    }
+
+    #[test]
+    fn only_the_sidebars_own_conversation_rows_can_be_pressed() {
+        // The outline publishes workspace headers as rows too, and the transcript
+        // is built from rows as well; pressing either would not open a
+        // conversation.
+        assert!(is_session_row(&["JoiKIa_sessionRow".into()]));
+        assert!(!is_session_row(&["JoiKIa_projectRow".into()]));
+        assert!(!is_session_row(&[]));
+        assert!(is_project_row(&["JoiKIa_projectRow".into()]));
+        assert!(!is_project_row(&["JoiKIa_sessionRow".into()]));
     }
 
     #[test]
@@ -937,14 +1201,14 @@ mod tests {
 
     #[test]
     fn matching_ignores_case_and_surrounding_space() {
-        let rows = vec![row("Fix The Build 1h", Some("Repo"))];
+        let rows = vec![row("Fix The Build", Some("Repo"))];
         assert_eq!(match_row(&rows, &target("  fix the build ", None)), Some(0));
         assert_eq!(match_row(&rows, &target("FIX THE BUILD", None)), Some(0));
         // The projection cache and the rendered sidebar can differ in spacing
         // without naming different conversations.
         assert_eq!(
             match_row(
-                &[row("FixTheBuild 1h", Some("Repo"))],
+                &[row("FixTheBuild", Some("Repo"))],
                 &target("Fix The Build", None)
             ),
             Some(0)
