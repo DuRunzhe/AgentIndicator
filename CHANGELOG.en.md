@@ -8,6 +8,12 @@ This file is generated from the commit history by
 [git-cliff](https://git-cliff.org). Do not edit it by hand.
 The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [0.2.47] - 2026-11-25
+
+### Fixed
+
+- Jump to DeepSeek Harness conversations that show a status
+
 ## [0.2.46-alpha.2] - 2026-11-22
 
 ### Added

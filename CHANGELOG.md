@@ -6,6 +6,12 @@
 本文件由 [git-cliff](https://git-cliff.org) 依据提交历史自动生成，请勿手工编辑。
 英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [0.2.47] - 2026-11-25
+
+### 修复
+
+- Jump to DeepSeek Harness conversations that show a status
+
 ## [0.2.46-alpha.2] - 2026-11-22
 
 ### 新增
